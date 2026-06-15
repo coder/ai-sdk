@@ -1,0 +1,454 @@
+import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
+import { Readable } from 'node:stream';
+import net from 'node:net';
+import { buildRemoteScript, shellQuote } from './shell.js';
+import type {
+  CoderTransport,
+  ExecResult,
+  ForwardPortOptions,
+  LifecycleOptions,
+  PortForward,
+  SpawnedProcess,
+  TransportExecOptions,
+} from './transport.js';
+
+export interface CoderCliTransportOptions {
+  /** Path or name of the coder binary. Default: `coder`. */
+  coderBinary?: string;
+  /**
+   * Path or name of the OpenSSH client used for exec/spawn. Default: `ssh`.
+   * Exec goes through real OpenSSH (via a `coder ssh --stdio` ProxyCommand)
+   * rather than `coder ssh <ws> -- cmd`, because the latter allocates a PTY —
+   * which mangles output (CRLF), merges stdout/stderr, and breaks exit-code
+   * propagation. `coder ssh`'s own help recommends `coder config-ssh` for full
+   * SSH parity; this is the programmatic equivalent.
+   */
+  sshBinary?: string;
+  /** Coder deployment URL; sets `CODER_URL`. Falls back to ambient `coder login`. */
+  url?: string;
+  /** Coder session token; sets `CODER_SESSION_TOKEN`. Falls back to ambient login. */
+  token?: string;
+  /** Extra environment merged into every coder/ssh invocation. */
+  env?: Record<string, string>;
+  /**
+   * Run remote commands through a bash *login* shell (`bash -lc`) so PATH and
+   * profile-managed toolchains (nvm, asdf, mise, …) resolve. Default: `true`.
+   */
+  loginShell?: boolean;
+  /**
+   * Coder startup-script wait behavior for the proxied connection
+   * (`coder ssh --wait`). Default `'no'`: programmatic exec should not block on
+   * (or stream the logs of) startup scripts. Set `'auto'`/`'yes'` if your
+   * workspace provisions required tooling in a blocking startup script.
+   */
+  waitMode?: 'yes' | 'no' | 'auto';
+  /**
+   * Redirect the ProxyCommand's own stderr to /dev/null so coder CLI chatter
+   * (version-mismatch warnings, startup logs) does not bleed into a command's
+   * stderr. Default: `true`. Disable to surface coder connection errors.
+   */
+  silenceProxyStderr?: boolean;
+  /** Timeout (ms) to wait for a port-forward's local endpoint. Default 30000. */
+  portForwardTimeoutMs?: number;
+}
+
+const DEFAULT_PORT_FORWARD_TIMEOUT_MS = 30_000;
+
+export interface SshArgsOptions {
+  coderBinary: string;
+  loginShell: boolean;
+  waitMode: 'yes' | 'no' | 'auto';
+  silenceProxyStderr: boolean;
+}
+
+/**
+ * Build the OpenSSH argv for running one command in a workspace via a
+ * `coder ssh --stdio` ProxyCommand.
+ *
+ * The remote command is passed as a *single* argument because OpenSSH joins
+ * trailing command words with spaces and does not re-quote them — splitting
+ * `bash -lc '<script>'` across argv elements would drop the quoting and corrupt
+ * the script. Exposed for unit testing.
+ */
+export function buildSshArgs(
+  workspace: string,
+  remoteScript: string,
+  options: SshArgsOptions,
+): string[] {
+  const shell = options.loginShell ? 'bash -lc' : 'bash -c';
+  const remoteCommand = `${shell} ${shellQuote(remoteScript)}`;
+  const proxy =
+    `${options.coderBinary} ssh --stdio --wait=${options.waitMode} ${workspace}` +
+    (options.silenceProxyStderr ? ' 2>/dev/null' : '');
+  return [
+    '-o',
+    `ProxyCommand=${proxy}`,
+    '-o',
+    'StrictHostKeyChecking=no',
+    '-o',
+    'UserKnownHostsFile=/dev/null',
+    '-o',
+    'LogLevel=ERROR',
+    '-T',
+    sshHostAlias(workspace),
+    remoteCommand,
+  ];
+}
+
+/** A stable, ssh-safe host label. The real workspace is fixed in ProxyCommand. */
+export function sshHostAlias(workspace: string): string {
+  return `coder.${workspace.replace(/[^A-Za-z0-9_.-]/g, '-')}`;
+}
+
+/**
+ * Build the OpenSSH argv for a local port-forward (`-L`) to a workspace port,
+ * tunneled over a `coder ssh --stdio` ProxyCommand. Used instead of
+ * `coder port-forward` because SSH local forwarding reliably delivers the
+ * server's initial (unprompted) bytes to the first client through a freshly
+ * created tunnel — which bridge-backed harness adapters depend on (the bridge
+ * sends an unprompted `bridge-hello` immediately after the WebSocket upgrade).
+ */
+export function buildLocalForwardArgs(
+  workspace: string,
+  localPort: number,
+  remotePort: number,
+  options: { coderBinary: string; waitMode: 'yes' | 'no' | 'auto'; silenceProxyStderr: boolean },
+): string[] {
+  const proxy =
+    `${options.coderBinary} ssh --stdio --wait=${options.waitMode} ${workspace}` +
+    (options.silenceProxyStderr ? ' 2>/dev/null' : '');
+  return [
+    '-o',
+    `ProxyCommand=${proxy}`,
+    '-o',
+    'StrictHostKeyChecking=no',
+    '-o',
+    'UserKnownHostsFile=/dev/null',
+    '-o',
+    'LogLevel=ERROR',
+    '-o',
+    'ExitOnForwardFailure=yes',
+    '-N',
+    '-L',
+    `${localPort}:127.0.0.1:${remotePort}`,
+    sshHostAlias(workspace),
+  ];
+}
+
+/**
+ * Default {@link CoderTransport}. Exec/spawn use OpenSSH via a
+ * `coder ssh --stdio` ProxyCommand; port-forward and lifecycle use the `coder`
+ * CLI directly.
+ */
+export class CoderCliTransport implements CoderTransport {
+  readonly #coderBinary: string;
+  readonly #sshBinary: string;
+  readonly #url?: string;
+  readonly #token?: string;
+  readonly #extraEnv: Record<string, string>;
+  readonly #loginShell: boolean;
+  readonly #waitMode: 'yes' | 'no' | 'auto';
+  readonly #silenceProxyStderr: boolean;
+  readonly #portForwardTimeoutMs: number;
+
+  constructor(options: CoderCliTransportOptions = {}) {
+    this.#coderBinary = options.coderBinary ?? 'coder';
+    this.#sshBinary = options.sshBinary ?? 'ssh';
+    this.#url = options.url;
+    this.#token = options.token;
+    this.#extraEnv = options.env ?? {};
+    this.#loginShell = options.loginShell ?? true;
+    this.#waitMode = options.waitMode ?? 'no';
+    this.#silenceProxyStderr = options.silenceProxyStderr ?? true;
+    this.#portForwardTimeoutMs =
+      options.portForwardTimeoutMs ?? DEFAULT_PORT_FORWARD_TIMEOUT_MS;
+  }
+
+  #childEnv(): NodeJS.ProcessEnv {
+    return {
+      ...process.env,
+      ...(this.#url ? { CODER_URL: this.#url } : {}),
+      ...(this.#token ? { CODER_SESSION_TOKEN: this.#token } : {}),
+      ...this.#extraEnv,
+    };
+  }
+
+  #sshArgs(options: TransportExecOptions): string[] {
+    const script = buildRemoteScript({
+      command: options.command,
+      workingDirectory: options.workingDirectory,
+      env: options.env,
+    });
+    return buildSshArgs(options.workspace, script, {
+      coderBinary: this.#coderBinary,
+      loginShell: this.#loginShell,
+      waitMode: this.#waitMode,
+      silenceProxyStderr: this.#silenceProxyStderr,
+    });
+  }
+
+  exec(options: TransportExecOptions): Promise<ExecResult> {
+    return this.#run(this.#sshBinary, this.#sshArgs(options), {
+      stdin: options.stdin,
+      abortSignal: options.abortSignal,
+    });
+  }
+
+  spawn(options: TransportExecOptions): SpawnedProcess {
+    const child = nodeSpawn(this.#sshBinary, this.#sshArgs(options), {
+      stdio: [options.stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+      env: this.#childEnv(),
+      signal: options.abortSignal,
+    });
+    writeStdin(child, options.stdin);
+    return toSpawnedProcess(child, options.abortSignal);
+  }
+
+  async forwardPort(options: ForwardPortOptions): Promise<PortForward> {
+    const localPort = await allocateLocalPort();
+    const child = nodeSpawn(
+      this.#sshBinary,
+      buildLocalForwardArgs(options.workspace, localPort, options.remotePort, {
+        coderBinary: this.#coderBinary,
+        waitMode: this.#waitMode,
+        silenceProxyStderr: this.#silenceProxyStderr,
+      }),
+      {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: this.#childEnv(),
+        signal: options.abortSignal,
+      },
+    );
+
+    let stderr = '';
+    child.stderr?.setEncoding('utf8');
+    child.stderr?.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+
+    try {
+      await waitForLocalPort(
+        localPort,
+        child,
+        this.#portForwardTimeoutMs,
+        options.abortSignal,
+      );
+    } catch (error) {
+      try {
+        child.kill('SIGTERM');
+      } catch {
+        // ignore
+      }
+      const detail = stderr.trim();
+      throw new Error(
+        `ssh -L forward (${options.workspace} :${options.remotePort}) failed to become ready` +
+          (detail ? `: ${detail}` : ''),
+        { cause: error },
+      );
+    }
+
+    let closed = false;
+    return {
+      localHost: '127.0.0.1',
+      localPort,
+      close: async () => {
+        if (closed) return;
+        closed = true;
+        try {
+          child.kill('SIGTERM');
+        } catch {
+          // ignore
+        }
+      },
+    };
+  }
+
+  async start(workspace: string, options?: LifecycleOptions): Promise<void> {
+    await this.#runLifecycle(['start', workspace, '--yes'], workspace, 'start', options);
+  }
+
+  async stop(workspace: string, options?: LifecycleOptions): Promise<void> {
+    await this.#runLifecycle(['stop', workspace, '--yes'], workspace, 'stop', options);
+  }
+
+  async destroy(workspace: string, options?: LifecycleOptions): Promise<void> {
+    await this.#runLifecycle(['delete', workspace, '--yes'], workspace, 'delete', options);
+  }
+
+  async #runLifecycle(
+    args: string[],
+    workspace: string,
+    verb: string,
+    options?: LifecycleOptions,
+  ): Promise<void> {
+    const result = await this.#run(this.#coderBinary, args, {
+      abortSignal: options?.abortSignal,
+    });
+    if (result.exitCode !== 0) {
+      throw new Error(
+        `coder ${verb} ${workspace} failed (exit ${result.exitCode}): ${
+          (result.stderr || result.stdout).trim()
+        }`,
+      );
+    }
+  }
+
+  #run(
+    binary: string,
+    args: string[],
+    options: { stdin?: Uint8Array | string; abortSignal?: AbortSignal },
+  ): Promise<ExecResult> {
+    return new Promise<ExecResult>((resolve, reject) => {
+      const child = nodeSpawn(binary, args, {
+        stdio: [options.stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+        env: this.#childEnv(),
+        signal: options.abortSignal,
+      });
+
+      let stdout = '';
+      let stderr = '';
+      child.stdout?.setEncoding('utf8');
+      child.stdout?.on('data', (chunk: string) => {
+        stdout += chunk;
+      });
+      child.stderr?.setEncoding('utf8');
+      child.stderr?.on('data', (chunk: string) => {
+        stderr += chunk;
+      });
+
+      child.on('error', reject);
+      child.on('close', (code) => {
+        resolve({ exitCode: code ?? 0, stdout, stderr });
+      });
+
+      writeStdin(child, options.stdin);
+    });
+  }
+}
+
+function writeStdin(child: ChildProcess, stdin?: Uint8Array | string): void {
+  if (stdin === undefined || child.stdin === null) return;
+  const buffer = typeof stdin === 'string' ? Buffer.from(stdin) : Buffer.from(stdin);
+  // Swallow EPIPE if the process exits before consuming stdin.
+  child.stdin.on('error', () => {});
+  child.stdin.end(buffer);
+}
+
+function toSpawnedProcess(child: ChildProcess, abortSignal?: AbortSignal): SpawnedProcess {
+  const stdout = nodeReadableToWebStream(child.stdout);
+  const stderr = nodeReadableToWebStream(child.stderr);
+
+  let settled = false;
+  const wait = new Promise<{ exitCode: number }>((resolve, reject) => {
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      fn();
+    };
+    child.on('error', (error) => finish(() => reject(error)));
+    child.on('close', (code) => finish(() => resolve({ exitCode: code ?? 0 })));
+    if (abortSignal) {
+      if (abortSignal.aborted) {
+        finish(() => reject(abortSignal.reason ?? new Error('aborted')));
+      } else {
+        abortSignal.addEventListener(
+          'abort',
+          () => finish(() => reject(abortSignal.reason ?? new Error('aborted'))),
+          { once: true },
+        );
+      }
+    }
+  });
+
+  return {
+    pid: child.pid,
+    stdout,
+    stderr,
+    wait: () => wait,
+    kill: async () => {
+      try {
+        child.kill('SIGTERM');
+      } catch {
+        // ignore — kill is idempotent
+      }
+    },
+  };
+}
+
+function nodeReadableToWebStream(readable: Readable | null): ReadableStream<Uint8Array> {
+  if (readable === null) {
+    return new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.close();
+      },
+    });
+  }
+  return Readable.toWeb(readable) as unknown as ReadableStream<Uint8Array>;
+}
+
+/** Reserve an ephemeral local TCP port by binding then releasing it. */
+function allocateLocalPort(): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      const port = typeof address === 'object' && address !== null ? address.port : 0;
+      server.close(() => {
+        if (port === 0) reject(new Error('failed to allocate a local port'));
+        else resolve(port);
+      });
+    });
+  });
+}
+
+/** Poll until the local port accepts a TCP connection, or fail. */
+function waitForLocalPort(
+  port: number,
+  child: ChildProcess,
+  timeoutMs: number,
+  abortSignal?: AbortSignal,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise<void>((resolve, reject) => {
+    let done = false;
+    const settle = (fn: () => void) => {
+      if (done) return;
+      done = true;
+      child.off('close', onClose);
+      child.off('error', onError);
+      abortSignal?.removeEventListener('abort', onAbort);
+      fn();
+    };
+    const onClose = (code: number | null) =>
+      settle(() =>
+        reject(new Error(`coder port-forward exited early (code ${code ?? 'null'})`)),
+      );
+    const onError = (error: Error) => settle(() => reject(error));
+    const onAbort = () => settle(() => reject(abortSignal?.reason ?? new Error('aborted')));
+
+    child.on('close', onClose);
+    child.on('error', onError);
+    abortSignal?.addEventListener('abort', onAbort, { once: true });
+
+    const attempt = () => {
+      if (done) return;
+      const socket = net.connect(port, '127.0.0.1');
+      socket.once('connect', () => {
+        socket.destroy();
+        settle(resolve);
+      });
+      socket.once('error', () => {
+        socket.destroy();
+        if (done) return;
+        if (Date.now() > deadline) {
+          settle(() => reject(new Error(`timed out waiting for local port ${port}`)));
+          return;
+        }
+        setTimeout(attempt, 200);
+      });
+    };
+    attempt();
+  });
+}

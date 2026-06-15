@@ -1,0 +1,53 @@
+{
+  "name": "@coder/ai-sdk-sandbox",
+  "version": "0.1.0",
+  "description": "Coder workspace sandbox provider for the Vercel AI SDK v7 HarnessAgent",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify:real": "tsx scripts/verify-real.ts"
+  },
+  "keywords": [
+    "coder",
+    "ai-sdk",
+    "harness",
+    "sandbox",
+    "claude-code",
+    "codex"
+  ],
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18"
+  },
+  "sideEffects": false,
+  "peerDependencies": {
+    "@ai-sdk/harness": "^1.0.0-canary.11",
+    "@ai-sdk/provider-utils": "^5.0.0-canary.48"
+  },
+  "devDependencies": {
+    "@ai-sdk/harness": "^1.0.0-canary.11",
+    "@ai-sdk/harness-claude-code": "^1.0.0-canary.7",
+    "@ai-sdk/provider-utils": "^5.0.0-canary.48",
+    "@types/node": "^25.9.3",
+    "tsup": "^8.5.1",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
+  }
+}

@@ -90,6 +90,78 @@ try {
 
 See [`examples/claude-code.ts`](./examples/claude-code.ts) for a runnable version.
 
+## Creating workspaces on demand
+
+Instead of pointing at an existing workspace, you can have the provider **create
+one from a template** — with parameters and/or a preset — and tear it down when
+the session ends. Add a `create` block:
+
+```ts
+const agent = new HarnessAgent({
+  harness: createClaudeCode({ thinking: 'adaptive' }),
+  sandbox: createCoderSandbox({
+    create: {
+      template: 'docker',                 // required: the template to create from
+      preset: 'Large',                    // optional: a template version preset
+      parameters: { cpus: 8, region: 'us-west-2' },
+      useParameterDefaults: true,         // accept template defaults for the rest
+      stopAfter: '8h',                    // auto-stop TTL
+    },
+  }),
+});
+```
+
+By default this is **fresh-per-session**: the workspace name is derived from the
+harness `sessionId` (e.g. `agent-1a2b3c4d5e6f`), so each session gets its own
+workspace, and `session.destroy()` deletes it. `resumeSession` re-derives the
+same name and reattaches. The provider waits for the workspace agent to finish
+connecting and running its startup script (`lifecycle_state: ready`) before the
+harness runs — a successful *build* is not enough on its own.
+
+You can also **get-or-create a named workspace** by combining `workspace` with
+`create`: if it exists the provider attaches to it (and never deletes it); if it
+doesn't, the provider creates it (and, by default, owns it).
+
+```ts
+createCoderSandbox({
+  workspace: 'my-agent-ws',
+  create: { template: 'docker', ifExists: 'attach' }, // 'attach' (default) | 'error'
+})
+```
+
+**Parameters vs. presets.** A preset's parameter values take precedence over an
+overlapping `parameters` entry of the same name (this is Coder's behavior), so
+set a given value via the preset *or* `parameters`, not both. Required
+parameters (those without a template default) must be supplied via `parameters`,
+`parameterFile`, a `preset`, or `useParameterDefaults` — otherwise creation
+fails (it can't prompt non-interactively). If you set a `preset`, the provider
+preflight-validates the name against the template's presets and fails fast with
+the available names (set `validate: false` to skip).
+
+### Create settings
+
+```ts
+createCoderSandbox({
+  create: {
+    template: 'docker',           // required
+    templateVersion: undefined,   // default: the template's active version
+    preset: undefined,            // 'none' forces no preset
+    parameters: {},               // { name: value }; numbers/bools stringified
+    parameterFile: undefined,     // path to a YAML rich-parameter file
+    useParameterDefaults: false,  // accept template defaults where unset
+    ephemeralParameters: {},      // one-time build parameters
+    stopAfter: undefined,         // e.g. '8h' (auto-stop TTL)
+    automaticUpdates: undefined,  // 'always' | 'never'
+    org: undefined,               // --org, for ambiguous template names
+    owner: undefined,             // owner for a derived name (owner/name)
+    ifExists: 'attach',           // 'attach' | 'error'
+    namePrefix: 'agent',          // prefix for the derived per-session name
+    validate: true,               // preflight-check the preset name
+  },
+  readyTimeoutMs: 300_000,        // wait budget for the agent to become ready
+})
+```
+
 ## Workspace requirements
 
 Because the bridge runs inside the workspace, the workspace image must have:
@@ -109,8 +181,12 @@ Because the bridge runs inside the workspace, the workspace image must have:
 ```ts
 createCoderSandbox({
   // Which workspace to use: a fixed name, or a resolver from the harness sessionId.
-  // Falls back to using the sessionId as the workspace name.
+  // In create mode, omit it to derive a fresh per-session name; otherwise it
+  // falls back to using the sessionId as the workspace name.
   workspace: 'my-ws',                       // or: (sessionId) => `agent-${sessionId}`
+
+  create: undefined,                        // create from a template; see "Creating workspaces"
+  readyTimeoutMs: 300_000,                  // wait budget for the agent to become ready
 
   ports: [4000],                            // exposed ports; ports[0] is the bridge port
   defaultWorkingDirectory: '/home/coder',   // default: resolved from $HOME, else /home/coder
@@ -131,12 +207,18 @@ createCoderSandbox({
 
 ### Lifecycle modes
 
-- **Wrap an existing workspace (default, `ownsLifecycle: false`).** `stop()` and
-  `destroy()` only release host-side resources (port-forwards); the workspace
-  keeps running. This is the natural fit for long-lived dev workspaces.
+- **Wrap an existing workspace (default when there's no `create`,
+  `ownsLifecycle: false`).** `stop()` and `destroy()` only release host-side
+  resources (port-forwards); the workspace keeps running. The natural fit for
+  long-lived dev workspaces.
 - **Own the workspace (`ownsLifecycle: true`).** `stop()` runs `coder stop` and
-  `destroy()` runs `coder delete`. Use this when the provider manages ephemeral
-  workspaces; `onFirstCreate` then runs as the snapshot-bootstrap hook.
+  `destroy()` runs `coder delete`.
+- **Create mode (`create` set).** `ownsLifecycle` defaults to `true`, so a
+  workspace the provider creates is deleted on `destroy()` and `onFirstCreate`
+  runs as its bootstrap hook. As a safety measure, a workspace the provider only
+  *attached* to (an explicitly-named, pre-existing one) is **never** deleted —
+  only ones it actually created. A per-session derived name is always treated as
+  owned. Set `ownsLifecycle: false` for "create-if-missing but never delete".
 
 ### Ports
 
@@ -169,14 +251,19 @@ npm test            # vitest: unit + local integration (fake `coder` + `ssh`)
 npm run build       # tsup → dist/ (ESM + d.ts)
 
 # End-to-end against a real workspace (needs the coder CLI + a running workspace):
-CODER_WORKSPACE=my-ws npm run verify:real -- my-ws
+npm run verify:real -- my-ws
+
+# End-to-end of create mode (creates a throwaway workspace, then deletes it):
+npm run verify:create -- docker
 ```
 
 The local integration tests exercise the real transport (argument building,
-stdin, base64 file round-trips, streaming, and the port-forward lifecycle)
-against fake `coder`/`ssh` executables that run commands locally — no Coder
-deployment needed. `scripts/verify-real.ts` runs the same surface — plus a real
-WebSocket-over-`coder port-forward` round-trip — against an actual workspace.
+stdin, base64 file round-trips, streaming, the port-forward lifecycle, and the
+create/status/presets JSON paths) against fake `coder`/`ssh` executables that run
+commands locally — no Coder deployment needed. `scripts/verify-real.ts` runs the
+same surface — plus a real WebSocket-over-SSH round-trip — against an actual
+workspace; `scripts/verify-create.ts` creates a throwaway workspace from a
+template, waits for readiness, runs a command in it, and deletes it.
 
 ## License
 

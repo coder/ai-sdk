@@ -5,8 +5,10 @@ import type {
   ExecResult,
   ForwardPortOptions,
   PortForward,
+  PresetInfo,
   SpawnedProcess,
   TransportExecOptions,
+  WorkspaceStatus,
 } from '../src/transport.js';
 
 function emptyStream(): ReadableStream<Uint8Array> {
@@ -61,6 +63,13 @@ class MockTransport implements CoderTransport {
   }
   async destroy(): Promise<void> {
     this.destroyCalls += 1;
+  }
+  async status(): Promise<WorkspaceStatus | null> {
+    return null;
+  }
+  async create(): Promise<void> {}
+  async listPresets(): Promise<PresetInfo[]> {
+    return [];
   }
 }
 

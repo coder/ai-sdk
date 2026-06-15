@@ -21,7 +21,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "verify:real": "tsx scripts/verify-real.ts"
+    "verify:real": "tsx scripts/verify-real.ts",
+    "verify:create": "tsx scripts/verify-create.ts"
   },
   "keywords": [
     "coder",

@@ -8,13 +8,18 @@ import path from 'node:path';
  *
  * - `ssh <ws> -- <cmd...>`  → exec `<cmd...>` locally (workspace ignored)
  * - `port-forward <ws> --tcp <local>:<remote>` → a Node TCP proxy local→remote
- * - `start|stop|delete`     → no-op success
+ * - `create <name> …`       → records `<name>` in a state dir (get-or-create)
+ * - `list --search …`       → emits a ready-workspace JSON array iff created
+ * - `templates presets list` → emits a wrapped PascalCase preset JSON array
+ * - `start|stop`            → no-op success; `delete` clears the state file
  *
  * This lets us exercise the real {@link CoderCliTransport} (argument building,
  * stdin plumbing, base64 file round-trips, stream handling, port-forward
- * lifecycle) without a live Coder deployment.
+ * lifecycle, and the create/status/presets JSON paths) without a live Coder
+ * deployment.
  */
 const SCRIPT = `#!/usr/bin/env bash
+STATE_DIR="$(dirname "$0")/state"
 sub="\${1:-}"; shift || true
 case "$sub" in
   ssh)
@@ -22,7 +27,46 @@ case "$sub" in
     if [ "\${1:-}" = "--" ]; then shift; fi
     exec "$@"
     ;;
-  start|stop|delete) exit 0 ;;
+  start|stop) exit 0 ;;
+  delete)
+    base=""
+    while [ $# -gt 0 ]; do case "$1" in -*) shift ;; *) base="\${1##*/}"; shift ;; esac; done
+    rm -f "$STATE_DIR/$base" 2>/dev/null || true
+    exit 0
+    ;;
+  create)
+    name=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --template|--template-version|--preset|--parameter|--rich-parameter-file|--ephemeral-parameter|--stop-after|--automatic-updates|--org|-O)
+          shift 2 ;;
+        --yes|-y|--use-parameter-defaults) shift ;;
+        -*) shift ;;
+        *) if [ -z "$name" ]; then name="$1"; fi; shift ;;
+      esac
+    done
+    base="\${name##*/}"
+    mkdir -p "$STATE_DIR"
+    echo ready > "$STATE_DIR/$base"
+    exit 0
+    ;;
+  list)
+    search=""
+    while [ $# -gt 0 ]; do
+      case "$1" in --search) search="$2"; shift 2 ;; -o|--output|-c|--column) shift 2 ;; *) shift ;; esac
+    done
+    name="\${search##*name:}"; name="\${name%% *}"; base="\${name##*/}"
+    if [ -n "$base" ] && [ -f "$STATE_DIR/$base" ]; then
+      printf '[{"name":"%s","latest_build":{"status":"running","transition":"start","resources":[{"agents":[{"name":"main","status":"connected","lifecycle_state":"ready"}]}]}}]' "$base"
+    else
+      printf '[]'
+    fi
+    exit 0
+    ;;
+  templates)
+    printf '[{"TemplatePreset":{"ID":"00000000-0000-0000-0000-000000000000","Name":"Standard","Parameters":[],"Default":true,"DesiredPrebuildInstances":0,"Description":"","Icon":""}}]'
+    exit 0
+    ;;
   port-forward)
     shift || true
     spec=""

@@ -1,6 +1,12 @@
+import { createHash } from 'node:crypto';
 import type { HarnessV1SandboxProvider } from '@ai-sdk/harness';
 import { CoderCliTransport } from './cli-transport.js';
-import type { CoderTransport } from './transport.js';
+import type {
+  CoderTransport,
+  CreateWorkspaceOptions,
+  PresetInfo,
+  WorkspaceStatus,
+} from './transport.js';
 import { CoderNetworkSandboxSession } from './coder-network-sandbox-session.js';
 
 /** Stable provider id reported on the {@link HarnessV1SandboxProvider}. */
@@ -8,14 +14,88 @@ export const CODER_SANDBOX_PROVIDER_ID = 'coder-sandbox';
 
 const DEFAULT_BRIDGE_PORT = 4000;
 const DEFAULT_WORKING_DIRECTORY = '/home/coder';
+const DEFAULT_READY_TIMEOUT_MS = 300_000;
+const READY_POLL_INTERVAL_MS = 2_000;
+const DEFAULT_NAME_PREFIX = 'agent';
+
+/**
+ * Settings for creating a workspace on demand from a template. Provide a
+ * {@link CoderSandboxSettings.create} block to enable "create mode": the
+ * provider will get-or-create a workspace (rather than only wrapping an existing
+ * one) and wait for its agent to become ready before running the harness.
+ */
+export interface CoderCreateSettings {
+  /** Template name to create from. Required to enable creation. */
+  template: string;
+  /** Specific template version name; defaults to the template's active version. */
+  templateVersion?: string;
+  /**
+   * Named preset to apply (`coder create --preset`). Use `'none'` to force no
+   * preset. Note: a preset's parameter values take precedence over any
+   * overlapping {@link CoderCreateSettings.parameters} (Coder's behavior) — set
+   * a given value via the preset *or* `parameters`, not both.
+   */
+  preset?: string;
+  /**
+   * Rich parameter values by parameter name. Numbers and booleans are
+   * stringified. For `list(string)` parameters prefer {@link parameterFile}.
+   */
+  parameters?: Record<string, string | number | boolean>;
+  /** Path to a YAML rich-parameter file (`--rich-parameter-file`). */
+  parameterFile?: string;
+  /** Accept template defaults for any parameter not otherwise provided. */
+  useParameterDefaults?: boolean;
+  /** Ephemeral (one-time build) parameter values by name. */
+  ephemeralParameters?: Record<string, string | number | boolean>;
+  /** Auto-stop the workspace after this duration, e.g. `'8h'` (`--stop-after`). */
+  stopAfter?: string;
+  /** `--automatic-updates` setting (default: Coder's, `never`). */
+  automaticUpdates?: 'always' | 'never';
+  /** Organization name or uuid for ambiguous template names (`--org`). */
+  org?: string;
+  /**
+   * Owner for an auto-derived workspace name (`owner/name`). Only applied when
+   * the name is derived from the sessionId; when you pass an explicit
+   * {@link CoderSandboxSettings.workspace} string, include the owner there.
+   * Defaults to the authenticated user.
+   */
+  owner?: string;
+  /**
+   * What to do if a workspace with the target name already exists:
+   * `'attach'` (default) reuses it; `'error'` fails.
+   */
+  ifExists?: 'attach' | 'error';
+  /**
+   * Prefix for the workspace name derived from the harness sessionId when no
+   * explicit `workspace` is set (fresh-per-session). Default: `'agent'`.
+   */
+  namePrefix?: string;
+  /**
+   * Preflight-validate the requested {@link preset} name against the template's
+   * presets before creating, failing fast with the available names. Best-effort
+   * (skipped silently if introspection fails). Default: `true`.
+   */
+  validate?: boolean;
+}
 
 export interface CoderSandboxSettings {
   /**
    * The workspace to wrap, as `[owner/]workspace[.agent]`. Either a fixed name
-   * or a resolver from the harness `sessionId`. If omitted, the `sessionId`
-   * itself is used as the workspace name.
+   * or a resolver from the harness `sessionId`. If omitted: in create mode a
+   * fresh per-session name is derived from the sessionId; otherwise the
+   * `sessionId` itself is used as the workspace name.
    */
   workspace?: string | ((sessionId: string | undefined) => string);
+
+  /**
+   * Create a workspace on demand from a template instead of requiring one to
+   * exist. See {@link CoderCreateSettings}. When set, the provider get-or-creates
+   * the workspace and waits for its agent to be ready.
+   */
+  create?: CoderCreateSettings;
+
+  /** Max time (ms) to wait for the agent to become ready after create/start. Default 300000. */
+  readyTimeoutMs?: number;
 
   /**
    * Ports the workspace exposes. The bridge-backed adapters resolve the bridge
@@ -32,14 +112,18 @@ export interface CoderSandboxSettings {
   defaultWorkingDirectory?: string;
 
   /**
-   * Whether this provider owns the workspace lifecycle. When `false` (default)
-   * the provider wraps an existing, externally-owned workspace: `stop()` and
-   * `destroy()` only release host-side resources and never stop or delete it.
-   * When `true`, `stop()`/`destroy()` run `coder stop`/`coder delete`.
+   * Whether this provider owns the workspace lifecycle (`stop()`/`destroy()`
+   * actually stop/delete it). Default depends on mode:
+   * - **wrap mode** (no `create`): `false` — `stop()`/`destroy()` only release
+   *   host-side resources and never touch the workspace.
+   * - **create mode**: `true` — but a workspace the provider only *attached* to
+   *   (an explicitly-named, pre-existing one) is never deleted; only workspaces
+   *   the provider actually created are. A per-session derived name is always
+   *   treated as owned.
    */
   ownsLifecycle?: boolean;
 
-  /** Run `coder start` before attaching (useful for stopped workspaces). */
+  /** Run `coder start` before attaching (useful for stopped workspaces in wrap mode). */
   ensureStarted?: boolean;
 
   /**
@@ -66,18 +150,19 @@ export interface CoderSandboxSettings {
 
 /**
  * Create a {@link HarnessV1SandboxProvider} that runs harness sessions inside a
- * Coder workspace.
+ * Coder workspace. Either wraps an existing workspace, or — when a `create`
+ * block is supplied — creates one on demand from a template.
  *
- * @example
+ * @example Wrap an existing workspace
  * ```ts
- * import { HarnessAgent } from '@ai-sdk/harness/agent';
- * import { createClaudeCode } from '@ai-sdk/harness-claude-code';
- * import { createCoderSandbox } from '@coder/ai-sdk-sandbox';
+ * createCoderSandbox({ workspace: 'my-dev-workspace' })
+ * ```
  *
- * const agent = new HarnessAgent({
- *   harness: createClaudeCode({ port: 4000 }),
- *   sandbox: createCoderSandbox({ workspace: 'my-dev-workspace' }),
- * });
+ * @example Create a fresh per-session workspace from a template
+ * ```ts
+ * createCoderSandbox({
+ *   create: { template: 'docker', preset: 'Large' },
+ * })
  * ```
  */
 export function createCoderSandbox(
@@ -96,35 +181,59 @@ export function createCoderSandbox(
     });
 
   const ports = settings.ports ?? [DEFAULT_BRIDGE_PORT];
-  const ownsLifecycle = settings.ownsLifecycle ?? false;
+  const createMode = settings.create !== undefined;
+  // Whether the workspace name is derived per-session (vs. an explicit name the
+  // caller supplied, which may point at a pre-existing, caller-owned workspace).
+  const nameDerived = createMode && settings.workspace === undefined;
+  const readyTimeoutMs = settings.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
 
   const resolveWorkspace = (sessionId: string | undefined): string => {
     if (typeof settings.workspace === 'function') return settings.workspace(sessionId);
     if (typeof settings.workspace === 'string') return settings.workspace;
+    if (createMode) {
+      const name = deriveWorkspaceName(settings.create!.namePrefix ?? DEFAULT_NAME_PREFIX, sessionId);
+      const owner = settings.create!.owner;
+      return owner !== undefined && owner !== '' ? `${owner}/${name}` : name;
+    }
     if (sessionId !== undefined && sessionId !== '') return sessionId;
     throw new Error(
       'createCoderSandbox: a `workspace` is required when no sessionId is provided to derive one from.',
     );
   };
 
+  /** Resolve whether this session owns its workspace's lifecycle. */
+  const resolveOwnership = (createdByProvider: boolean): boolean => {
+    if (!createMode) return settings.ownsLifecycle ?? false;
+    const owns = settings.ownsLifecycle ?? true;
+    // A per-session derived name is always ours; an explicit name is only ours
+    // to delete if we actually created it this run (never delete a borrowed one).
+    return nameDerived ? owns : owns && createdByProvider;
+  };
+
   const buildSession = async (
     workspace: string,
     abortSignal?: AbortSignal,
-  ): Promise<CoderNetworkSandboxSession> => {
-    if (settings.ensureStarted) {
-      await transport.start(workspace, { abortSignal });
-    }
+  ): Promise<{ session: CoderNetworkSandboxSession; createdByProvider: boolean }> => {
+    const { createdByProvider } = await ensureWorkspace(
+      transport,
+      workspace,
+      settings,
+      createMode,
+      readyTimeoutMs,
+      abortSignal,
+    );
     const defaultWorkingDirectory =
       settings.defaultWorkingDirectory ??
       (await resolveHomeDirectory(transport, workspace, abortSignal));
-    return new CoderNetworkSandboxSession({
+    const session = new CoderNetworkSandboxSession({
       transport,
       workspace,
       id: workspace,
       defaultWorkingDirectory,
       ports: [...ports],
-      ownsLifecycle,
+      ownsLifecycle: resolveOwnership(createdByProvider),
     });
+    return { session, createdByProvider };
   };
 
   return {
@@ -134,11 +243,13 @@ export function createCoderSandbox(
     // workspace per session rather than leasing ports from a shared sandbox.
     createSession: async (options) => {
       const workspace = resolveWorkspace(options?.sessionId);
-      const session = await buildSession(workspace, options?.abortSignal);
-      // `onFirstCreate` is the provider's snapshot-bootstrap hook. It is only
-      // meaningful when the provider creates the resource; when wrapping a
-      // caller-owned workspace the framework runs its own idempotent bootstrap.
-      if (ownsLifecycle && options?.onFirstCreate) {
+      const { session, createdByProvider } = await buildSession(workspace, options?.abortSignal);
+      // `onFirstCreate` is the provider's snapshot-bootstrap hook: it runs once,
+      // when the resource is first created. In create mode that means a
+      // workspace we actually created; in wrap mode it follows lifecycle
+      // ownership (a caller-owned workspace).
+      const shouldFirstCreate = createMode ? createdByProvider : (settings.ownsLifecycle ?? false);
+      if (shouldFirstCreate && options?.onFirstCreate) {
         await options.onFirstCreate(session.restricted(), {
           abortSignal: options.abortSignal,
         });
@@ -147,9 +258,226 @@ export function createCoderSandbox(
     },
     resumeSession: async (options) => {
       const workspace = resolveWorkspace(options.sessionId);
-      return buildSession(workspace, options.abortSignal);
+      const { session } = await buildSession(workspace, options.abortSignal);
+      return session;
     },
   };
+}
+
+/**
+ * Get-or-create the workspace and (in create mode) wait for its agent to be
+ * ready. In wrap mode this preserves the original behavior (optionally
+ * `coder start`).
+ */
+async function ensureWorkspace(
+  transport: CoderTransport,
+  workspace: string,
+  settings: CoderSandboxSettings,
+  createMode: boolean,
+  readyTimeoutMs: number,
+  abortSignal?: AbortSignal,
+): Promise<{ createdByProvider: boolean }> {
+  if (!createMode) {
+    if (settings.ensureStarted) {
+      await transport.start(workspace, { abortSignal });
+    }
+    return { createdByProvider: false };
+  }
+
+  const create = settings.create!;
+  const existing = await transport.status(workspace, { abortSignal });
+  let createdByProvider = false;
+
+  if (existing === null) {
+    if (create.validate ?? true) {
+      await validatePreset(transport, create, abortSignal);
+    }
+    await transport.create(toCreateOptions(workspace, create, abortSignal));
+    createdByProvider = true;
+  } else {
+    if (create.ifExists === 'error') {
+      throw new Error(
+        `createCoderSandbox: workspace "${workspace}" already exists (create.ifExists: 'error').`,
+      );
+    }
+    if (isStopped(existing)) {
+      await transport.start(workspace, { abortSignal });
+    }
+  }
+
+  await waitForReady(transport, workspace, readyTimeoutMs, abortSignal);
+  return { createdByProvider };
+}
+
+function isStopped(status: WorkspaceStatus): boolean {
+  return (
+    status.buildStatus === 'stopped' ||
+    status.buildStatus === 'stopping' ||
+    status.transition === 'stop'
+  );
+}
+
+function toCreateOptions(
+  workspace: string,
+  create: CoderCreateSettings,
+  abortSignal?: AbortSignal,
+): CreateWorkspaceOptions {
+  return {
+    workspace,
+    template: create.template,
+    templateVersion: create.templateVersion,
+    preset: create.preset,
+    parameters: stringifyParams(create.parameters),
+    parameterFile: create.parameterFile,
+    useParameterDefaults: create.useParameterDefaults,
+    ephemeralParameters: stringifyParams(create.ephemeralParameters),
+    stopAfter: create.stopAfter,
+    automaticUpdates: create.automaticUpdates,
+    org: create.org,
+    abortSignal,
+  };
+}
+
+function stringifyParams(
+  params?: Record<string, string | number | boolean>,
+): Record<string, string> | undefined {
+  if (params === undefined) return undefined;
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(params)) {
+    out[key] = typeof value === 'string' ? value : String(value);
+  }
+  return out;
+}
+
+/** Best-effort check that a requested preset name exists for the template. */
+async function validatePreset(
+  transport: CoderTransport,
+  create: CoderCreateSettings,
+  abortSignal?: AbortSignal,
+): Promise<void> {
+  if (create.preset === undefined || create.preset.toLowerCase() === 'none') return;
+  let presets: PresetInfo[];
+  try {
+    presets = await transport.listPresets({
+      template: create.template,
+      templateVersion: create.templateVersion,
+      org: create.org,
+      abortSignal,
+    });
+  } catch {
+    // Introspection is best-effort; don't block creation if it fails.
+    return;
+  }
+  // An empty list can mean "no presets" or "this Coder doesn't expose them";
+  // either way there's nothing reliable to validate against.
+  if (presets.length === 0) return;
+  if (!presets.some((preset) => preset.name === create.preset)) {
+    const available = presets.map((preset) => `"${preset.name}"`).join(', ');
+    throw new Error(
+      `createCoderSandbox: preset "${create.preset}" not found for template ` +
+        `"${create.template}". Available presets: ${available || '(none)'}.`,
+    );
+  }
+}
+
+/**
+ * Poll the workspace until its agent is connected and its startup script has
+ * finished (`lifecycle_state: ready`), failing fast on build or startup errors.
+ * A successful build is *not* sufficient — the agent connects afterwards.
+ */
+async function waitForReady(
+  transport: CoderTransport,
+  workspace: string,
+  timeoutMs: number,
+  abortSignal?: AbortSignal,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let last = 'unknown';
+  for (;;) {
+    if (abortSignal?.aborted) throw abortSignal.reason ?? new Error('aborted');
+    const status = await transport.status(workspace, { abortSignal });
+    if (status !== null) {
+      last =
+        `build=${status.buildStatus} agents=[` +
+        status.agents
+          .map((a) => `${a.name || '?'}:${a.status}/${a.lifecycleState}`)
+          .join(', ') +
+        ']';
+      if (status.buildStatus === 'failed') {
+        throw new Error(`createCoderSandbox: workspace "${workspace}" build failed (${last}).`);
+      }
+      if (status.buildStatus === 'canceled' || status.buildStatus === 'deleted') {
+        throw new Error(`createCoderSandbox: workspace "${workspace}" is ${status.buildStatus} (${last}).`);
+      }
+      const errored = status.agents.find(
+        (a) => a.lifecycleState === 'start_error' || a.lifecycleState === 'start_timeout',
+      );
+      if (errored) {
+        throw new Error(
+          `createCoderSandbox: workspace "${workspace}" agent "${errored.name || '?'}" ` +
+            `failed to start (lifecycle: ${errored.lifecycleState}).`,
+        );
+      }
+      if (
+        status.buildStatus === 'running' &&
+        status.agents.some((a) => a.status === 'connected' && a.lifecycleState === 'ready')
+      ) {
+        return;
+      }
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `createCoderSandbox: timed out after ${timeoutMs}ms waiting for workspace ` +
+          `"${workspace}" to become ready (last status: ${last}).`,
+      );
+    }
+    await delay(READY_POLL_INTERVAL_MS, abortSignal);
+  }
+}
+
+/** A deterministic, valid workspace name derived from the harness sessionId. */
+function deriveWorkspaceName(prefix: string, sessionId: string | undefined): string {
+  if (sessionId === undefined || sessionId === '') {
+    throw new Error(
+      'createCoderSandbox: create mode needs either an explicit `workspace` or a ' +
+        'sessionId to derive a fresh per-session workspace name from.',
+    );
+  }
+  const hash = createHash('sha1').update(sessionId).digest('hex').slice(0, 12);
+  const cleanPrefix = sanitizeNameSegment(prefix) || DEFAULT_NAME_PREFIX;
+  return `${cleanPrefix}-${hash}`.slice(0, 32);
+}
+
+/** Lowercase and reduce to the `[a-z0-9-]` workspace-name alphabet. */
+function sanitizeNameSegment(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      cleanup();
+      reject(signal?.reason ?? new Error('aborted'));
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    if (signal !== undefined) {
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+  });
 }
 
 /** Best-effort lookup of the workspace's `$HOME`, defaulting to `/home/coder`. */

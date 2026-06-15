@@ -4,12 +4,17 @@ import net from 'node:net';
 import { buildRemoteScript, shellQuote } from './shell.js';
 import type {
   CoderTransport,
+  CreateWorkspaceOptions,
   ExecResult,
   ForwardPortOptions,
   LifecycleOptions,
+  ListPresetsOptions,
   PortForward,
+  PresetInfo,
   SpawnedProcess,
   TransportExecOptions,
+  WorkspaceAgentInfo,
+  WorkspaceStatus,
 } from './transport.js';
 
 export interface CoderCliTransportOptions {
@@ -133,6 +138,139 @@ export function buildLocalForwardArgs(
     `${localPort}:127.0.0.1:${remotePort}`,
     sshHostAlias(workspace),
   ];
+}
+
+/**
+ * Build the `coder create` argv for a non-interactive workspace creation.
+ * `--yes` bypasses confirmation prompts; every required value must be supplied
+ * up front (via `parameters`/`parameterFile`/`preset`/`useParameterDefaults`)
+ * or the build request errors because it cannot prompt. Exposed for unit tests.
+ *
+ * Note on precedence: when both a `preset` and explicit `parameters` set the
+ * same name, Coder applies the preset's value — pick one per parameter.
+ */
+export function buildCreateArgs(options: CreateWorkspaceOptions): string[] {
+  const args = ['create', options.workspace, '--yes', '--template', options.template];
+  if (options.templateVersion !== undefined) {
+    args.push('--template-version', options.templateVersion);
+  }
+  if (options.preset !== undefined) {
+    args.push('--preset', options.preset);
+  }
+  for (const [name, value] of Object.entries(options.parameters ?? {})) {
+    args.push('--parameter', `${name}=${value}`);
+  }
+  if (options.parameterFile !== undefined) {
+    args.push('--rich-parameter-file', options.parameterFile);
+  }
+  if (options.useParameterDefaults) {
+    args.push('--use-parameter-defaults');
+  }
+  for (const [name, value] of Object.entries(options.ephemeralParameters ?? {})) {
+    args.push('--ephemeral-parameter', `${name}=${value}`);
+  }
+  if (options.stopAfter !== undefined) {
+    args.push('--stop-after', options.stopAfter);
+  }
+  if (options.automaticUpdates !== undefined) {
+    args.push('--automatic-updates', options.automaticUpdates);
+  }
+  if (options.org !== undefined) {
+    args.push('--org', options.org);
+  }
+  return args;
+}
+
+/** Split a `[owner/]name[.agent]` reference into its parts (owner defaults to `me`). */
+export function parseWorkspaceRef(ref: string): { owner: string; name: string } {
+  const [ownerOrName, maybeName] = ref.includes('/')
+    ? (ref.split('/', 2) as [string, string])
+    : (['me', ref] as [string, string]);
+  const name = (maybeName ?? ownerOrName).split('.')[0] ?? '';
+  return { owner: ownerOrName === '' ? 'me' : ownerOrName, name };
+}
+
+/**
+ * Parse one workspace object from `coder list -o json` into a
+ * {@link WorkspaceStatus}. Tolerant of missing fields. Exposed for unit tests.
+ */
+export function parseWorkspaceStatus(workspace: unknown): WorkspaceStatus {
+  const ws = asRecord(workspace);
+  const build = asRecord(ws['latest_build']);
+  const resources = Array.isArray(build['resources']) ? build['resources'] : [];
+  const agents: WorkspaceAgentInfo[] = [];
+  for (const resource of resources) {
+    const list = asRecord(resource)['agents'];
+    if (!Array.isArray(list)) continue;
+    for (const agent of list) {
+      const a = asRecord(agent);
+      agents.push({
+        name: typeof a['name'] === 'string' ? a['name'] : '',
+        status: typeof a['status'] === 'string' ? a['status'] : 'connecting',
+        lifecycleState:
+          typeof a['lifecycle_state'] === 'string' ? a['lifecycle_state'] : 'created',
+      });
+    }
+  }
+  return {
+    name: typeof ws['name'] === 'string' ? ws['name'] : '',
+    buildStatus: typeof build['status'] === 'string' ? build['status'] : 'pending',
+    transition: typeof build['transition'] === 'string' ? build['transition'] : 'start',
+    agents,
+  };
+}
+
+/**
+ * Parse the raw stdout of `coder templates presets list -o json`. A template
+ * with no presets prints a human message ("No presets found …") to stdout even
+ * under `-o json`, rather than `[]`; treat that (and empty output) as no
+ * presets. Exposed for unit tests.
+ */
+export function parsePresetsOutput(stdout: string): PresetInfo[] {
+  const trimmed = stdout.trim();
+  if (trimmed === '' || /^no presets found/i.test(trimmed)) return [];
+  return parsePresetList(JSON.parse(trimmed));
+}
+
+/**
+ * Parse already-decoded `coder templates presets list -o json` JSON. The CLI
+ * serializes the codersdk struct with PascalCase keys, each wrapped under
+ * `TemplatePreset`; this reader also tolerates a flat / snake_case shape from
+ * other code paths. Exposed for unit tests.
+ */
+export function parsePresetList(json: unknown): PresetInfo[] {
+  if (!Array.isArray(json)) return [];
+  return json.map((entry) => {
+    const record = asRecord(entry);
+    const preset = asRecord(record['TemplatePreset'] ?? record);
+    const name = pickString(preset, 'Name', 'name') ?? '';
+    const description = pickString(preset, 'Description', 'description');
+    return {
+      name,
+      default: pickBoolean(preset, 'Default', 'default') ?? false,
+      ...(description !== undefined && description !== '' ? { description } : {}),
+    };
+  });
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function pickString(record: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    if (typeof record[key] === 'string') return record[key] as string;
+  }
+  return undefined;
+}
+
+function pickBoolean(record: Record<string, unknown>, ...keys: string[]): boolean | undefined {
+  for (const key of keys) {
+    if (typeof record[key] === 'boolean') return record[key] as boolean;
+  }
+  return undefined;
 }
 
 /**
@@ -273,6 +411,74 @@ export class CoderCliTransport implements CoderTransport {
 
   async destroy(workspace: string, options?: LifecycleOptions): Promise<void> {
     await this.#runLifecycle(['delete', workspace, '--yes'], workspace, 'delete', options);
+  }
+
+  async status(
+    workspace: string,
+    options?: LifecycleOptions,
+  ): Promise<WorkspaceStatus | null> {
+    const { owner, name } = parseWorkspaceRef(workspace);
+    const result = await this.#run(
+      this.#coderBinary,
+      ['list', '--output', 'json', '--search', `owner:${owner} name:${name}`],
+      { abortSignal: options?.abortSignal },
+    );
+    if (result.exitCode !== 0) {
+      throw new Error(
+        `coder list (${workspace}) failed (exit ${result.exitCode}): ${
+          (result.stderr || result.stdout).trim()
+        }`,
+      );
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(result.stdout);
+    } catch (error) {
+      throw new Error(`coder list (${workspace}) returned invalid JSON`, { cause: error });
+    }
+    if (!Array.isArray(parsed) || parsed.length === 0) return null;
+    return parseWorkspaceStatus(parsed[0]);
+  }
+
+  async create(options: CreateWorkspaceOptions): Promise<void> {
+    const result = await this.#run(this.#coderBinary, buildCreateArgs(options), {
+      abortSignal: options.abortSignal,
+    });
+    if (result.exitCode !== 0) {
+      throw new Error(
+        `coder create ${options.workspace} (template ${options.template}) failed ` +
+          `(exit ${result.exitCode}): ${(result.stderr || result.stdout).trim()}`,
+      );
+    }
+  }
+
+  async listPresets(options: ListPresetsOptions): Promise<PresetInfo[]> {
+    const args = ['templates', 'presets', 'list', options.template, '--output', 'json'];
+    if (options.templateVersion !== undefined) {
+      args.push('--template-version', options.templateVersion);
+    }
+    if (options.org !== undefined) {
+      args.push('--org', options.org);
+    }
+    const result = await this.#run(this.#coderBinary, args, {
+      abortSignal: options.abortSignal,
+    });
+    if (result.exitCode !== 0) {
+      throw new Error(
+        `coder templates presets list ${options.template} failed (exit ${result.exitCode}): ${
+          (result.stderr || result.stdout).trim()
+        }`,
+      );
+    }
+    try {
+      return parsePresetsOutput(result.stdout);
+    } catch (error) {
+      throw new Error(
+        `coder templates presets list ${options.template} returned invalid JSON: ` +
+          result.stdout.trim().slice(0, 120),
+        { cause: error },
+      );
+    }
   }
 
   async #runLifecycle(

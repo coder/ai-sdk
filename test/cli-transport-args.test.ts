@@ -2,6 +2,11 @@ import { describe, it, expect } from 'vitest';
 import {
   buildSshArgs,
   buildLocalForwardArgs,
+  buildCreateArgs,
+  parseWorkspaceRef,
+  parseWorkspaceStatus,
+  parsePresetList,
+  parsePresetsOutput,
   sshHostAlias,
   type SshArgsOptions,
 } from '../src/cli-transport.js';
@@ -84,5 +89,159 @@ describe('buildLocalForwardArgs', () => {
       '12345:127.0.0.1:4000',
       'coder.ws',
     ]);
+  });
+});
+
+describe('buildCreateArgs', () => {
+  it('builds a minimal non-interactive create', () => {
+    expect(buildCreateArgs({ workspace: 'ws', template: 'docker' })).toEqual([
+      'create',
+      'ws',
+      '--yes',
+      '--template',
+      'docker',
+    ]);
+  });
+
+  it('includes version, preset, params, file, defaults, ephemeral, ttl, updates, org', () => {
+    const args = buildCreateArgs({
+      workspace: 'alice/ws',
+      template: 'docker',
+      templateVersion: 'v2',
+      preset: 'Large',
+      parameters: { cpus: '8', region: 'us-west-2' },
+      parameterFile: './params.yaml',
+      useParameterDefaults: true,
+      ephemeralParameters: { force: 'true' },
+      stopAfter: '8h',
+      automaticUpdates: 'always',
+      org: 'engineering',
+    });
+    expect(args).toEqual([
+      'create',
+      'alice/ws',
+      '--yes',
+      '--template',
+      'docker',
+      '--template-version',
+      'v2',
+      '--preset',
+      'Large',
+      '--parameter',
+      'cpus=8',
+      '--parameter',
+      'region=us-west-2',
+      '--rich-parameter-file',
+      './params.yaml',
+      '--use-parameter-defaults',
+      '--ephemeral-parameter',
+      'force=true',
+      '--stop-after',
+      '8h',
+      '--automatic-updates',
+      'always',
+      '--org',
+      'engineering',
+    ]);
+  });
+
+  it('passes --preset none through verbatim', () => {
+    const args = buildCreateArgs({ workspace: 'ws', template: 'docker', preset: 'none' });
+    expect(args).toContain('--preset');
+    expect(args[args.indexOf('--preset') + 1]).toBe('none');
+  });
+});
+
+describe('parseWorkspaceRef', () => {
+  it('defaults the owner to me', () => {
+    expect(parseWorkspaceRef('ws')).toEqual({ owner: 'me', name: 'ws' });
+  });
+  it('splits owner/name', () => {
+    expect(parseWorkspaceRef('alice/ws')).toEqual({ owner: 'alice', name: 'ws' });
+  });
+  it('strips an agent suffix from the name', () => {
+    expect(parseWorkspaceRef('alice/ws.main')).toEqual({ owner: 'alice', name: 'ws' });
+  });
+});
+
+describe('parseWorkspaceStatus', () => {
+  it('extracts build status, transition, and agents from a list entry', () => {
+    const status = parseWorkspaceStatus({
+      name: 'ws',
+      latest_build: {
+        status: 'running',
+        transition: 'start',
+        resources: [
+          { agents: [{ name: 'main', status: 'connected', lifecycle_state: 'ready' }] },
+          { agents: [] },
+        ],
+      },
+    });
+    expect(status).toEqual({
+      name: 'ws',
+      buildStatus: 'running',
+      transition: 'start',
+      agents: [{ name: 'main', status: 'connected', lifecycleState: 'ready' }],
+    });
+  });
+
+  it('tolerates missing fields', () => {
+    const status = parseWorkspaceStatus({});
+    expect(status.buildStatus).toBe('pending');
+    expect(status.transition).toBe('start');
+    expect(status.agents).toEqual([]);
+  });
+});
+
+describe('parsePresetList', () => {
+  it('unwraps the PascalCase TemplatePreset shape from the CLI', () => {
+    const presets = parsePresetList([
+      {
+        TemplatePreset: {
+          ID: 'abc',
+          Name: 'Real World App',
+          Default: true,
+          Description: 'desc',
+          DesiredPrebuildInstances: 0,
+        },
+      },
+      { TemplatePreset: { ID: 'def', Name: 'Minimal', Default: false, Description: '' } },
+    ]);
+    expect(presets).toEqual([
+      { name: 'Real World App', default: true, description: 'desc' },
+      { name: 'Minimal', default: false },
+    ]);
+  });
+
+  it('also accepts a flat snake_case shape', () => {
+    const presets = parsePresetList([{ name: 'Standard', default: true }]);
+    expect(presets).toEqual([{ name: 'Standard', default: true }]);
+  });
+
+  it('returns [] for non-array input', () => {
+    expect(parsePresetList(null)).toEqual([]);
+  });
+});
+
+describe('parsePresetsOutput', () => {
+  it('treats the "No presets found" CLI message as no presets', () => {
+    expect(
+      parsePresetsOutput('No presets found for template "docker" and template-version "x".\r\n'),
+    ).toEqual([]);
+  });
+
+  it('treats empty output as no presets', () => {
+    expect(parsePresetsOutput('   \n')).toEqual([]);
+  });
+
+  it('parses the wrapped JSON array', () => {
+    const out = parsePresetsOutput(
+      '[{"TemplatePreset":{"Name":"Standard","Default":true}}]',
+    );
+    expect(out).toEqual([{ name: 'Standard', default: true }]);
+  });
+
+  it('throws on genuinely malformed JSON', () => {
+    expect(() => parsePresetsOutput('{not json')).toThrow();
   });
 });

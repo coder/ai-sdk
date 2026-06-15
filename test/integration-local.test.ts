@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import { CoderCliTransport } from '../src/cli-transport.js';
+import { createCoderSandbox } from '../src/coder-sandbox-provider.js';
 import * as fileIo from '../src/file-io.js';
 import { createFakeCoder, createFakeSsh, type FakeCoder } from './fake-coder.js';
 
@@ -139,6 +140,54 @@ describe('file I/O round-trips (via fake coder)', () => {
     await fileIo.writeTextFile(ctx(), { path: p, content: 'a\nb\nc\nd' });
     const read = await fileIo.readTextFile(ctx(), { path: p, startLine: 2, endLine: 3 });
     expect(read).toBe('b\nc');
+  });
+});
+
+describe('CoderCliTransport create/status/presets (via fake coder)', () => {
+  it('status returns null for a workspace that does not exist', async () => {
+    expect(await transport.status('nope-does-not-exist')).toBeNull();
+  });
+
+  it('create then status reports a ready workspace (JSON round-trip)', async () => {
+    const name = `it-create-${Date.now()}`;
+    await transport.create({ workspace: name, template: 'docker', preset: 'Standard' });
+    const status = await transport.status(name);
+    expect(status).not.toBeNull();
+    expect(status!.name).toBe(name);
+    expect(status!.buildStatus).toBe('running');
+    expect(status!.agents[0]).toMatchObject({ status: 'connected', lifecycleState: 'ready' });
+    // delete clears the state so the workspace is gone again
+    await transport.destroy(name);
+    expect(await transport.status(name)).toBeNull();
+  });
+
+  it('listPresets parses the wrapped PascalCase JSON', async () => {
+    const presets = await transport.listPresets({ template: 'docker' });
+    expect(presets).toEqual([{ name: 'Standard', default: true }]);
+  });
+});
+
+describe('createCoderSandbox create mode (via fake coder + ssh)', () => {
+  it('get-or-creates a workspace, runs a command in it, and deletes it on destroy', async () => {
+    const name = `prov-create-${Date.now()}`;
+    const provider = createCoderSandbox({
+      workspace: name,
+      create: { template: 'docker' },
+      coderBinary: fakeCoder.path,
+      sshBinary: fakeSsh.path,
+      loginShell: false,
+      defaultWorkingDirectory: '/tmp',
+    });
+    const session = await provider.createSession!({ sessionId: 'sx' });
+    expect(session.id).toBe(name);
+    // workspace now exists (was created)
+    expect(await transport.status(name)).not.toBeNull();
+
+    const result = await session.run({ command: 'echo created-and-running' });
+    expect(result.stdout.trim()).toBe('created-and-running');
+
+    await session.destroy?.();
+    expect(await transport.status(name)).toBeNull(); // created → owned → deleted
   });
 });
 

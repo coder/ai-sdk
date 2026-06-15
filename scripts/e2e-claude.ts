@@ -12,7 +12,7 @@
  */
 import { HarnessAgent } from '@ai-sdk/harness/agent';
 import { createClaudeCode } from '@ai-sdk/harness-claude-code';
-import { createCoderSandbox } from '../src/index.js';
+import { createCoderWorkspace } from '../src/index.js';
 
 const workspace = process.env.E2E_WORKSPACE ?? 'aisdk-claude-e2e';
 const prompt =
@@ -39,7 +39,7 @@ console.log(
 
 const agent = new HarnessAgent({
   harness: createClaudeCode(settings),
-  sandbox: createCoderSandbox({ workspace }),
+  sandbox: createCoderWorkspace({ workspace }),
   instructions: 'You are concise.',
 });
 

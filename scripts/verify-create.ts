@@ -12,7 +12,7 @@
  */
 import crypto from 'node:crypto';
 import { CoderCliTransport } from '../src/cli-transport.js';
-import { createCoderSandbox } from '../src/index.js';
+import { createCoderWorkspace } from '../src/index.js';
 
 const TEMPLATE = process.argv[2] ?? 'docker';
 const PRESET_TEMPLATE = process.argv[3] ?? 'tasks-realworld';
@@ -46,7 +46,7 @@ async function main(): Promise<void> {
   // 2. Preflight: an unknown preset is rejected BEFORE any workspace is created.
   console.log('## preflight preset validation');
   try {
-    const bogus = createCoderSandbox({
+    const bogus = createCoderWorkspace({
       workspace: `${WS}-never`,
       create: { template: PRESET_TEMPLATE, preset: 'definitely-not-a-real-preset-xyz' },
     });
@@ -61,7 +61,7 @@ async function main(): Promise<void> {
 
   // 3. Create a fresh workspace and wait until its agent is ready.
   console.log('## create + readiness');
-  const provider = createCoderSandbox({
+  const provider = createCoderWorkspace({
     workspace: WS,
     create: { template: TEMPLATE, useParameterDefaults: true },
     readyTimeoutMs: 600_000,

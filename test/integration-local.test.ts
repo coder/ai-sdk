@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import { CoderCliTransport } from '../src/cli-transport.js';
-import { createCoderSandbox } from '../src/coder-sandbox-provider.js';
+import { createCoderWorkspace } from '../src/coder-workspace-provider.js';
 import * as fileIo from '../src/file-io.js';
 import { createFakeCoder, createFakeSsh, type FakeCoder } from './fake-coder.js';
 
@@ -167,10 +167,10 @@ describe('CoderCliTransport create/status/presets (via fake coder)', () => {
   });
 });
 
-describe('createCoderSandbox create mode (via fake coder + ssh)', () => {
+describe('createCoderWorkspace create mode (via fake coder + ssh)', () => {
   it('get-or-creates a workspace, runs a command in it, and deletes it on destroy', async () => {
     const name = `prov-create-${Date.now()}`;
-    const provider = createCoderSandbox({
+    const provider = createCoderWorkspace({
       workspace: name,
       create: { template: 'docker' },
       coderBinary: fakeCoder.path,

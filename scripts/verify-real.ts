@@ -4,7 +4,7 @@
  *   npx tsx scripts/verify-real.ts [workspace]   (default: aisdk-sandbox-test)
  *
  * Requires the `coder` CLI on PATH and logged in. Exercises the actual
- * CoderCliTransport + createCoderSandbox: exec, exit codes, env, cwd, stdin,
+ * CoderCliTransport + createCoderWorkspace: exec, exit codes, env, cwd, stdin,
  * base64 file round-trips, spawn streaming, and — the bridge's critical path —
  * a real WebSocket upgrade tunneled through OpenSSH `-L` forwarding.
  */
@@ -12,7 +12,7 @@ import net from 'node:net';
 import crypto from 'node:crypto';
 import { CoderCliTransport } from '../src/cli-transport.js';
 import * as fileIo from '../src/file-io.js';
-import { createCoderSandbox } from '../src/index.js';
+import { createCoderWorkspace } from '../src/index.js';
 
 const WS = process.argv[2] ?? 'aisdk-sandbox-test';
 const PORT = 4000;
@@ -187,7 +187,7 @@ async function main(): Promise<void> {
   check('spawn wait exit code', wr.exitCode === 0);
 
   console.log('## provider + session (public API)');
-  const provider = createCoderSandbox({ workspace: WS });
+  const provider = createCoderWorkspace({ workspace: WS });
   const session = await provider.createSession();
   check('session.id = workspace', session.id === WS);
   check('defaultWorkingDirectory resolved from $HOME', session.defaultWorkingDirectory === '/home/coder',

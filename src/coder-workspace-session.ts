@@ -16,7 +16,7 @@ type SandboxProcessOptions = {
   abortSignal?: AbortSignal;
 };
 
-export interface CoderNetworkSandboxSessionConfig {
+export interface CoderWorkspaceSessionConfig {
   transport: CoderTransport;
   /** Workspace reference: `[owner/]workspace[.agent]`. */
   workspace: string;
@@ -42,7 +42,7 @@ export interface CoderNetworkSandboxSessionConfig {
  * `ws://127.0.0.1:<port>` URL — which is what bridge-backed harness adapters
  * (Claude Code, Codex) open their WebSocket against.
  */
-export class CoderNetworkSandboxSession implements HarnessV1NetworkSandboxSession {
+export class CoderWorkspaceSession implements HarnessV1NetworkSandboxSession {
   readonly id: string;
   readonly defaultWorkingDirectory: string;
   readonly description: string;
@@ -54,7 +54,7 @@ export class CoderNetworkSandboxSession implements HarnessV1NetworkSandboxSessio
   #ports: number[];
   #stopped = false;
 
-  constructor(config: CoderNetworkSandboxSessionConfig) {
+  constructor(config: CoderWorkspaceSessionConfig) {
     this.#transport = config.transport;
     this.#workspace = config.workspace;
     this.#ownsLifecycle = config.ownsLifecycle;

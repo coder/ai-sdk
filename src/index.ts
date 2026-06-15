@@ -1,14 +1,14 @@
 export {
-  createCoderSandbox,
-  CODER_SANDBOX_PROVIDER_ID,
-  type CoderSandboxSettings,
+  createCoderWorkspace,
+  CODER_WORKSPACE_PROVIDER_ID,
+  type CoderWorkspaceSettings,
   type CoderCreateSettings,
-} from './coder-sandbox-provider.js';
+} from './coder-workspace-provider.js';
 
 export {
-  CoderNetworkSandboxSession,
-  type CoderNetworkSandboxSessionConfig,
-} from './coder-network-sandbox-session.js';
+  CoderWorkspaceSession,
+  type CoderWorkspaceSessionConfig,
+} from './coder-workspace-session.js';
 
 export {
   CoderCliTransport,

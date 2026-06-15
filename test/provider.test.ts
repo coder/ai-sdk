@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createHash } from 'node:crypto';
-import { createCoderSandbox } from '../src/coder-sandbox-provider.js';
+import { createCoderWorkspace } from '../src/coder-workspace-provider.js';
 import type {
   CoderTransport,
   CreateWorkspaceOptions,
@@ -112,16 +112,16 @@ class CreateMockTransport implements CoderTransport {
   }
 }
 
-describe('createCoderSandbox', () => {
+describe('createCoderWorkspace', () => {
   it('reports the harness-sandbox-v1 spec and a stable provider id', () => {
-    const provider = createCoderSandbox({ workspace: 'ws', transport: new MockTransport() });
+    const provider = createCoderWorkspace({ workspace: 'ws', transport: new MockTransport() });
     expect(provider.specificationVersion).toBe('harness-sandbox-v1');
-    expect(provider.providerId).toBe('coder-sandbox');
+    expect(provider.providerId).toBe('coder-workspace');
     expect(provider.bridgePorts).toBeUndefined();
   });
 
   it('createSession wraps a fixed workspace and uses it as the id', async () => {
-    const provider = createCoderSandbox({
+    const provider = createCoderWorkspace({
       workspace: 'my-ws',
       transport: new MockTransport(),
       defaultWorkingDirectory: '/home/coder',
@@ -132,7 +132,7 @@ describe('createCoderSandbox', () => {
   });
 
   it('resolves the workspace from sessionId via a function', async () => {
-    const provider = createCoderSandbox({
+    const provider = createCoderWorkspace({
       workspace: (sessionId) => `ws-${sessionId}`,
       transport: new MockTransport(),
       defaultWorkingDirectory: '/w',
@@ -142,7 +142,7 @@ describe('createCoderSandbox', () => {
   });
 
   it('falls back to using the sessionId as the workspace name', async () => {
-    const provider = createCoderSandbox({
+    const provider = createCoderWorkspace({
       transport: new MockTransport(),
       defaultWorkingDirectory: '/w',
     });
@@ -151,21 +151,21 @@ describe('createCoderSandbox', () => {
   });
 
   it('throws when no workspace and no sessionId are available', async () => {
-    const provider = createCoderSandbox({ transport: new MockTransport() });
+    const provider = createCoderWorkspace({ transport: new MockTransport() });
     await expect(provider.createSession()).rejects.toThrow(/workspace/);
   });
 
   it('resolves the default working directory from $HOME when not provided', async () => {
     const transport = new MockTransport();
     transport.homeDir = '/home/dev';
-    const provider = createCoderSandbox({ workspace: 'ws', transport });
+    const provider = createCoderWorkspace({ workspace: 'ws', transport });
     const session = await provider.createSession();
     expect(session.defaultWorkingDirectory).toBe('/home/dev');
   });
 
   it('runs coder start when ensureStarted is set', async () => {
     const transport = new MockTransport();
-    const provider = createCoderSandbox({
+    const provider = createCoderWorkspace({
       workspace: 'ws',
       transport,
       ensureStarted: true,
@@ -176,7 +176,7 @@ describe('createCoderSandbox', () => {
   });
 
   it('does NOT call onFirstCreate when wrapping an unowned workspace', async () => {
-    const provider = createCoderSandbox({
+    const provider = createCoderWorkspace({
       workspace: 'ws',
       transport: new MockTransport(),
       defaultWorkingDirectory: '/w',
@@ -188,7 +188,7 @@ describe('createCoderSandbox', () => {
   });
 
   it('calls onFirstCreate with the restricted session when it owns the lifecycle', async () => {
-    const provider = createCoderSandbox({
+    const provider = createCoderWorkspace({
       workspace: 'ws',
       transport: new MockTransport(),
       defaultWorkingDirectory: '/w',
@@ -204,7 +204,7 @@ describe('createCoderSandbox', () => {
   });
 
   it('resumeSession reattaches by sessionId-derived workspace', async () => {
-    const provider = createCoderSandbox({
+    const provider = createCoderWorkspace({
       workspace: (sessionId) => `ws-${sessionId}`,
       transport: new MockTransport(),
       defaultWorkingDirectory: '/w',
@@ -214,14 +214,14 @@ describe('createCoderSandbox', () => {
   });
 });
 
-describe('createCoderSandbox — create mode', () => {
+describe('createCoderWorkspace — create mode', () => {
   const derivedName = (sessionId: string, prefix = 'agent'): string =>
     `${prefix}-${createHash('sha1').update(sessionId).digest('hex').slice(0, 12)}`;
 
   it('derives a fresh per-session workspace, creates it, and deletes on destroy', async () => {
     const transport = new CreateMockTransport();
     transport.statusScript = [null, readyStatus()]; // not found, then ready
-    const provider = createCoderSandbox({
+    const provider = createCoderWorkspace({
       create: { template: 'docker' },
       transport,
       defaultWorkingDirectory: '/w',
@@ -241,7 +241,7 @@ describe('createCoderSandbox — create mode', () => {
   it('honors a custom name prefix and owner', async () => {
     const transport = new CreateMockTransport();
     transport.statusScript = [null, readyStatus()];
-    const provider = createCoderSandbox({
+    const provider = createCoderWorkspace({
       create: { template: 'docker', namePrefix: 'My Agent', owner: 'alice' },
       transport,
       defaultWorkingDirectory: '/w',
@@ -254,7 +254,7 @@ describe('createCoderSandbox — create mode', () => {
   it('attaches to an existing workspace without creating, and does not delete it', async () => {
     const transport = new CreateMockTransport();
     transport.statusScript = [readyStatus('existing-ws')]; // already exists + ready
-    const provider = createCoderSandbox({
+    const provider = createCoderWorkspace({
       workspace: 'existing-ws',
       create: { template: 'docker' },
       transport,
@@ -271,7 +271,7 @@ describe('createCoderSandbox — create mode', () => {
   it('starts an existing-but-stopped workspace before waiting for readiness', async () => {
     const transport = new CreateMockTransport();
     transport.statusScript = [stoppedStatus('existing-ws'), readyStatus('existing-ws')];
-    const provider = createCoderSandbox({
+    const provider = createCoderWorkspace({
       workspace: 'existing-ws',
       create: { template: 'docker' },
       transport,
@@ -285,7 +285,7 @@ describe('createCoderSandbox — create mode', () => {
   it("throws when the workspace exists and ifExists is 'error'", async () => {
     const transport = new CreateMockTransport();
     transport.statusScript = [readyStatus('existing-ws')];
-    const provider = createCoderSandbox({
+    const provider = createCoderWorkspace({
       workspace: 'existing-ws',
       create: { template: 'docker', ifExists: 'error' },
       transport,
@@ -297,7 +297,7 @@ describe('createCoderSandbox — create mode', () => {
   it('fails fast when the agent reports a startup error', async () => {
     const transport = new CreateMockTransport();
     transport.statusScript = [null, startErrorStatus()];
-    const provider = createCoderSandbox({
+    const provider = createCoderWorkspace({
       create: { template: 'docker' },
       transport,
       readyTimeoutMs: 5_000,
@@ -313,7 +313,7 @@ describe('createCoderSandbox — create mode', () => {
       { name: 'Large', default: false },
     ];
     transport.statusScript = [null];
-    const provider = createCoderSandbox({
+    const provider = createCoderWorkspace({
       create: { template: 'docker', preset: 'Nope' },
       transport,
       defaultWorkingDirectory: '/w',
@@ -328,7 +328,7 @@ describe('createCoderSandbox — create mode', () => {
     const transport = new CreateMockTransport();
     transport.presets = [{ name: 'Standard', default: true }];
     transport.statusScript = [null, readyStatus()];
-    const provider = createCoderSandbox({
+    const provider = createCoderWorkspace({
       create: {
         template: 'docker',
         preset: 'Standard',
@@ -350,7 +350,7 @@ describe('createCoderSandbox — create mode', () => {
     const transport = new CreateMockTransport();
     transport.presets = [{ name: 'Standard', default: true }];
     transport.statusScript = [null, readyStatus()];
-    const provider = createCoderSandbox({
+    const provider = createCoderWorkspace({
       create: { template: 'docker', preset: 'Anything', validate: false },
       transport,
       defaultWorkingDirectory: '/w',
@@ -362,7 +362,7 @@ describe('createCoderSandbox — create mode', () => {
   it('resume re-derives the same per-session name and still owns it', async () => {
     const transport = new CreateMockTransport();
     transport.statusScript = [readyStatus()]; // already exists from a prior createSession
-    const provider = createCoderSandbox({
+    const provider = createCoderWorkspace({
       create: { template: 'docker' },
       transport,
       defaultWorkingDirectory: '/w',
@@ -377,7 +377,7 @@ describe('createCoderSandbox — create mode', () => {
   it('runs onFirstCreate only for a freshly created workspace', async () => {
     const created = new CreateMockTransport();
     created.statusScript = [null, readyStatus()];
-    const providerA = createCoderSandbox({
+    const providerA = createCoderWorkspace({
       create: { template: 'docker' },
       transport: created,
       defaultWorkingDirectory: '/w',
@@ -393,7 +393,7 @@ describe('createCoderSandbox — create mode', () => {
 
     const attached = new CreateMockTransport();
     attached.statusScript = [readyStatus('existing-ws')];
-    const providerB = createCoderSandbox({
+    const providerB = createCoderWorkspace({
       workspace: 'existing-ws',
       create: { template: 'docker' },
       transport: attached,

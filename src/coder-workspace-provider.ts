@@ -7,10 +7,10 @@ import type {
   PresetInfo,
   WorkspaceStatus,
 } from './transport.js';
-import { CoderNetworkSandboxSession } from './coder-network-sandbox-session.js';
+import { CoderWorkspaceSession } from './coder-workspace-session.js';
 
 /** Stable provider id reported on the {@link HarnessV1SandboxProvider}. */
-export const CODER_SANDBOX_PROVIDER_ID = 'coder-sandbox';
+export const CODER_WORKSPACE_PROVIDER_ID = 'coder-workspace';
 
 const DEFAULT_BRIDGE_PORT = 4000;
 const DEFAULT_WORKING_DIRECTORY = '/home/coder';
@@ -20,7 +20,7 @@ const DEFAULT_NAME_PREFIX = 'agent';
 
 /**
  * Settings for creating a workspace on demand from a template. Provide a
- * {@link CoderSandboxSettings.create} block to enable "create mode": the
+ * {@link CoderWorkspaceSettings.create} block to enable "create mode": the
  * provider will get-or-create a workspace (rather than only wrapping an existing
  * one) and wait for its agent to become ready before running the harness.
  */
@@ -56,7 +56,7 @@ export interface CoderCreateSettings {
   /**
    * Owner for an auto-derived workspace name (`owner/name`). Only applied when
    * the name is derived from the sessionId; when you pass an explicit
-   * {@link CoderSandboxSettings.workspace} string, include the owner there.
+   * {@link CoderWorkspaceSettings.workspace} string, include the owner there.
    * Defaults to the authenticated user.
    */
   owner?: string;
@@ -78,7 +78,7 @@ export interface CoderCreateSettings {
   validate?: boolean;
 }
 
-export interface CoderSandboxSettings {
+export interface CoderWorkspaceSettings {
   /**
    * The workspace to wrap, as `[owner/]workspace[.agent]`. Either a fixed name
    * or a resolver from the harness `sessionId`. If omitted: in create mode a
@@ -155,18 +155,18 @@ export interface CoderSandboxSettings {
  *
  * @example Wrap an existing workspace
  * ```ts
- * createCoderSandbox({ workspace: 'my-dev-workspace' })
+ * createCoderWorkspace({ workspace: 'my-dev-workspace' })
  * ```
  *
  * @example Create a fresh per-session workspace from a template
  * ```ts
- * createCoderSandbox({
+ * createCoderWorkspace({
  *   create: { template: 'docker', preset: 'Large' },
  * })
  * ```
  */
-export function createCoderSandbox(
-  settings: CoderSandboxSettings = {},
+export function createCoderWorkspace(
+  settings: CoderWorkspaceSettings = {},
 ): HarnessV1SandboxProvider {
   const transport: CoderTransport =
     settings.transport ??
@@ -197,7 +197,7 @@ export function createCoderSandbox(
     }
     if (sessionId !== undefined && sessionId !== '') return sessionId;
     throw new Error(
-      'createCoderSandbox: a `workspace` is required when no sessionId is provided to derive one from.',
+      'createCoderWorkspace: a `workspace` is required when no sessionId is provided to derive one from.',
     );
   };
 
@@ -213,7 +213,7 @@ export function createCoderSandbox(
   const buildSession = async (
     workspace: string,
     abortSignal?: AbortSignal,
-  ): Promise<{ session: CoderNetworkSandboxSession; createdByProvider: boolean }> => {
+  ): Promise<{ session: CoderWorkspaceSession; createdByProvider: boolean }> => {
     const { createdByProvider } = await ensureWorkspace(
       transport,
       workspace,
@@ -225,7 +225,7 @@ export function createCoderSandbox(
     const defaultWorkingDirectory =
       settings.defaultWorkingDirectory ??
       (await resolveHomeDirectory(transport, workspace, abortSignal));
-    const session = new CoderNetworkSandboxSession({
+    const session = new CoderWorkspaceSession({
       transport,
       workspace,
       id: workspace,
@@ -238,7 +238,7 @@ export function createCoderSandbox(
 
   return {
     specificationVersion: 'harness-sandbox-v1',
-    providerId: CODER_SANDBOX_PROVIDER_ID,
+    providerId: CODER_WORKSPACE_PROVIDER_ID,
     // `bridgePorts` intentionally left undefined: this provider binds one
     // workspace per session rather than leasing ports from a shared sandbox.
     createSession: async (options) => {
@@ -272,7 +272,7 @@ export function createCoderSandbox(
 async function ensureWorkspace(
   transport: CoderTransport,
   workspace: string,
-  settings: CoderSandboxSettings,
+  settings: CoderWorkspaceSettings,
   createMode: boolean,
   readyTimeoutMs: number,
   abortSignal?: AbortSignal,
@@ -297,7 +297,7 @@ async function ensureWorkspace(
   } else {
     if (create.ifExists === 'error') {
       throw new Error(
-        `createCoderSandbox: workspace "${workspace}" already exists (create.ifExists: 'error').`,
+        `createCoderWorkspace: workspace "${workspace}" already exists (create.ifExists: 'error').`,
       );
     }
     if (isStopped(existing)) {
@@ -374,7 +374,7 @@ async function validatePreset(
   if (!presets.some((preset) => preset.name === create.preset)) {
     const available = presets.map((preset) => `"${preset.name}"`).join(', ');
     throw new Error(
-      `createCoderSandbox: preset "${create.preset}" not found for template ` +
+      `createCoderWorkspace: preset "${create.preset}" not found for template ` +
         `"${create.template}". Available presets: ${available || '(none)'}.`,
     );
   }
@@ -404,17 +404,17 @@ async function waitForReady(
           .join(', ') +
         ']';
       if (status.buildStatus === 'failed') {
-        throw new Error(`createCoderSandbox: workspace "${workspace}" build failed (${last}).`);
+        throw new Error(`createCoderWorkspace: workspace "${workspace}" build failed (${last}).`);
       }
       if (status.buildStatus === 'canceled' || status.buildStatus === 'deleted') {
-        throw new Error(`createCoderSandbox: workspace "${workspace}" is ${status.buildStatus} (${last}).`);
+        throw new Error(`createCoderWorkspace: workspace "${workspace}" is ${status.buildStatus} (${last}).`);
       }
       const errored = status.agents.find(
         (a) => a.lifecycleState === 'start_error' || a.lifecycleState === 'start_timeout',
       );
       if (errored) {
         throw new Error(
-          `createCoderSandbox: workspace "${workspace}" agent "${errored.name || '?'}" ` +
+          `createCoderWorkspace: workspace "${workspace}" agent "${errored.name || '?'}" ` +
             `failed to start (lifecycle: ${errored.lifecycleState}).`,
         );
       }
@@ -427,7 +427,7 @@ async function waitForReady(
     }
     if (Date.now() >= deadline) {
       throw new Error(
-        `createCoderSandbox: timed out after ${timeoutMs}ms waiting for workspace ` +
+        `createCoderWorkspace: timed out after ${timeoutMs}ms waiting for workspace ` +
           `"${workspace}" to become ready (last status: ${last}).`,
       );
     }
@@ -439,7 +439,7 @@ async function waitForReady(
 function deriveWorkspaceName(prefix: string, sessionId: string | undefined): string {
   if (sessionId === undefined || sessionId === '') {
     throw new Error(
-      'createCoderSandbox: create mode needs either an explicit `workspace` or a ' +
+      'createCoderWorkspace: create mode needs either an explicit `workspace` or a ' +
         'sessionId to derive a fresh per-session workspace name from.',
     );
   }

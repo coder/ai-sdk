@@ -58,7 +58,7 @@ npm add @coder/ai-sdk-sandbox @ai-sdk/harness@canary @ai-sdk/harness-claude-code
 On the host you also need:
 
 - the [`coder` CLI](https://coder.com/docs/install) on PATH and authenticated
-  (`coder login`), or pass `url` + `token` to `createCoderSandbox`;
+  (`coder login`), or pass `url` + `token` to `createCoderWorkspace`;
 - an **OpenSSH client** (`ssh`) on PATH — exec runs through it (see "How it works").
 
 ## Quick start
@@ -68,11 +68,11 @@ Wrap an existing, running workspace and run Claude Code in it:
 ```ts
 import { HarnessAgent } from '@ai-sdk/harness/agent';
 import { createClaudeCode } from '@ai-sdk/harness-claude-code';
-import { createCoderSandbox } from '@coder/ai-sdk-sandbox';
+import { createCoderWorkspace } from '@coder/ai-sdk-sandbox';
 
 const agent = new HarnessAgent({
   harness: createClaudeCode({ thinking: 'adaptive' }),
-  sandbox: createCoderSandbox({ workspace: 'my-dev-workspace' }),
+  sandbox: createCoderWorkspace({ workspace: 'my-dev-workspace' }),
   instructions: 'You are a careful coding assistant.',
 });
 
@@ -99,7 +99,7 @@ the session ends. Add a `create` block:
 ```ts
 const agent = new HarnessAgent({
   harness: createClaudeCode({ thinking: 'adaptive' }),
-  sandbox: createCoderSandbox({
+  sandbox: createCoderWorkspace({
     create: {
       template: 'docker',                 // required: the template to create from
       preset: 'Large',                    // optional: a template version preset
@@ -123,7 +123,7 @@ You can also **get-or-create a named workspace** by combining `workspace` with
 doesn't, the provider creates it (and, by default, owns it).
 
 ```ts
-createCoderSandbox({
+createCoderWorkspace({
   workspace: 'my-agent-ws',
   create: { template: 'docker', ifExists: 'attach' }, // 'attach' (default) | 'error'
 })
@@ -141,7 +141,7 @@ the available names (set `validate: false` to skip).
 ### Create settings
 
 ```ts
-createCoderSandbox({
+createCoderWorkspace({
   create: {
     template: 'docker',           // required
     templateVersion: undefined,   // default: the template's active version
@@ -179,7 +179,7 @@ Because the bridge runs inside the workspace, the workspace image must have:
 ## Settings
 
 ```ts
-createCoderSandbox({
+createCoderWorkspace({
   // Which workspace to use: a fixed name, or a resolver from the harness sessionId.
   // In create mode, omit it to derive a fresh per-session name; otherwise it
   // falls back to using the sessionId as the workspace name.

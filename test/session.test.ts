@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { CoderNetworkSandboxSession } from '../src/coder-network-sandbox-session.js';
+import { CoderWorkspaceSession } from '../src/coder-workspace-session.js';
 import type {
   CoderTransport,
   ExecResult,
@@ -75,9 +75,9 @@ class MockTransport implements CoderTransport {
 
 function makeSession(
   overrides: Partial<{ ports: number[]; ownsLifecycle: boolean }> = {},
-): { session: CoderNetworkSandboxSession; transport: MockTransport } {
+): { session: CoderWorkspaceSession; transport: MockTransport } {
   const transport = new MockTransport();
-  const session = new CoderNetworkSandboxSession({
+  const session = new CoderWorkspaceSession({
     transport,
     workspace: 'my-ws',
     id: 'my-ws',
@@ -88,7 +88,7 @@ function makeSession(
   return { session, transport };
 }
 
-describe('CoderNetworkSandboxSession', () => {
+describe('CoderWorkspaceSession', () => {
   it('exposes id, ports and a descriptive description', () => {
     const { session } = makeSession();
     expect(session.id).toBe('my-ws');

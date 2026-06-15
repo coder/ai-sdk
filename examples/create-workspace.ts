@@ -4,7 +4,7 @@
  *
  * Prerequisites:
  *   - The `coder` CLI on PATH, logged in (`coder login`) — or pass `url`/`token`
- *     to `createCoderSandbox`.
+ *     to `createCoderWorkspace`.
  *   - A template whose image has Node.js (the bridge installs the Claude Code
  *     CLI + its SDK via npm on first use) and outbound access to the npm
  *     registry and api.anthropic.com.
@@ -16,7 +16,7 @@
  */
 import { HarnessAgent } from '@ai-sdk/harness/agent';
 import { createClaudeCode } from '@ai-sdk/harness-claude-code';
-import { createCoderSandbox } from '../src/index.js';
+import { createCoderWorkspace } from '../src/index.js';
 
 async function main(): Promise<void> {
   const template = process.env.CODER_TEMPLATE;
@@ -28,7 +28,7 @@ async function main(): Promise<void> {
 
   const agent = new HarnessAgent({
     harness: createClaudeCode({ thinking: 'adaptive' }),
-    sandbox: createCoderSandbox({
+    sandbox: createCoderWorkspace({
       // No `workspace`: the name is derived per-session from the harness
       // sessionId, the workspace is created from the template, and it is deleted
       // on session.destroy().

@@ -7,9 +7,9 @@
  *
  * Prerequisites (same as examples/claude-code.ts):
  *   - The `coder` CLI on PATH, logged in (`coder login`).
- *   - A running workspace whose image has Node.js (the bridge installs the
- *     Claude Code CLI + its SDK via npm on first use) and outbound access to the
- *     npm registry and api.anthropic.com.
+ *   - A running workspace whose image has Node.js and pnpm (`corepack enable`),
+ *     since the bridge installs the Claude Code CLI + its SDK via pnpm on first
+ *     use, plus outbound access to the npm registry and api.anthropic.com.
  *   - `ANTHROPIC_API_KEY` available to the bridge (via the adapter's `auth`, or
  *     present in the workspace environment).
  *

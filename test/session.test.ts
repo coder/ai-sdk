@@ -19,14 +19,33 @@ function emptyStream(): ReadableStream<Uint8Array> {
   });
 }
 
+/** A mutable mock forward so tests can flip `closed` to drive re-establish. */
+class MockForward implements PortForward {
+  readonly localHost = '127.0.0.1';
+  closed = false;
+  closeCalls = 0;
+  constructor(
+    readonly localPort: number,
+    private readonly onClose: () => void,
+  ) {}
+  close = async (): Promise<void> => {
+    this.closeCalls += 1;
+    this.closed = true;
+    this.onClose();
+  };
+}
+
 class MockTransport implements CoderTransport {
   execCalls: TransportExecOptions[] = [];
   forwardCalls: ForwardPortOptions[] = [];
+  forwards: MockForward[] = [];
   closedForwards = 0;
   startCalls = 0;
   stopCalls = 0;
   destroyCalls = 0;
   execResult: ExecResult = { exitCode: 0, stdout: '', stderr: '' };
+  /** When set, `forwardPort` rejects this many times before succeeding. */
+  forwardFailuresRemaining = 0;
 
   async exec(options: TransportExecOptions): Promise<ExecResult> {
     this.execCalls.push(options);
@@ -45,14 +64,16 @@ class MockTransport implements CoderTransport {
 
   async forwardPort(options: ForwardPortOptions): Promise<PortForward> {
     this.forwardCalls.push(options);
+    if (this.forwardFailuresRemaining > 0) {
+      this.forwardFailuresRemaining -= 1;
+      throw new Error('forward failed');
+    }
     const localPort = 20_000 + this.forwardCalls.length;
-    return {
-      localHost: '127.0.0.1',
-      localPort,
-      close: async () => {
-        this.closedForwards += 1;
-      },
-    };
+    const forward = new MockForward(localPort, () => {
+      this.closedForwards += 1;
+    });
+    this.forwards.push(forward);
+    return forward;
   }
 
   async start(): Promise<void> {
@@ -129,6 +150,32 @@ describe('CoderWorkspaceSession', () => {
     const b = await session.getPortUrl({ port: 4000 });
     expect(a).toBe(b);
     expect(transport.forwardCalls).toHaveLength(1);
+  });
+
+  it('getPortUrl re-establishes a forward whose tunnel has closed', async () => {
+    const { session, transport } = makeSession();
+    const first = await session.getPortUrl({ port: 4000 });
+    expect(transport.forwardCalls).toHaveLength(1);
+
+    // The underlying tunnel dies (child process exits).
+    transport.forwards[0]!.closed = true;
+
+    const second = await session.getPortUrl({ port: 4000 });
+    // A second forwardPort was issued, and the stale (closed) forward was closed.
+    expect(transport.forwardCalls).toHaveLength(2);
+    expect(transport.forwards[0]!.closeCalls).toBe(1);
+    expect(second).not.toBe(first);
+    expect(second).toBe('ws://127.0.0.1:20002');
+  });
+
+  it('getPortUrl retries after a forward that rejects once', async () => {
+    const { session, transport } = makeSession();
+    transport.forwardFailuresRemaining = 1;
+    await expect(session.getPortUrl({ port: 4000 })).rejects.toThrow(/forward failed/);
+    // The failed forward was evicted; the next call retries and succeeds.
+    const url = await session.getPortUrl({ port: 4000 });
+    expect(transport.forwardCalls).toHaveLength(2);
+    expect(url).toBe('ws://127.0.0.1:20002');
   });
 
   it('getPortUrl maps secure schemes to their plaintext local equivalent', async () => {

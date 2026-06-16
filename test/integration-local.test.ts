@@ -16,8 +16,8 @@ let workDir: string;
 beforeAll(async () => {
   fakeCoder = await createFakeCoder();
   fakeSsh = await createFakeSsh();
-  // Exec/file/spawn go through the fake ssh; port-forward goes through the fake
-  // coder. loginShell:false keeps the locally-executed command off our profile.
+  // Exec/file/spawn and the port-forward (`ssh -N -L`) all go through the fake
+  // ssh. loginShell:false keeps the locally-executed command off our profile.
   transport = new CoderCliTransport({
     coderBinary: fakeCoder.path,
     sshBinary: fakeSsh.path,

@@ -3,10 +3,10 @@
  *
  * Prerequisites:
  *   - The `coder` CLI on PATH, logged in (`coder login`) — or pass `url`/`token`
- *     to `createCoderWorkspace`.
- *   - A running workspace whose image has Node.js (the bridge installs the
- *     Claude Code CLI + its SDK via npm on first use) and outbound access to
- *     the npm registry and api.anthropic.com.
+ *     to `new CoderCliTransport({ url, token })`.
+ *   - A running workspace whose image has Node.js and pnpm (`corepack enable`),
+ *     since the bridge installs the Claude Code CLI + its SDK via pnpm on first
+ *     use, plus outbound access to the npm registry and api.anthropic.com.
  *   - `ANTHROPIC_API_KEY` available to the bridge (configure via the adapter's
  *     `auth`, or ensure it is present in the workspace environment).
  *
@@ -34,7 +34,9 @@ async function main(): Promise<void> {
       // ports: [4000],          // the bridge binds ports[0]; getPortUrl forwards it
       // ownsLifecycle: false,   // wrap an existing workspace (default); stop/destroy are no-ops
       // ensureStarted: true,    // run `coder start` first if it may be stopped
-      // url: process.env.CODER_URL, token: process.env.CODER_SESSION_TOKEN,
+      // url/token are not options here — they live on the transport. Import
+      // CoderCliTransport from '@coder/ai-sdk-sandbox' and pass:
+      // transport: new CoderCliTransport({ url: process.env.CODER_URL, token: process.env.CODER_SESSION_TOKEN }),
     }),
     instructions: 'You are a careful coding assistant. Prefer small, well-explained changes.',
   });

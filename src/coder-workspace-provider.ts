@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import type { HarnessV1SandboxProvider } from '@ai-sdk/harness';
 import { CoderCliTransport } from './cli-transport.js';
 import { CoderWorkspaceSession } from './coder-workspace-session.js';
@@ -430,7 +431,7 @@ async function waitForReady(
           `"${workspace}" to become ready (last status: ${last}).`,
       );
     }
-    await delay(READY_POLL_INTERVAL_MS, abortSignal);
+    await delay(READY_POLL_INTERVAL_MS, undefined, { signal: abortSignal });
   }
 }
 
@@ -453,30 +454,6 @@ function sanitizeNameSegment(value: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
-}
-
-function delay(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      cleanup();
-      resolve();
-    }, ms);
-    const onAbort = () => {
-      cleanup();
-      reject(signal?.reason ?? new Error('aborted'));
-    };
-    const cleanup = () => {
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', onAbort);
-    };
-    if (signal !== undefined) {
-      if (signal.aborted) {
-        onAbort();
-        return;
-      }
-      signal.addEventListener('abort', onAbort, { once: true });
-    }
-  });
 }
 
 /** Best-effort lookup of the workspace's `$HOME`, defaulting to `/home/coder`. */

@@ -4,13 +4,26 @@
   "description": "Coder workspace sandbox provider for the Vercel AI SDK v7 HarnessAgent",
   "type": "module",
   "main": "./dist/index.js",
-  "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
+    "./package.json": "./package.json",
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coder/ai-sdk-sandbox.git"
+  },
+  "homepage": "https://github.com/coder/ai-sdk-sandbox#readme",
+  "bugs": {
+    "url": "https://github.com/coder/ai-sdk-sandbox/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "files": [
     "dist",
@@ -21,11 +34,14 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "format": "biome format --write .",
     "lint": "biome lint .",
     "check": "biome check .",
+    "attw": "attw --pack --ignore-rules cjs-resolves-to-esm",
     "verify:real": "tsx scripts/verify-real.ts",
-    "verify:create": "tsx scripts/verify-create.ts"
+    "verify:create": "tsx scripts/verify-create.ts",
+    "prepublishOnly": "npm run build && npm run typecheck && npm test && publint && npm run attw"
   },
   "keywords": [
     "coder",
@@ -37,7 +53,7 @@
   ],
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "sideEffects": false,
   "peerDependencies": {
@@ -49,8 +65,11 @@
     "@ai-sdk/harness-claude-code": "^1.0.0-canary.7",
     "@ai-sdk/provider-utils": "^5.0.0-canary.48",
     "@ai-sdk/tui": "^1.0.0-canary.11",
+    "@arethetypeswrong/cli": "^0.18.0",
     "@biomejs/biome": "2.5.0",
-    "@types/node": "^25.9.3",
+    "@types/node": "^22",
+    "@vitest/coverage-v8": "^4.1.9",
+    "publint": "^0.3.0",
     "tsup": "^8.5.1",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",

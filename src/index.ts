@@ -1,14 +1,4 @@
-export {
-  buildCreateArgs,
-  buildLocalForwardArgs,
-  buildSshArgs,
-  CoderCliTransport,
-  type CoderCliTransportOptions,
-  parsePresetList,
-  parsePresetsOutput,
-  parseWorkspaceRef,
-  parseWorkspaceStatus,
-} from './cli-transport.js';
+export { CoderCliTransport, type CoderCliTransportOptions } from './cli-transport.js';
 export {
   CODER_WORKSPACE_PROVIDER_ID,
   type CoderCreateSettings,
@@ -21,7 +11,6 @@ export {
   CoderWorkspaceSession,
   type CoderWorkspaceSessionConfig,
 } from './coder-workspace-session.js';
-export { buildRemoteScript, type RemoteCommandOptions, shellQuote } from './shell.js';
 export type {
   CoderTransport,
   CreateWorkspaceOptions,

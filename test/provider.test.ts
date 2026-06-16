@@ -27,7 +27,7 @@ class MockTransport implements CoderTransport {
     throw new Error('not used');
   }
   async forwardPort(_options: ForwardPortOptions): Promise<PortForward> {
-    return { localHost: '127.0.0.1', localPort: 1234, close: async () => {} };
+    return { localHost: '127.0.0.1', localPort: 1234, closed: false, close: async () => {} };
   }
   async start(workspace: string, _options?: LifecycleOptions): Promise<void> {
     this.startCalls.push(workspace);
@@ -87,7 +87,7 @@ class CreateMockTransport implements CoderTransport {
     throw new Error('not used');
   }
   async forwardPort(_options: ForwardPortOptions): Promise<PortForward> {
-    return { localHost: '127.0.0.1', localPort: 1234, close: async () => {} };
+    return { localHost: '127.0.0.1', localPort: 1234, closed: false, close: async () => {} };
   }
   async start(): Promise<void> {
     this.startCalls += 1;
@@ -376,6 +376,28 @@ describe('createCoderWorkspace — create mode', () => {
     expect(transport.createCalls).toHaveLength(0);
     await session.destroy?.();
     expect(transport.destroyCalls).toBe(1); // derived name → owned even on resume
+  });
+
+  it('aborts readiness polling immediately for an already-aborted signal', async () => {
+    const transport = new CreateMockTransport();
+    // Workspace already exists and is ready, so ensureWorkspace skips create/start
+    // and goes straight to waitForReady; only the single existence pre-check runs.
+    transport.statusScript = [readyStatus('existing-ws')];
+    const provider = createCoderWorkspace({
+      workspace: 'existing-ws',
+      create: { template: 'docker' },
+      transport,
+      defaultWorkingDirectory: '/w',
+    });
+    const reason = new Error('caller aborted');
+    await expect(
+      provider.createSession!({ sessionId: 's', abortSignal: AbortSignal.abort(reason) }),
+    ).rejects.toBe(reason);
+    // The readiness loop never polled: status was hit once (the pre-check) and
+    // never again, and no create/start side effects occurred.
+    expect(transport.statusCalls).toBe(1);
+    expect(transport.createCalls).toHaveLength(0);
+    expect(transport.startCalls).toBe(0);
   });
 
   it('runs onFirstCreate only for a freshly created workspace', async () => {

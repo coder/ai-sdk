@@ -9,12 +9,9 @@ import type {
   TransportExecOptions,
 } from './transport.js';
 
-type SandboxProcessOptions = {
-  command: string;
-  workingDirectory?: string;
-  env?: Record<string, string>;
-  abortSignal?: AbortSignal;
-};
+// Derived from the moving canary contract so the run/spawn option bag can never
+// silently drift from the AI SDK's sandbox-session shape.
+type SandboxProcessOptions = Parameters<Experimental_SandboxSession['run']>[0];
 
 export interface CoderWorkspaceSessionConfig {
   transport: CoderTransport;
@@ -38,9 +35,10 @@ export interface CoderWorkspaceSessionConfig {
  * A {@link HarnessV1NetworkSandboxSession} backed by a Coder workspace.
  *
  * Exec maps to `coder ssh`, file I/O to base64-over-`coder ssh`, and
- * `getPortUrl` to a `coder port-forward` TCP tunnel exposed as a local
- * `ws://127.0.0.1:<port>` URL — which is what bridge-backed harness adapters
- * (Claude Code, Codex) open their WebSocket against.
+ * `getPortUrl` to an OpenSSH `-L` local forward over a `coder ssh --stdio`
+ * ProxyCommand, exposed as a local `ws://127.0.0.1:<port>` URL — which is what
+ * bridge-backed harness adapters (Claude Code, Codex) open their WebSocket
+ * against.
  */
 export class CoderWorkspaceSession implements HarnessV1NetworkSandboxSession {
   readonly id: string;
@@ -128,6 +126,16 @@ export class CoderWorkspaceSession implements HarnessV1NetworkSandboxSession {
       throw new Error('cannot resolve a port URL: the sandbox session is stopped');
     }
     let forward = this.#forwards.get(options.port);
+    if (forward !== undefined) {
+      // Reuse only a live forward: a rejected promise or a tunnel whose child
+      // has since exited must be evicted so we re-establish below.
+      const existing = await forward.catch(() => undefined);
+      if (existing === undefined || existing.closed) {
+        this.#forwards.delete(options.port);
+        if (existing?.closed) void existing.close().catch(() => {});
+        forward = undefined;
+      }
+    }
     if (forward === undefined) {
       forward = this.#transport.forwardPort({
         workspace: this.#workspace,
@@ -197,9 +205,9 @@ export class CoderWorkspaceSession implements HarnessV1NetworkSandboxSession {
 }
 
 /**
- * A `coder port-forward --tcp` tunnel is plaintext on the loopback interface,
- * so secure schemes collapse to their plaintext local equivalent. Bridge
- * adapters request `ws`, which is the common case.
+ * The OpenSSH `-L` local forward is plaintext on the loopback interface, so
+ * secure schemes collapse to their plaintext local equivalent. Bridge adapters
+ * request `ws`, which is the common case.
  */
 function localScheme(protocol: 'http' | 'https' | 'ws'): 'http' | 'ws' {
   switch (protocol) {

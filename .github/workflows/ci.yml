@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Floor (engines.node >=22), a current major, and the mise-pinned dev
+        # version. MISE_NODE_VERSION overrides mise.toml's `node` per cell.
+        node: ['22', '24', '26.3.0']
+    env:
+      MISE_NODE_VERSION: ${{ matrix.node }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      # mise-action caches the toolchain; cache npm's download store too so
+      # `npm ci` stays fast (the parity replacement for setup-node's cache: npm).
+      - uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ matrix.node }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: npm-${{ matrix.node }}-
+      - run: npm ci
+      - run: npm run check
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npx publint
+      - run: npm run attw

@@ -186,6 +186,11 @@ export interface PortForward {
   readonly localHost: string;
   /** Host port that tunnels to the workspace's `remotePort`. */
   readonly localPort: number;
+  /**
+   * `true` once the underlying tunnel process has exited or errored. Consumers
+   * read this to detect a dead tunnel and re-establish the forward.
+   */
+  readonly closed: boolean;
   /** Tear down the forward. Idempotent. */
   close(): Promise<void>;
 }

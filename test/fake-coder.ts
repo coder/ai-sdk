@@ -7,11 +7,14 @@ import path from 'node:path';
  * commands on the local machine instead of a workspace:
  *
  * - `ssh <ws> -- <cmd...>`  → exec `<cmd...>` locally (workspace ignored)
- * - `port-forward <ws> --tcp <local>:<remote>` → a Node TCP proxy local→remote
  * - `create <name> …`       → records `<name>` in a state dir (get-or-create)
  * - `list --search …`       → emits a ready-workspace JSON array iff created
  * - `templates presets list` → emits a wrapped PascalCase preset JSON array
  * - `start|stop`            → no-op success; `delete` clears the state file
+ *
+ * Port-forwarding is NOT handled here: the real transport tunnels via OpenSSH
+ * (`ssh -N -L`), which the fake ssh's `-L` branch handles, so `coder` never sees
+ * a `port-forward` subcommand.
  *
  * This lets us exercise the real {@link CoderCliTransport} (argument building,
  * stdin plumbing, base64 file round-trips, stream handling, port-forward
@@ -66,15 +69,6 @@ case "$sub" in
   templates)
     printf '[{"TemplatePreset":{"ID":"00000000-0000-0000-0000-000000000000","Name":"Standard","Parameters":[],"Default":true,"DesiredPrebuildInstances":0,"Description":"","Icon":""}}]'
     exit 0
-    ;;
-  port-forward)
-    shift || true
-    spec=""
-    while [ $# -gt 0 ]; do
-      case "$1" in --tcp) spec="$2"; shift 2 ;; *) shift ;; esac
-    done
-    lp="\${spec%%:*}"; rp="\${spec##*:}"
-    exec node -e 'const net=require("net");const lp=+process.argv[1],rp=+process.argv[2];const s=net.createServer(c=>{const u=net.connect(rp,"127.0.0.1");c.pipe(u);u.pipe(c);c.on("error",()=>u.destroy());u.on("error",()=>c.destroy());});s.listen(lp,"127.0.0.1");process.on("SIGTERM",()=>process.exit(0));' "$lp" "$rp"
     ;;
   *) echo "fake coder: unknown subcommand $sub" >&2; exit 2 ;;
 esac

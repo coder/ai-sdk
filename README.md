@@ -1,8 +1,10 @@
 # @coder/ai-sdk-sandbox
 
 A [Coder](https://coder.com) workspace sandbox provider for the Vercel AI SDK v7
-**HarnessAgent**. It lets you run CLI coding agents — Claude Code, Codex — inside
-a real Coder workspace instead of an ephemeral cloud sandbox.
+**HarnessAgent**. It lets you run CLI coding agents inside a real Coder workspace
+instead of an ephemeral cloud sandbox. Claude Code is verified end-to-end here;
+Codex is expected to work via the same bridge mechanism but is not yet verified
+in this repo.
 
 It implements the `HarnessV1SandboxProvider` contract from `@ai-sdk/harness`, so
 you pass it as the `sandbox` to a `HarnessAgent` exactly like
@@ -52,7 +54,7 @@ and a full Claude Code turn with tool use (`scripts/e2e-claude.ts`).
 ## Install
 
 ```bash
-npm add @coder/ai-sdk-sandbox @ai-sdk/harness@canary @ai-sdk/harness-claude-code@canary
+npm add @coder/ai-sdk-sandbox @ai-sdk/harness@canary @ai-sdk/harness-claude-code@canary @ai-sdk/provider-utils@canary
 ```
 
 On the host you also need:
@@ -214,6 +216,8 @@ Esc or Ctrl+C).
 Because the bridge runs inside the workspace, the workspace image must have:
 
 - **Node.js** (the docs use `node24`). The bridge is `node bridge.mjs`.
+- **pnpm** available on PATH (e.g. via `corepack enable`) — the adapter uses it to
+  bootstrap the bridge.
 - **Outbound network access** to the npm registry (the adapter `pnpm install`s
   the bridge's dependencies + the Claude Code CLI on first use) and to the model
   API (`api.anthropic.com` for Claude Code, `api.openai.com` for Codex). Bake the
@@ -272,9 +276,10 @@ createCoderWorkspace({
 
 The adapter binds its bridge to a port and resolves it from
 `createClaudeCode({ port })` or, by default, `sandbox.ports[0]`. Expose that port
-via `ports` (default `[4000]`); `getPortUrl` opens a `coder port-forward` tunnel
-to it on demand and returns a loopback `ws://` URL. A `--tcp` tunnel is plaintext,
-so `https`/`wss` requests resolve to their `http`/`ws` loopback equivalent.
+via `ports` (default `[4000]`); `getPortUrl` opens an OpenSSH `-L` local forward
+(over the same `coder ssh --stdio` ProxyCommand) to it on demand and returns a
+loopback `ws://` URL. The forward is plaintext on loopback, so `https`/`wss`
+requests resolve to their `http`/`ws` loopback equivalent.
 
 ## Limitations & notes
 

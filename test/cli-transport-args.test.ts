@@ -24,7 +24,7 @@ describe('buildSshArgs (OpenSSH via coder --stdio ProxyCommand)', () => {
     const args = buildSshArgs('ws', 'echo hi', opts());
     expect(args).toEqual([
       '-o',
-      'ProxyCommand=coder ssh --stdio --wait=no ws 2>/dev/null',
+      "ProxyCommand='coder' ssh --stdio --wait=no 'ws' 2>/dev/null",
       '-o',
       'StrictHostKeyChecking=no',
       '-o',
@@ -49,12 +49,19 @@ describe('buildSshArgs (OpenSSH via coder --stdio ProxyCommand)', () => {
 
   it('honors waitMode and a custom coder binary', () => {
     const args = buildSshArgs('ws', 'x', opts({ waitMode: 'auto', coderBinary: '/usr/bin/coder' }));
-    expect(args[1]).toBe('ProxyCommand=/usr/bin/coder ssh --stdio --wait=auto ws 2>/dev/null');
+    expect(args[1]).toBe("ProxyCommand='/usr/bin/coder' ssh --stdio --wait=auto 'ws' 2>/dev/null");
   });
 
   it('omits stderr redirection when silenceProxyStderr is false', () => {
     const args = buildSshArgs('ws', 'x', opts({ silenceProxyStderr: false }));
-    expect(args[1]).toBe('ProxyCommand=coder ssh --stdio --wait=no ws');
+    expect(args[1]).toBe("ProxyCommand='coder' ssh --stdio --wait=no 'ws'");
+  });
+
+  it('shell-quotes a coder binary path and workspace ref with shell-special chars', () => {
+    const args = buildSshArgs("we'rd ws", 'x', opts({ coderBinary: '/opt/my coder' }));
+    expect(args[1]).toBe(
+      "ProxyCommand='/opt/my coder' ssh --stdio --wait=no 'we'\\''rd ws' 2>/dev/null",
+    );
   });
 });
 
@@ -75,7 +82,7 @@ describe('buildLocalForwardArgs', () => {
       }),
     ).toEqual([
       '-o',
-      'ProxyCommand=coder ssh --stdio --wait=no ws 2>/dev/null',
+      "ProxyCommand='coder' ssh --stdio --wait=no 'ws' 2>/dev/null",
       '-o',
       'StrictHostKeyChecking=no',
       '-o',
@@ -161,6 +168,29 @@ describe('parseWorkspaceRef', () => {
   });
   it('strips an agent suffix from the name', () => {
     expect(parseWorkspaceRef('alice/ws.main')).toEqual({ owner: 'alice', name: 'ws' });
+  });
+  it('parses an owner/name.agent reference', () => {
+    expect(parseWorkspaceRef('owner/ws.agent')).toEqual({ owner: 'owner', name: 'ws' });
+  });
+  it('parses a bare name.agent reference (owner defaults to me)', () => {
+    expect(parseWorkspaceRef('ws.main')).toEqual({ owner: 'me', name: 'ws' });
+  });
+
+  const expected = /invalid workspace reference ".*"; expected \[owner\/\]name\[\.agent\]/;
+  it('throws on a reference with more than one slash', () => {
+    expect(() => parseWorkspaceRef('a/b/c')).toThrow(expected);
+  });
+  it('throws on an empty name after the slash', () => {
+    expect(() => parseWorkspaceRef('owner/')).toThrow(expected);
+  });
+  it('throws on an empty agent-only reference', () => {
+    expect(() => parseWorkspaceRef('.main')).toThrow(expected);
+  });
+  it('throws on a name with illegal characters', () => {
+    expect(() => parseWorkspaceRef('bad name!')).toThrow(expected);
+  });
+  it('throws on a name that does not start alphanumeric', () => {
+    expect(() => parseWorkspaceRef('-leading')).toThrow(expected);
   });
 });
 

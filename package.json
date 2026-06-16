@@ -1,0 +1,59 @@
+{
+  "name": "@coder/ai-sdk-agent",
+  "version": "0.1.0",
+  "description": "A Vercel AI SDK-compliant agent (and chat transport) for Coder chatd. `new CoderAgent()` returns an AI SDK Agent backed by a remote Coder agent runtime.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run test/unit",
+    "test:unit": "vitest run test/unit",
+    "test:e2e": "vitest run test/e2e",
+    "test:watch": "vitest",
+    "example:generate": "tsx examples/01-generate.ts",
+    "example:stream": "tsx examples/02-stream.ts",
+    "example:tool": "tsx examples/03-custom-tool.ts",
+    "example:multi-turn": "tsx examples/04-multi-turn.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "peerDependencies": {
+    "ai": "^6.0.0",
+    "zod": "^3.23.0 || ^4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "zod": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@ai-sdk/provider": "3.0.10",
+    "@ai-sdk/react": "3.0.208",
+    "@types/node": "^25.9.3",
+    "@types/ws": "^8.18.1",
+    "ai": "^6.0.206",
+    "tsup": "^8.5.1",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8",
+    "zod": "4.4.3"
+  }
+}

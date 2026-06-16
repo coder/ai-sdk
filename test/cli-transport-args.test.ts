@@ -1,14 +1,14 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
-  buildSshArgs,
-  buildLocalForwardArgs,
   buildCreateArgs,
-  parseWorkspaceRef,
-  parseWorkspaceStatus,
+  buildLocalForwardArgs,
+  buildSshArgs,
   parsePresetList,
   parsePresetsOutput,
-  sshHostAlias,
+  parseWorkspaceRef,
+  parseWorkspaceStatus,
   type SshArgsOptions,
+  sshHostAlias,
 } from '../src/cli-transport.js';
 
 const opts = (over: Partial<SshArgsOptions> = {}): SshArgsOptions => ({
@@ -235,9 +235,7 @@ describe('parsePresetsOutput', () => {
   });
 
   it('parses the wrapped JSON array', () => {
-    const out = parsePresetsOutput(
-      '[{"TemplatePreset":{"Name":"Standard","Default":true}}]',
-    );
+    const out = parsePresetsOutput('[{"TemplatePreset":{"Name":"Standard","Default":true}}]');
     expect(out).toEqual([{ name: 'Standard', default: true }]);
   });
 

@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
 import { createHash } from 'node:crypto';
+import { describe, expect, it } from 'vitest';
 import { createCoderWorkspace } from '../src/coder-workspace-provider.js';
 import type {
   CoderTransport,
@@ -183,7 +183,11 @@ describe('createCoderWorkspace', () => {
       ownsLifecycle: false,
     });
     let called = false;
-    await provider.createSession!({ onFirstCreate: async () => { called = true; } });
+    await provider.createSession!({
+      onFirstCreate: async () => {
+        called = true;
+      },
+    });
     expect(called).toBe(false);
   });
 

@@ -252,6 +252,11 @@ npm run typecheck   # tsc against the real canary harness types
 npm test            # vitest: unit + local integration (fake `coder` + `ssh`)
 npm run build       # tsup → dist/ (ESM + d.ts)
 
+# Formatting & linting (Biome):
+npm run format      # biome format --write .   (apply formatting)
+npm run lint        # biome lint .             (report lint issues)
+npm run check       # biome check .            (format + lint, read-only; for CI)
+
 # End-to-end against a real workspace (needs the coder CLI + a running workspace):
 npm run verify:real -- my-ws
 

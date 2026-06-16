@@ -1,5 +1,6 @@
 import type { HarnessV1NetworkSandboxSession } from '@ai-sdk/harness';
 import type { Experimental_SandboxSession } from '@ai-sdk/provider-utils';
+import * as fileIo from './file-io.js';
 import type {
   CoderTransport,
   ExecResult,
@@ -7,7 +8,6 @@ import type {
   SpawnedProcess,
   TransportExecOptions,
 } from './transport.js';
-import * as fileIo from './file-io.js';
 
 type SandboxProcessOptions = {
   command: string;
@@ -92,13 +92,11 @@ export class CoderWorkspaceSession implements HarnessV1NetworkSandboxSession {
 
   // --- exec surface ---------------------------------------------------------
 
-  readonly run = (
-    options: SandboxProcessOptions,
-  ): Promise<ExecResult> => this.#transport.exec(this.#execOptions(options));
+  readonly run = (options: SandboxProcessOptions): Promise<ExecResult> =>
+    this.#transport.exec(this.#execOptions(options));
 
-  readonly spawn = async (
-    options: SandboxProcessOptions,
-  ): Promise<SpawnedProcess> => this.#transport.spawn(this.#execOptions(options));
+  readonly spawn = async (options: SandboxProcessOptions): Promise<SpawnedProcess> =>
+    this.#transport.spawn(this.#execOptions(options));
 
   // --- file I/O surface -----------------------------------------------------
 
@@ -194,11 +192,7 @@ export class CoderWorkspaceSession implements HarnessV1NetworkSandboxSession {
   async #closeForwards(): Promise<void> {
     const forwards = [...this.#forwards.values()];
     this.#forwards.clear();
-    await Promise.all(
-      forwards.map((forward) =>
-        forward.then((f) => f.close()).catch(() => {}),
-      ),
-    );
+    await Promise.all(forwards.map((forward) => forward.then((f) => f.close()).catch(() => {})));
   }
 }
 

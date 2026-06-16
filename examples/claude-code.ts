@@ -20,9 +20,7 @@ import { createCoderWorkspace } from '../src/index.js';
 async function main(): Promise<void> {
   const workspace = process.env.CODER_WORKSPACE;
   if (!workspace) {
-    throw new Error(
-      'Set CODER_WORKSPACE to the workspace to use, e.g. CODER_WORKSPACE=my-dev-ws',
-    );
+    throw new Error('Set CODER_WORKSPACE to the workspace to use, e.g. CODER_WORKSPACE=my-dev-ws');
   }
 
   const agent = new HarnessAgent({
@@ -38,8 +36,7 @@ async function main(): Promise<void> {
       // ensureStarted: true,    // run `coder start` first if it may be stopped
       // url: process.env.CODER_URL, token: process.env.CODER_SESSION_TOKEN,
     }),
-    instructions:
-      'You are a careful coding assistant. Prefer small, well-explained changes.',
+    instructions: 'You are a careful coding assistant. Prefer small, well-explained changes.',
   });
 
   const session = await agent.createSession();

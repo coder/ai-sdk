@@ -61,9 +61,7 @@ export async function readBinaryFile(
   });
   if (result.exitCode === MISSING_FILE_EXIT) return null;
   if (result.exitCode !== 0) {
-    throw new Error(
-      `failed to read ${abs} (exit ${result.exitCode}): ${result.stderr.trim()}`,
-    );
+    throw new Error(`failed to read ${abs} (exit ${result.exitCode}): ${result.stderr.trim()}`);
   }
   const base64 = result.stdout.replace(/\s+/g, '');
   return new Uint8Array(Buffer.from(base64, 'base64'));
@@ -114,9 +112,7 @@ export async function writeBinaryFile(
     abortSignal: options.abortSignal,
   });
   if (result.exitCode !== 0) {
-    throw new Error(
-      `failed to write ${abs} (exit ${result.exitCode}): ${result.stderr.trim()}`,
-    );
+    throw new Error(`failed to write ${abs} (exit ${result.exitCode}): ${result.stderr.trim()}`);
   }
 }
 
@@ -136,9 +132,7 @@ export async function writeTextFile(
   ctx: FileIoContext,
   options: WriteTextFileOptions,
 ): Promise<void> {
-  const bytes = new Uint8Array(
-    Buffer.from(options.content, normalizeEncoding(options.encoding)),
-  );
+  const bytes = new Uint8Array(Buffer.from(options.content, normalizeEncoding(options.encoding)));
   await writeBinaryFile(ctx, {
     path: options.path,
     content: bytes,
@@ -147,11 +141,7 @@ export async function writeTextFile(
 }
 
 /** Slice text to a 1-based inclusive line range; tolerant of out-of-range bounds. */
-export function sliceLines(
-  text: string,
-  startLine?: number,
-  endLine?: number,
-): string {
+export function sliceLines(text: string, startLine?: number, endLine?: number): string {
   const lines = text.split('\n');
   const start = Math.max(1, startLine ?? 1) - 1;
   const end = endLine === undefined ? lines.length : Math.min(lines.length, endLine);

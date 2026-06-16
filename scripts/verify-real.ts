@@ -8,8 +8,9 @@
  * base64 file round-trips, spawn streaming, and — the bridge's critical path —
  * a real WebSocket upgrade tunneled through OpenSSH `-L` forwarding.
  */
-import net from 'node:net';
+
 import crypto from 'node:crypto';
+import net from 'node:net';
 import { CoderCliTransport } from '../src/cli-transport.js';
 import * as fileIo from '../src/file-io.js';
 import { createCoderWorkspace } from '../src/index.js';
@@ -74,9 +75,7 @@ function wsEcho(host: string, port: number, message: string): Promise<string> {
         const mask = crypto.randomBytes(4);
         const masked = Buffer.alloc(payload.length);
         for (let i = 0; i < payload.length; i++) masked[i] = payload[i]! ^ mask[i % 4]!;
-        socket.write(
-          Buffer.concat([Buffer.from([0x81, 0x80 | payload.length]), mask, masked]),
-        );
+        socket.write(Buffer.concat([Buffer.from([0x81, 0x80 | payload.length]), mask, masked]));
       }
       if (upgraded && buf.length >= 2) {
         const len = buf[1]! & 0x7f;
@@ -157,8 +156,11 @@ async function main(): Promise<void> {
   check('stdin delivered', stdin.stdout === 'piped!', JSON.stringify(stdin.stdout));
 
   const errSep = await transport.exec({ workspace: WS, command: 'echo OUT; echo ERR 1>&2' });
-  check('stdout/stderr separated', errSep.stdout.trim() === 'OUT' && errSep.stderr.trim() === 'ERR',
-    JSON.stringify(errSep));
+  check(
+    'stdout/stderr separated',
+    errSep.stdout.trim() === 'OUT' && errSep.stderr.trim() === 'ERR',
+    JSON.stringify(errSep),
+  );
 
   console.log('## file I/O (base64 over ssh)');
   const dir = `/tmp/aisdk-verify-${Date.now()}`;
@@ -170,13 +172,20 @@ async function main(): Promise<void> {
   const bytes = new Uint8Array([0, 1, 2, 255, 254, 10, 13, 0, 42, 200]);
   await fileIo.writeBinaryFile(ctx, { path: `${dir}/blob.bin`, content: bytes });
   const readBytes = await fileIo.readBinaryFile(ctx, { path: `${dir}/blob.bin` });
-  check('binary round-trip', !!readBytes && Buffer.compare(Buffer.from(readBytes), Buffer.from(bytes)) === 0);
+  check(
+    'binary round-trip',
+    !!readBytes && Buffer.compare(Buffer.from(readBytes), Buffer.from(bytes)) === 0,
+  );
 
   const missing = await fileIo.readBinaryFile(ctx, { path: `${dir}/nope` });
   check('missing file → null', missing === null);
 
   await fileIo.writeTextFile(ctx, { path: `${dir}/lines.txt`, content: 'a\nb\nc\nd' });
-  const slice = await fileIo.readTextFile(ctx, { path: `${dir}/lines.txt`, startLine: 2, endLine: 3 });
+  const slice = await fileIo.readTextFile(ctx, {
+    path: `${dir}/lines.txt`,
+    startLine: 2,
+    endLine: 3,
+  });
   check('line range read', slice === 'b\nc', JSON.stringify(slice));
 
   console.log('## spawn (streaming)');
@@ -190,8 +199,11 @@ async function main(): Promise<void> {
   const provider = createCoderWorkspace({ workspace: WS });
   const session = await provider.createSession();
   check('session.id = workspace', session.id === WS);
-  check('defaultWorkingDirectory resolved from $HOME', session.defaultWorkingDirectory === '/home/coder',
-    session.defaultWorkingDirectory);
+  check(
+    'defaultWorkingDirectory resolved from $HOME',
+    session.defaultWorkingDirectory === '/home/coder',
+    session.defaultWorkingDirectory,
+  );
   const runRes = await session.run({ command: 'echo via-session' });
   check('session.run', runRes.stdout.trim() === 'via-session' && runRes.exitCode === 0);
 
@@ -220,7 +232,11 @@ async function main(): Promise<void> {
     check('getPortUrl returns ws:// loopback URL', /^ws:\/\/127\.0\.0\.1:\d+$/.test(wsUrl), wsUrl);
     const u = new URL(wsUrl);
     const echoed = await wsEcho(u.hostname, Number(u.port), 'bridge-handshake-ok');
-    check('WebSocket upgrade + echo through port-forward', echoed === 'bridge-handshake-ok', JSON.stringify(echoed));
+    check(
+      'WebSocket upgrade + echo through port-forward',
+      echoed === 'bridge-handshake-ok',
+      JSON.stringify(echoed),
+    );
   } catch (e) {
     check('WebSocket over port-forward', false, String(e));
   }

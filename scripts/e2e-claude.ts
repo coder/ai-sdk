@@ -43,7 +43,9 @@ const agent = new HarnessAgent({
   instructions: 'You are concise.',
 });
 
-console.log(`workspace: ${workspace}\nprompt: ${prompt}\n--- starting session (first run installs the bridge) ---`);
+console.log(
+  `workspace: ${workspace}\nprompt: ${prompt}\n--- starting session (first run installs the bridge) ---`,
+);
 const started = Date.now();
 const session = await agent.createSession();
 try {

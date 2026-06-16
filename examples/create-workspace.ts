@@ -36,13 +36,12 @@ async function main(): Promise<void> {
         template,
         // preset: 'Large',                 // a template version preset
         // parameters: { cpus: 8 },         // rich parameter values
-        useParameterDefaults: true,         // accept template defaults for the rest
+        useParameterDefaults: true, // accept template defaults for the rest
         // stopAfter: '4h',                 // auto-stop TTL as a safety net
       },
       // readyTimeoutMs: 600_000,           // bump for slow-building templates
     }),
-    instructions:
-      'You are a careful coding assistant. Prefer small, well-explained changes.',
+    instructions: 'You are a careful coding assistant. Prefer small, well-explained changes.',
   });
 
   const session = await agent.createSession();

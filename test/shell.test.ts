@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { shellQuote, buildRemoteScript } from '../src/shell.js';
+import { describe, expect, it } from 'vitest';
+import { buildRemoteScript, shellQuote } from '../src/shell.js';
 
 describe('shellQuote', () => {
   it('wraps plain strings in single quotes', () => {

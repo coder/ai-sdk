@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { CoderWorkspaceSession } from '../src/coder-workspace-session.js';
 import type {
   CoderTransport,
@@ -73,9 +73,10 @@ class MockTransport implements CoderTransport {
   }
 }
 
-function makeSession(
-  overrides: Partial<{ ports: number[]; ownsLifecycle: boolean }> = {},
-): { session: CoderWorkspaceSession; transport: MockTransport } {
+function makeSession(overrides: Partial<{ ports: number[]; ownsLifecycle: boolean }> = {}): {
+  session: CoderWorkspaceSession;
+  transport: MockTransport;
+} {
   const transport = new MockTransport();
   const session = new CoderWorkspaceSession({
     transport,
@@ -132,12 +133,8 @@ describe('CoderWorkspaceSession', () => {
 
   it('getPortUrl maps secure schemes to their plaintext local equivalent', async () => {
     const { session } = makeSession();
-    expect(await session.getPortUrl({ port: 4000, protocol: 'https' })).toMatch(
-      /^http:\/\//,
-    );
-    expect(await session.getPortUrl({ port: 4001, protocol: 'http' })).toMatch(
-      /^http:\/\//,
-    );
+    expect(await session.getPortUrl({ port: 4000, protocol: 'https' })).toMatch(/^http:\/\//);
+    expect(await session.getPortUrl({ port: 4001, protocol: 'http' })).toMatch(/^http:\/\//);
   });
 
   it('defaults the protocol to ws', async () => {

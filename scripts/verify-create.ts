@@ -73,10 +73,18 @@ async function main(): Promise<void> {
     const session = await provider.createSession();
     const secs = ((Date.now() - started) / 1000).toFixed(0);
     createdOk = true;
-    check(`createSession created + readied the workspace (${secs}s)`, session.id === WS, session.id);
+    check(
+      `createSession created + readied the workspace (${secs}s)`,
+      session.id === WS,
+      session.id,
+    );
 
     const status = await transport.status(WS);
-    check('status reports a running workspace', status?.buildStatus === 'running', JSON.stringify(status));
+    check(
+      'status reports a running workspace',
+      status?.buildStatus === 'running',
+      JSON.stringify(status),
+    );
     check(
       'agent is connected and ready',
       !!status?.agents.some((a) => a.status === 'connected' && a.lifecycleState === 'ready'),
@@ -91,7 +99,11 @@ async function main(): Promise<void> {
 
     console.log('## exec inside the created workspace');
     const uname = await session.run({ command: 'uname -sr' });
-    check('uname runs in the created workspace', uname.exitCode === 0 && /Linux/.test(uname.stdout), JSON.stringify(uname));
+    check(
+      'uname runs in the created workspace',
+      uname.exitCode === 0 && /Linux/.test(uname.stdout),
+      JSON.stringify(uname),
+    );
 
     console.log('## destroy (deletes the created workspace)');
     await session.destroy?.();

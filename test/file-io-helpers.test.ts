@@ -1,9 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
-  sliceLines,
+  type FileIoContext,
   normalizeEncoding,
   resolveRemotePath,
-  type FileIoContext,
+  sliceLines,
 } from '../src/file-io.js';
 import type { CoderTransport } from '../src/transport.js';
 
@@ -35,8 +35,7 @@ describe('sliceLines', () => {
 describe('normalizeEncoding', () => {
   it('maps utf-8 to utf8', () => expect(normalizeEncoding('utf-8')).toBe('utf8'));
   it('defaults undefined to utf8', () => expect(normalizeEncoding()).toBe('utf8'));
-  it('maps UTF-16LE to utf16le', () =>
-    expect(normalizeEncoding('UTF-16LE')).toBe('utf16le'));
+  it('maps UTF-16LE to utf16le', () => expect(normalizeEncoding('UTF-16LE')).toBe('utf16le'));
   it('falls back to utf8 for unknown encodings', () =>
     expect(normalizeEncoding('shift-jis')).toBe('utf8'));
 });

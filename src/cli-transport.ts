@@ -1,6 +1,6 @@
-import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
-import { Readable } from 'node:stream';
+import { type ChildProcess, spawn as nodeSpawn } from 'node:child_process';
 import net from 'node:net';
+import { Readable } from 'node:stream';
 import { buildRemoteScript, shellQuote } from './shell.js';
 import type {
   CoderTransport,
@@ -196,26 +196,25 @@ export function parseWorkspaceRef(ref: string): { owner: string; name: string } 
  */
 export function parseWorkspaceStatus(workspace: unknown): WorkspaceStatus {
   const ws = asRecord(workspace);
-  const build = asRecord(ws['latest_build']);
-  const resources = Array.isArray(build['resources']) ? build['resources'] : [];
+  const build = asRecord(ws.latest_build);
+  const resources = Array.isArray(build.resources) ? build.resources : [];
   const agents: WorkspaceAgentInfo[] = [];
   for (const resource of resources) {
-    const list = asRecord(resource)['agents'];
+    const list = asRecord(resource).agents;
     if (!Array.isArray(list)) continue;
     for (const agent of list) {
       const a = asRecord(agent);
       agents.push({
-        name: typeof a['name'] === 'string' ? a['name'] : '',
-        status: typeof a['status'] === 'string' ? a['status'] : 'connecting',
-        lifecycleState:
-          typeof a['lifecycle_state'] === 'string' ? a['lifecycle_state'] : 'created',
+        name: typeof a.name === 'string' ? a.name : '',
+        status: typeof a.status === 'string' ? a.status : 'connecting',
+        lifecycleState: typeof a.lifecycle_state === 'string' ? a.lifecycle_state : 'created',
       });
     }
   }
   return {
-    name: typeof ws['name'] === 'string' ? ws['name'] : '',
-    buildStatus: typeof build['status'] === 'string' ? build['status'] : 'pending',
-    transition: typeof build['transition'] === 'string' ? build['transition'] : 'start',
+    name: typeof ws.name === 'string' ? ws.name : '',
+    buildStatus: typeof build.status === 'string' ? build.status : 'pending',
+    transition: typeof build.transition === 'string' ? build.transition : 'start',
     agents,
   };
 }
@@ -242,7 +241,7 @@ export function parsePresetList(json: unknown): PresetInfo[] {
   if (!Array.isArray(json)) return [];
   return json.map((entry) => {
     const record = asRecord(entry);
-    const preset = asRecord(record['TemplatePreset'] ?? record);
+    const preset = asRecord(record.TemplatePreset ?? record);
     const name = pickString(preset, 'Name', 'name') ?? '';
     const description = pickString(preset, 'Description', 'description');
     return {
@@ -254,9 +253,7 @@ export function parsePresetList(json: unknown): PresetInfo[] {
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
-  return typeof value === 'object' && value !== null
-    ? (value as Record<string, unknown>)
-    : {};
+  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
 }
 
 function pickString(record: Record<string, unknown>, ...keys: string[]): string | undefined {
@@ -298,8 +295,7 @@ export class CoderCliTransport implements CoderTransport {
     this.#loginShell = options.loginShell ?? true;
     this.#waitMode = options.waitMode ?? 'no';
     this.#silenceProxyStderr = options.silenceProxyStderr ?? true;
-    this.#portForwardTimeoutMs =
-      options.portForwardTimeoutMs ?? DEFAULT_PORT_FORWARD_TIMEOUT_MS;
+    this.#portForwardTimeoutMs = options.portForwardTimeoutMs ?? DEFAULT_PORT_FORWARD_TIMEOUT_MS;
   }
 
   #childEnv(): NodeJS.ProcessEnv {
@@ -365,12 +361,7 @@ export class CoderCliTransport implements CoderTransport {
     });
 
     try {
-      await waitForLocalPort(
-        localPort,
-        child,
-        this.#portForwardTimeoutMs,
-        options.abortSignal,
-      );
+      await waitForLocalPort(localPort, child, this.#portForwardTimeoutMs, options.abortSignal);
     } catch (error) {
       try {
         child.kill('SIGTERM');
@@ -413,10 +404,7 @@ export class CoderCliTransport implements CoderTransport {
     await this.#runLifecycle(['delete', workspace, '--yes'], workspace, 'delete', options);
   }
 
-  async status(
-    workspace: string,
-    options?: LifecycleOptions,
-  ): Promise<WorkspaceStatus | null> {
+  async status(workspace: string, options?: LifecycleOptions): Promise<WorkspaceStatus | null> {
     const { owner, name } = parseWorkspaceRef(workspace);
     const result = await this.#run(
       this.#coderBinary,
@@ -425,9 +413,9 @@ export class CoderCliTransport implements CoderTransport {
     );
     if (result.exitCode !== 0) {
       throw new Error(
-        `coder list (${workspace}) failed (exit ${result.exitCode}): ${
-          (result.stderr || result.stdout).trim()
-        }`,
+        `coder list (${workspace}) failed (exit ${result.exitCode}): ${(
+          result.stderr || result.stdout
+        ).trim()}`,
       );
     }
     let parsed: unknown;
@@ -465,9 +453,9 @@ export class CoderCliTransport implements CoderTransport {
     });
     if (result.exitCode !== 0) {
       throw new Error(
-        `coder templates presets list ${options.template} failed (exit ${result.exitCode}): ${
-          (result.stderr || result.stdout).trim()
-        }`,
+        `coder templates presets list ${options.template} failed (exit ${result.exitCode}): ${(
+          result.stderr || result.stdout
+        ).trim()}`,
       );
     }
     try {
@@ -492,9 +480,9 @@ export class CoderCliTransport implements CoderTransport {
     });
     if (result.exitCode !== 0) {
       throw new Error(
-        `coder ${verb} ${workspace} failed (exit ${result.exitCode}): ${
-          (result.stderr || result.stdout).trim()
-        }`,
+        `coder ${verb} ${workspace} failed (exit ${result.exitCode}): ${(
+          result.stderr || result.stdout
+        ).trim()}`,
       );
     }
   }
@@ -628,9 +616,7 @@ function waitForLocalPort(
       fn();
     };
     const onClose = (code: number | null) =>
-      settle(() =>
-        reject(new Error(`coder port-forward exited early (code ${code ?? 'null'})`)),
-      );
+      settle(() => reject(new Error(`coder port-forward exited early (code ${code ?? 'null'})`)));
     const onError = (error: Error) => settle(() => reject(error));
     const onAbort = () => settle(() => reject(abortSignal?.reason ?? new Error('aborted')));
 

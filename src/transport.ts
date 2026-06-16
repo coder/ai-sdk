@@ -43,6 +43,10 @@ export interface CoderTransport {
  * Workspace-level build status (`latest_build.status` in the Coder API) — the
  * computed state of the workspace, not the raw provisioner-job status. A fully
  * started workspace reports `'running'`.
+ *
+ * The trailing `string & Record<never, never>` arm accepts statuses from newer
+ * Coder versions while preserving editor autocomplete for the known values (the
+ * same idiom is used by the other status unions below).
  */
 export type WorkspaceBuildStatus =
   | 'pending'
@@ -55,8 +59,7 @@ export type WorkspaceBuildStatus =
   | 'canceled'
   | 'deleting'
   | 'deleted'
-  // eslint-disable-next-line @typescript-eslint/ban-types
-  | (string & {});
+  | (string & Record<never, never>);
 
 /** Connectivity of a workspace agent (`agent.status`). */
 export type WorkspaceAgentStatus =
@@ -64,8 +67,7 @@ export type WorkspaceAgentStatus =
   | 'connected'
   | 'disconnected'
   | 'timeout'
-  // eslint-disable-next-line @typescript-eslint/ban-types
-  | (string & {});
+  | (string & Record<never, never>);
 
 /** Startup-script lifecycle of a workspace agent (`agent.lifecycle_state`). */
 export type WorkspaceAgentLifecycle =
@@ -78,8 +80,7 @@ export type WorkspaceAgentLifecycle =
   | 'shutdown_timeout'
   | 'shutdown_error'
   | 'off'
-  // eslint-disable-next-line @typescript-eslint/ban-types
-  | (string & {});
+  | (string & Record<never, never>);
 
 export interface WorkspaceAgentInfo {
   /** Agent name (e.g. `main`). */
@@ -96,7 +97,7 @@ export interface WorkspaceStatus {
   /** Workspace-level build status (`latest_build.status`). */
   buildStatus: WorkspaceBuildStatus;
   /** Direction of the latest build: `'start' | 'stop' | 'delete'`. */
-  transition: 'start' | 'stop' | 'delete' | (string & {});
+  transition: 'start' | 'stop' | 'delete' | (string & Record<never, never>);
   /** Agents across the latest build's resources. */
   agents: WorkspaceAgentInfo[];
 }

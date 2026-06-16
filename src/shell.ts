@@ -44,9 +44,7 @@ export function buildRemoteScript(options: RemoteCommandOptions): string {
 
   const envEntries = Object.entries(options.env ?? {});
   if (envEntries.length > 0) {
-    const assignments = envEntries
-      .map(([key, value]) => `${key}=${shellQuote(value)}`)
-      .join(' ');
+    const assignments = envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`).join(' ');
     segments.push(`env ${assignments} bash -c ${shellQuote(options.command)}`);
   } else {
     segments.push(options.command);

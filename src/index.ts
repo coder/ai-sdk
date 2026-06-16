@@ -1,45 +1,41 @@
 export {
-  createCoderWorkspace,
+  buildCreateArgs,
+  buildLocalForwardArgs,
+  buildSshArgs,
+  CoderCliTransport,
+  type CoderCliTransportOptions,
+  parsePresetList,
+  parsePresetsOutput,
+  parseWorkspaceRef,
+  parseWorkspaceStatus,
+} from './cli-transport.js';
+export {
   CODER_WORKSPACE_PROVIDER_ID,
-  type CoderWorkspaceSettings,
+  type CoderCreateSettings,
   type CoderWorkspaceBaseSettings,
   type CoderWorkspaceRef,
-  type CoderCreateSettings,
+  type CoderWorkspaceSettings,
+  createCoderWorkspace,
 } from './coder-workspace-provider.js';
-
 export {
   CoderWorkspaceSession,
   type CoderWorkspaceSessionConfig,
 } from './coder-workspace-session.js';
-
-export {
-  CoderCliTransport,
-  type CoderCliTransportOptions,
-  buildSshArgs,
-  buildLocalForwardArgs,
-  buildCreateArgs,
-  parseWorkspaceRef,
-  parseWorkspaceStatus,
-  parsePresetList,
-  parsePresetsOutput,
-} from './cli-transport.js';
-
+export { buildRemoteScript, type RemoteCommandOptions, shellQuote } from './shell.js';
 export type {
   CoderTransport,
-  TransportExecOptions,
+  CreateWorkspaceOptions,
   ExecResult,
-  SpawnedProcess,
-  PortForward,
   ForwardPortOptions,
   LifecycleOptions,
-  WorkspaceStatus,
-  WorkspaceBuildStatus,
-  WorkspaceAgentInfo,
-  WorkspaceAgentStatus,
-  WorkspaceAgentLifecycle,
-  CreateWorkspaceOptions,
   ListPresetsOptions,
+  PortForward,
   PresetInfo,
+  SpawnedProcess,
+  TransportExecOptions,
+  WorkspaceAgentInfo,
+  WorkspaceAgentLifecycle,
+  WorkspaceAgentStatus,
+  WorkspaceBuildStatus,
+  WorkspaceStatus,
 } from './transport.js';
-
-export { shellQuote, buildRemoteScript, type RemoteCommandOptions } from './shell.js';

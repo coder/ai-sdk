@@ -1,8 +1,8 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import net from 'node:net';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CoderCliTransport } from '../src/cli-transport.js';
 import { createCoderWorkspace } from '../src/coder-workspace-provider.js';
 import * as fileIo from '../src/file-io.js';

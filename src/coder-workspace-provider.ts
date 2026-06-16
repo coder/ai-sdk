@@ -19,8 +19,8 @@ const READY_POLL_INTERVAL_MS = 2_000;
 const DEFAULT_NAME_PREFIX = 'agent';
 
 /**
- * Settings for creating a workspace on demand from a template. Provide a
- * {@link CoderWorkspaceSettings.create} block to enable "create mode": the
+ * Settings for creating a workspace on demand from a template. Set this as the
+ * `create` field on {@link CoderWorkspaceSettings} to enable "create mode": the
  * provider will get-or-create a workspace (rather than only wrapping an existing
  * one) and wait for its agent to become ready before running the harness.
  */
@@ -56,8 +56,8 @@ export interface CoderCreateSettings {
   /**
    * Owner for an auto-derived workspace name (`owner/name`). Only applied when
    * the name is derived from the sessionId; when you pass an explicit
-   * {@link CoderWorkspaceSettings.workspace} string, include the owner there.
-   * Defaults to the authenticated user.
+   * `workspace` string, include the owner there. Defaults to the authenticated
+   * user.
    */
   owner?: string;
   /**
@@ -78,22 +78,14 @@ export interface CoderCreateSettings {
   validate?: boolean;
 }
 
-export interface CoderWorkspaceSettings {
-  /**
-   * The workspace to wrap, as `[owner/]workspace[.agent]`. Either a fixed name
-   * or a resolver from the harness `sessionId`. If omitted: in create mode a
-   * fresh per-session name is derived from the sessionId; otherwise the
-   * `sessionId` itself is used as the workspace name.
-   */
-  workspace?: string | ((sessionId: string | undefined) => string);
+/**
+ * A workspace reference: a fixed `[owner/]workspace[.agent]`, or a resolver from
+ * the harness `sessionId`.
+ */
+export type CoderWorkspaceRef = string | ((sessionId: string | undefined) => string);
 
-  /**
-   * Create a workspace on demand from a template instead of requiring one to
-   * exist. See {@link CoderCreateSettings}. When set, the provider get-or-creates
-   * the workspace and waits for its agent to be ready.
-   */
-  create?: CoderCreateSettings;
-
+/** Settings common to every {@link createCoderWorkspace} configuration. */
+export interface CoderWorkspaceBaseSettings {
   /** Max time (ms) to wait for the agent to become ready after create/start. Default 300000. */
   readyTimeoutMs?: number;
 
@@ -127,26 +119,45 @@ export interface CoderWorkspaceSettings {
   ensureStarted?: boolean;
 
   /**
-   * Inject a custom transport (e.g. for tests, or a non-CLI backend). When
-   * omitted, a {@link CoderCliTransport} is created from the CLI options below.
+   * Transport used to reach Coder. Defaults to a {@link CoderCliTransport} that
+   * shells out to an ambient `coder` login. To configure the CLI transport —
+   * binary paths, `url`/`token`, extra env, login shell, startup-wait behavior —
+   * construct one explicitly, e.g. `transport: new CoderCliTransport({ url, token })`.
+   * You can also supply a non-CLI transport (REST, tests, …).
    */
   transport?: CoderTransport;
-
-  /** Path or name of the coder binary. Default: `coder`. */
-  coderBinary?: string;
-  /** Path or name of the OpenSSH client used for exec/spawn. Default: `ssh`. */
-  sshBinary?: string;
-  /** Coder deployment URL; sets `CODER_URL`. Falls back to ambient `coder login`. */
-  url?: string;
-  /** Coder session token; sets `CODER_SESSION_TOKEN`. Falls back to ambient login. */
-  token?: string;
-  /** Extra environment merged into every `coder`/`ssh` invocation. */
-  env?: Record<string, string>;
-  /** Use a bash login shell for remote commands (PATH resolution). Default `true`. */
-  loginShell?: boolean;
-  /** Coder startup-script wait behavior for proxied connections. Default `'no'`. */
-  waitMode?: 'yes' | 'no' | 'auto';
 }
+
+/**
+ * Settings for {@link createCoderWorkspace}. **At least one of `workspace` or
+ * `create` is required** — and you may set both:
+ * - `workspace` only — wrap an existing workspace.
+ * - `create` only — create a fresh per-session workspace from a template (its
+ *   name is derived from the harness `sessionId`), deleted on `destroy()`.
+ * - both — get-or-create the named `workspace` from the template.
+ */
+export type CoderWorkspaceSettings = CoderWorkspaceBaseSettings &
+  (
+    | {
+      /**
+       * The workspace to use, as `[owner/]workspace[.agent]` — a fixed name or
+       * a resolver from the harness `sessionId`. With `create` it is
+       * get-or-created; otherwise it must already exist.
+       */
+      workspace: CoderWorkspaceRef;
+      /** Optionally create the workspace from a template if it doesn't exist. */
+      create?: CoderCreateSettings;
+    }
+    | {
+      /**
+       * Optional explicit workspace name/resolver. Omit to derive a fresh
+       * per-session name from the harness `sessionId`.
+       */
+      workspace?: CoderWorkspaceRef;
+      /** Create the workspace on demand from a template. See {@link CoderCreateSettings}. */
+      create: CoderCreateSettings;
+    }
+  );
 
 /**
  * Create a {@link HarnessV1SandboxProvider} that runs harness sessions inside a
@@ -166,19 +177,9 @@ export interface CoderWorkspaceSettings {
  * ```
  */
 export function createCoderWorkspace(
-  settings: CoderWorkspaceSettings = {},
+  settings: CoderWorkspaceSettings,
 ): HarnessV1SandboxProvider {
-  const transport: CoderTransport =
-    settings.transport ??
-    new CoderCliTransport({
-      coderBinary: settings.coderBinary,
-      sshBinary: settings.sshBinary,
-      url: settings.url,
-      token: settings.token,
-      env: settings.env,
-      loginShell: settings.loginShell,
-      waitMode: settings.waitMode,
-    });
+  const transport: CoderTransport = settings.transport ?? new CoderCliTransport();
 
   const ports = settings.ports ?? [DEFAULT_BRIDGE_PORT];
   const createMode = settings.create !== undefined;
@@ -195,10 +196,9 @@ export function createCoderWorkspace(
       const owner = settings.create!.owner;
       return owner !== undefined && owner !== '' ? `${owner}/${name}` : name;
     }
-    if (sessionId !== undefined && sessionId !== '') return sessionId;
-    throw new Error(
-      'createCoderWorkspace: a `workspace` is required when no sessionId is provided to derive one from.',
-    );
+    // Unreachable for typed callers — the settings type requires `workspace` or
+    // `create`. This guards untyped / `as`-cast usage.
+    throw new Error('createCoderWorkspace: set `workspace`, `create`, or both.');
   };
 
   /** Resolve whether this session owns its workspace's lifecycle. */
@@ -375,7 +375,7 @@ async function validatePreset(
     const available = presets.map((preset) => `"${preset.name}"`).join(', ');
     throw new Error(
       `createCoderWorkspace: preset "${create.preset}" not found for template ` +
-        `"${create.template}". Available presets: ${available || '(none)'}.`,
+      `"${create.template}". Available presets: ${available || '(none)'}.`,
     );
   }
 }
@@ -393,7 +393,7 @@ async function waitForReady(
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let last = 'unknown';
-  for (;;) {
+  for (; ;) {
     if (abortSignal?.aborted) throw abortSignal.reason ?? new Error('aborted');
     const status = await transport.status(workspace, { abortSignal });
     if (status !== null) {
@@ -415,7 +415,7 @@ async function waitForReady(
       if (errored) {
         throw new Error(
           `createCoderWorkspace: workspace "${workspace}" agent "${errored.name || '?'}" ` +
-            `failed to start (lifecycle: ${errored.lifecycleState}).`,
+          `failed to start (lifecycle: ${errored.lifecycleState}).`,
         );
       }
       if (
@@ -428,7 +428,7 @@ async function waitForReady(
     if (Date.now() >= deadline) {
       throw new Error(
         `createCoderWorkspace: timed out after ${timeoutMs}ms waiting for workspace ` +
-          `"${workspace}" to become ready (last status: ${last}).`,
+        `"${workspace}" to become ready (last status: ${last}).`,
       );
     }
     await delay(READY_POLL_INTERVAL_MS, abortSignal);
@@ -440,7 +440,7 @@ function deriveWorkspaceName(prefix: string, sessionId: string | undefined): str
   if (sessionId === undefined || sessionId === '') {
     throw new Error(
       'createCoderWorkspace: create mode needs either an explicit `workspace` or a ' +
-        'sessionId to derive a fresh per-session workspace name from.',
+      'sessionId to derive a fresh per-session workspace name from.',
     );
   }
   const hash = createHash('sha1').update(sessionId).digest('hex').slice(0, 12);

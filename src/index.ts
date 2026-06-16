@@ -2,6 +2,8 @@ export {
   createCoderWorkspace,
   CODER_WORKSPACE_PROVIDER_ID,
   type CoderWorkspaceSettings,
+  type CoderWorkspaceBaseSettings,
+  type CoderWorkspaceRef,
   type CoderCreateSettings,
 } from './coder-workspace-provider.js';
 

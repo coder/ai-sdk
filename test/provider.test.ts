@@ -141,18 +141,18 @@ describe('createCoderWorkspace', () => {
     expect(session.id).toBe('ws-abc');
   });
 
-  it('falls back to using the sessionId as the workspace name', async () => {
-    const provider = createCoderWorkspace({
-      transport: new MockTransport(),
-      defaultWorkingDirectory: '/w',
-    });
-    const session = await provider.createSession!({ sessionId: 'session-1' });
-    expect(session.id).toBe('session-1');
-  });
-
-  it('throws when no workspace and no sessionId are available', async () => {
-    const provider = createCoderWorkspace({ transport: new MockTransport() });
-    await expect(provider.createSession()).rejects.toThrow(/workspace/);
+  it('requires `workspace` or `create` at the type level', () => {
+    const transport = new MockTransport();
+    // Valid: workspace only, create only, or both.
+    expect(createCoderWorkspace({ workspace: 'ws', transport })).toBeDefined();
+    expect(createCoderWorkspace({ create: { template: 'docker' }, transport })).toBeDefined();
+    expect(
+      createCoderWorkspace({ workspace: 'ws', create: { template: 'docker' }, transport }),
+    ).toBeDefined();
+    // @ts-expect-error neither `workspace` nor `create` is provided
+    createCoderWorkspace({ transport });
+    // @ts-expect-error empty settings
+    createCoderWorkspace({});
   });
 
   it('resolves the default working directory from $HOME when not provided', async () => {

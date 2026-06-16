@@ -589,7 +589,7 @@ function nodeReadableToWebStream(readable: Readable | null): ReadableStream<Uint
       },
     });
   }
-  return Readable.toWeb(readable) as unknown as ReadableStream<Uint8Array>;
+  return Readable.toWeb(readable);
 }
 
 /** Reserve an ephemeral local TCP port by binding then releasing it. */

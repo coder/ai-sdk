@@ -58,7 +58,8 @@ npm add @coder/ai-sdk-sandbox @ai-sdk/harness@canary @ai-sdk/harness-claude-code
 On the host you also need:
 
 - the [`coder` CLI](https://coder.com/docs/install) on PATH and authenticated
-  (`coder login`), or pass `url` + `token` to `createCoderWorkspace`;
+  (`coder login`); for non-ambient auth, configure the transport explicitly with
+  `new CoderCliTransport({ url, token })` (see [Settings](#settings));
 - an **OpenSSH client** (`ssh`) on PATH — exec runs through it (see "How it works").
 
 ## Quick start
@@ -178,30 +179,31 @@ Because the bridge runs inside the workspace, the workspace image must have:
 
 ## Settings
 
+**At least one of `workspace` or `create` is required** (you may set both — see
+[Creating workspaces on demand](#creating-workspaces-on-demand)).
+
 ```ts
+import { createCoderWorkspace, CoderCliTransport } from '@coder/ai-sdk-sandbox';
+
 createCoderWorkspace({
-  // Which workspace to use: a fixed name, or a resolver from the harness sessionId.
-  // In create mode, omit it to derive a fresh per-session name; otherwise it
-  // falls back to using the sessionId as the workspace name.
-  workspace: 'my-ws',                       // or: (sessionId) => `agent-${sessionId}`
-
+  // One of these is required (TypeScript enforces it):
+  workspace: 'my-ws',                       // fixed name, or (sessionId) => `agent-${sessionId}`
   create: undefined,                        // create from a template; see "Creating workspaces"
-  readyTimeoutMs: 300_000,                  // wait budget for the agent to become ready
 
+  readyTimeoutMs: 300_000,                  // wait budget for the agent to become ready
   ports: [4000],                            // exposed ports; ports[0] is the bridge port
   defaultWorkingDirectory: '/home/coder',   // default: resolved from $HOME, else /home/coder
   ownsLifecycle: false,                     // see "Lifecycle modes" below
   ensureStarted: false,                     // run `coder start` before attaching
 
-  // coder CLI options (used by the default transport):
-  coderBinary: 'coder',
-  url: process.env.CODER_URL,               // sets CODER_URL; else ambient `coder login`
-  token: process.env.CODER_SESSION_TOKEN,   // sets CODER_SESSION_TOKEN
-  env: {},                                  // extra env for every `coder` call
-  loginShell: true,                         // remote commands run via `bash -lc`
-
-  // Advanced: inject your own transport (tests / non-CLI backends).
-  transport: undefined,
+  // Transport. Defaults to an ambient-login CoderCliTransport. Configure the CLI
+  // transport (binary paths, url/token, env, login shell, wait mode) — or supply
+  // a non-CLI/test transport — by constructing one explicitly:
+  transport: new CoderCliTransport({
+    // coderBinary: 'coder', sshBinary: 'ssh',
+    // url: process.env.CODER_URL, token: process.env.CODER_SESSION_TOKEN,
+    // env: {}, loginShell: true, waitMode: 'no',
+  }),
 });
 ```
 

@@ -173,9 +173,7 @@ describe('createCoderWorkspace create mode (via fake coder + ssh)', () => {
     const provider = createCoderWorkspace({
       workspace: name,
       create: { template: 'docker' },
-      coderBinary: fakeCoder.path,
-      sshBinary: fakeSsh.path,
-      loginShell: false,
+      transport, // the shared fake-coder/fake-ssh-backed CoderCliTransport
       defaultWorkingDirectory: '/tmp',
     });
     const session = await provider.createSession!({ sessionId: 'sx' });

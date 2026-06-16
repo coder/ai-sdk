@@ -1,7 +1,11 @@
 name: CI
 
 on:
+  # PRs are covered by `pull_request`; the queue by `merge_group`. Restricting
+  # `push` to main avoids a duplicate run on every PR branch (push + pull_request)
+  # while still validating main after a merge-queue merge.
   push:
+    branches: [main]
   pull_request:
   merge_group:
 
@@ -34,15 +38,18 @@ jobs:
       - run: npx publint
       - run: npm run attw
 
-  # Single, stable required status check for branch protection. Green only if
-  # every `build` matrix job succeeded — so the ruleset can require one context
-  # ("Required") regardless of how the matrix expands, and it runs in the merge
-  # queue (merge_group) too.
+  # Single, stable required status check for branch protection. Runs after the
+  # whole `build` matrix (needs: [build]) and is green only if every leg
+  # succeeded — `needs.build.result` is the matrix's aggregate result, so this
+  # is 'success' iff all legs passed (else failure/cancelled/skipped). Lets the
+  # ruleset require one context ("Required") regardless of matrix size; runs in
+  # the merge queue (merge_group) too.
   Required:
     if: ${{ always() }}
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - name: Fail if any required job did not succeed
-        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
-        run: exit 1
+      - name: Verify the build matrix succeeded
+        run: |
+          echo "build matrix result: ${{ needs.build.result }}"
+          test "${{ needs.build.result }}" = "success"

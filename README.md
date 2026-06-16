@@ -14,43 +14,6 @@ you pass it as the `sandbox` to a `HarnessAgent` exactly like
 > `@canary` tag and their APIs can change between releases. This provider tracks
 > `@ai-sdk/harness@1.0.0-canary.11`.
 
-## How it works
-
-A `HarnessAgent` doesn't run the agent CLI directly. For bridge-backed adapters
-(Claude Code, Codex) it installs a small Node "bridge" program **inside the
-sandbox**, spawns it, and talks to it over an **authenticated WebSocket**. The
-bridge runs the vendor SDK in-workspace and streams events back to the host.
-
-This provider maps that contract onto Coder primitives:
-
-| Harness contract | Coder implementation |
-| --- | --- |
-| `run` / `spawn` | OpenSSH `bash -lc '…'` over a `coder ssh --stdio` ProxyCommand |
-| `readFile` / `writeFile` / `read*`/`write*` | base64 piped over the SSH connection (binary-safe) |
-| `getPortUrl({ port, protocol })` | OpenSSH `-L <local>:127.0.0.1:<port>` over the same ProxyCommand → `ws://127.0.0.1:<local>` |
-| `ports` / `setPorts` | the workspace's exposed port set |
-| `createSession` / `resumeSession` / `id` | attach to a workspace by name |
-| `stop` / `destroy` | `coder stop` / `coder delete` (only when it owns the lifecycle) |
-
-**Why OpenSSH and not `coder ssh <ws> -- cmd`?** `coder ssh` allocates a PTY for
-the command, which rewrites newlines to CRLF, merges stdout and stderr onto one
-stream, and does not reliably propagate exit codes — all fatal for programmatic
-use and for the bridge's stdout parsing. `coder ssh`'s own help recommends
-`coder config-ssh` "for users who need the full functionality of SSH"; this
-provider does the programmatic equivalent, running real OpenSSH over a
-`coder ssh --stdio` ProxyCommand. That yields clean, separated streams and
-correct exit codes (verified against a live workspace).
-
-The WebSocket the harness opens against `getPortUrl(...)` is the critical path,
-and it needs no wildcard access URLs — the host running `HarnessAgent` is already
-a Coder client. We forward via OpenSSH `-L` rather than `coder port-forward`:
-the bridge sends an *unprompted* `bridge-hello` frame immediately after the WS
-upgrade, and in testing a freshly-created `coder port-forward` tunnel did not
-reliably deliver that first server-initiated frame to the first WS client,
-whereas SSH local forwarding does. This path is verified end-to-end against a
-real workspace — both a synthetic WebSocket round-trip (`scripts/verify-real.ts`)
-and a full Claude Code turn with tool use (`scripts/e2e-claude.ts`).
-
 ## Install
 
 ```bash
@@ -280,6 +243,43 @@ via `ports` (default `[4000]`); `getPortUrl` opens an OpenSSH `-L` local forward
 (over the same `coder ssh --stdio` ProxyCommand) to it on demand and returns a
 loopback `ws://` URL. The forward is plaintext on loopback, so `https`/`wss`
 requests resolve to their `http`/`ws` loopback equivalent.
+
+## How it works
+
+A `HarnessAgent` doesn't run the agent CLI directly. For bridge-backed adapters
+(Claude Code, Codex) it installs a small Node "bridge" program **inside the
+sandbox**, spawns it, and talks to it over an **authenticated WebSocket**. The
+bridge runs the vendor SDK in-workspace and streams events back to the host.
+
+This provider maps that contract onto Coder primitives:
+
+| Harness contract | Coder implementation |
+| --- | --- |
+| `run` / `spawn` | OpenSSH `bash -lc '…'` over a `coder ssh --stdio` ProxyCommand |
+| `readFile` / `writeFile` / `read*`/`write*` | base64 piped over the SSH connection (binary-safe) |
+| `getPortUrl({ port, protocol })` | OpenSSH `-L <local>:127.0.0.1:<port>` over the same ProxyCommand → `ws://127.0.0.1:<local>` |
+| `ports` / `setPorts` | the workspace's exposed port set |
+| `createSession` / `resumeSession` / `id` | attach to a workspace by name |
+| `stop` / `destroy` | `coder stop` / `coder delete` (only when it owns the lifecycle) |
+
+**Why OpenSSH and not `coder ssh <ws> -- cmd`?** `coder ssh` allocates a PTY for
+the command, which rewrites newlines to CRLF, merges stdout and stderr onto one
+stream, and does not reliably propagate exit codes — all fatal for programmatic
+use and for the bridge's stdout parsing. `coder ssh`'s own help recommends
+`coder config-ssh` "for users who need the full functionality of SSH"; this
+provider does the programmatic equivalent, running real OpenSSH over a
+`coder ssh --stdio` ProxyCommand. That yields clean, separated streams and
+correct exit codes (verified against a live workspace).
+
+The WebSocket the harness opens against `getPortUrl(...)` is the critical path,
+and it needs no wildcard access URLs — the host running `HarnessAgent` is already
+a Coder client. We forward via OpenSSH `-L` rather than `coder port-forward`:
+the bridge sends an *unprompted* `bridge-hello` frame immediately after the WS
+upgrade, and in testing a freshly-created `coder port-forward` tunnel did not
+reliably deliver that first server-initiated frame to the first WS client,
+whereas SSH local forwarding does. This path is verified end-to-end against a
+real workspace — both a synthetic WebSocket round-trip (`scripts/verify-real.ts`)
+and a full Claude Code turn with tool use (`scripts/e2e-claude.ts`).
 
 ## Limitations & notes
 

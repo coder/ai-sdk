@@ -2,12 +2,33 @@
   "name": "@coder/ai-sdk-agent",
   "version": "0.1.0",
   "description": "A Vercel AI SDK-compliant agent (and chat transport) for Coder chatd. `new CoderAgent()` returns an AI SDK Agent backed by a remote Coder agent runtime.",
+  "keywords": [
+    "agent",
+    "ai",
+    "ai-sdk",
+    "chatd",
+    "coder",
+    "llm",
+    "streaming",
+    "tools",
+    "vercel-ai-sdk"
+  ],
+  "homepage": "https://github.com/coder/ai-sdk-agent#readme",
+  "bugs": {
+    "url": "https://github.com/coder/ai-sdk-agent/issues"
+  },
   "license": "Apache-2.0",
+  "author": "Coder Technologies, Inc. (https://coder.com)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coder/ai-sdk-agent.git"
+  },
   "files": [
     "dist",
     "README.md"
   ],
   "type": "module",
+  "sideEffects": false,
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -16,6 +37,9 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     }
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsup",

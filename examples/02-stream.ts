@@ -15,7 +15,9 @@ const agent = new CoderAgent({
 
 try {
   heading("stream()");
-  const result = await agent.stream({ prompt: "Describe a sunrise over the mountains in three sentences." });
+  const result = await agent.stream({
+    prompt: "Describe a sunrise over the mountains in three sentences.",
+  });
 
   process.stdout.write("\n");
   for await (const delta of result.textStream) process.stdout.write(delta);

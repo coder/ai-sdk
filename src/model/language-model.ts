@@ -10,11 +10,21 @@ import type {
 import { CoderAgentError, CoderChatError } from "../errors.js";
 import { CoderChatClient } from "../coder/client.js";
 import type { CreateChatRequest } from "../coder/types.js";
-import { classifyTurnAction, dynamicToolNames, extractSystemPrompt, toolsToDynamicTools } from "./prompt.js";
+import {
+  classifyTurnAction,
+  dynamicToolNames,
+  extractSystemPrompt,
+  toolsToDynamicTools,
+} from "./prompt.js";
 import { TurnTranslator } from "./translate.js";
 
 const EMPTY_USAGE: LanguageModelV3Usage = {
-  inputTokens: { total: undefined, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+  inputTokens: {
+    total: undefined,
+    noCache: undefined,
+    cacheRead: undefined,
+    cacheWrite: undefined,
+  },
   outputTokens: { total: undefined, text: undefined, reasoning: undefined },
 };
 
@@ -82,13 +92,18 @@ export class CoderLanguageModel implements LanguageModelV3 {
   async #resolveModelConfigId(signal?: AbortSignal): Promise<string | undefined> {
     if (this.#modelResolved) return this.#resolvedModelConfigId;
     if (this.#config.model) {
-      this.#resolvedModelConfigId = await this.#config.client.resolveModelConfigId(this.#config.model, signal);
+      this.#resolvedModelConfigId = await this.#config.client.resolveModelConfigId(
+        this.#config.model,
+        signal,
+      );
     }
     this.#modelResolved = true;
     return this.#resolvedModelConfigId;
   }
 
-  async *#runTurn(options: LanguageModelV3CallOptions): AsyncGenerator<LanguageModelV3StreamPart, void, void> {
+  async *#runTurn(
+    options: LanguageModelV3CallOptions,
+  ): AsyncGenerator<LanguageModelV3StreamPart, void, void> {
     // A single model instance owns one chatd session's mutable state, so it is
     // single-flight: reject overlapping turns rather than silently corrupting
     // chatId / lastSeenMessageId / submitted tool-call tracking.
@@ -134,15 +149,21 @@ export class CoderLanguageModel implements LanguageModelV3 {
         } else {
           const resp = await this.#config.client.createChatMessage(
             this.#chatId,
-            { content: action.content, ...(modelConfigId ? { model_config_id: modelConfigId } : {}) },
+            {
+              content: action.content,
+              ...(modelConfigId ? { model_config_id: modelConfigId } : {}),
+            },
             signal,
           );
           afterId = resp.message?.id ?? this.#lastSeenMessageId;
         }
       } else {
         // resume
-        if (!this.#chatId) throw new CoderChatError({ message: "cannot submit tool results before a chat exists" });
-        const fresh = action.toolResults.filter((r) => !this.#submittedToolCallIds.has(r.tool_call_id));
+        if (!this.#chatId)
+          throw new CoderChatError({ message: "cannot submit tool results before a chat exists" });
+        const fresh = action.toolResults.filter(
+          (r) => !this.#submittedToolCallIds.has(r.tool_call_id),
+        );
         if (fresh.length > 0) {
           await this.#config.client.submitToolResults(this.#chatId, { results: fresh }, signal);
           for (const r of fresh) this.#submittedToolCallIds.add(r.tool_call_id);
@@ -171,7 +192,8 @@ export class CoderLanguageModel implements LanguageModelV3 {
       }
 
       for (const part of translator.finish()) yield part;
-      if (translator.maxMessageId > this.#lastSeenMessageId) this.#lastSeenMessageId = translator.maxMessageId;
+      if (translator.maxMessageId > this.#lastSeenMessageId)
+        this.#lastSeenMessageId = translator.maxMessageId;
     } finally {
       this.#inFlight = false;
     }
@@ -201,7 +223,10 @@ export class CoderLanguageModel implements LanguageModelV3 {
     const textBuf = new Map<string, string>();
     const reasoningBuf = new Map<string, string>();
     let usage: LanguageModelV3Usage = EMPTY_USAGE;
-    let finishReason: LanguageModelV3GenerateResult["finishReason"] = { unified: "stop", raw: undefined };
+    let finishReason: LanguageModelV3GenerateResult["finishReason"] = {
+      unified: "stop",
+      raw: undefined,
+    };
     const warnings: LanguageModelV3GenerateResult["warnings"] = [];
 
     for await (const part of this.#runTurn(options)) {
@@ -244,7 +269,9 @@ export class CoderLanguageModel implements LanguageModelV3 {
           finishReason = part.finishReason;
           break;
         case "error":
-          throw part.error instanceof Error ? part.error : new CoderChatError({ message: String(part.error) });
+          throw part.error instanceof Error
+            ? part.error
+            : new CoderChatError({ message: String(part.error) });
         default:
           break;
       }

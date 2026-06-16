@@ -17,7 +17,9 @@ const agent = new CoderAgent({
 try {
   heading("multi-turn session");
 
-  const turn1 = await agent.generate({ prompt: "Remember that my favorite color is teal. Reply with just 'ok'." });
+  const turn1 = await agent.generate({
+    prompt: "Remember that my favorite color is teal. Reply with just 'ok'.",
+  });
   console.log("Turn 1:", turn1.text);
   console.log("  chat:", agent.chatId);
 
@@ -25,7 +27,8 @@ try {
   console.log("Turn 2:", turn2.text);
   console.log("  chat:", agent.chatId, "(same chat reused as a session)");
 
-  if (/teal/i.test(turn2.text)) console.log("\n✓ The agent remembered across turns via server-side history.");
+  if (/teal/i.test(turn2.text))
+    console.log("\n✓ The agent remembered across turns via server-side history.");
 } finally {
   await agent.archive();
 }

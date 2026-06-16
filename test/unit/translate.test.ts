@@ -2,8 +2,17 @@ import { describe, expect, it } from "vitest";
 import { TurnTranslator } from "../../src/model/translate.js";
 import type { ChatStreamEvent, ChatMessage, ChatMessagePart } from "../../src/coder/types.js";
 
-function msg(id: number, role: ChatMessage["role"], content: ChatMessagePart[], usage?: ChatMessage["usage"]): ChatStreamEvent {
-  return { type: "message", chat_id: "c", message: { id, chat_id: "c", role, created_at: "", content, usage } };
+function msg(
+  id: number,
+  role: ChatMessage["role"],
+  content: ChatMessagePart[],
+  usage?: ChatMessage["usage"],
+): ChatStreamEvent {
+  return {
+    type: "message",
+    chat_id: "c",
+    message: { id, chat_id: "c", role, created_at: "", content, usage },
+  };
 }
 function part(role: "assistant" | "tool", p: ChatMessagePart): ChatStreamEvent {
   return { type: "message_part", chat_id: "c", message_part: { role, part: p } };
@@ -27,7 +36,10 @@ describe("TurnTranslator — snapshot (fast) mode", () => {
   it("emits a single text block from a full message snapshot", () => {
     const { parts } = run([
       msg(1, "user", [{ type: "text", text: "hi" }]),
-      msg(2, "assistant", [{ type: "text", text: "Hello there" }], { input_tokens: 10, output_tokens: 3 }),
+      msg(2, "assistant", [{ type: "text", text: "Hello there" }], {
+        input_tokens: 10,
+        output_tokens: 3,
+      }),
       status("waiting"),
     ]);
     const types = parts.map((p) => p.type);
@@ -67,9 +79,15 @@ describe("TurnTranslator — delta (streaming) mode", () => {
       "text-end",
       "finish",
     ]);
-    const text = parts.filter((p) => p.type === "text-delta").map((p) => ("delta" in p ? p.delta : "")).join("");
+    const text = parts
+      .filter((p) => p.type === "text-delta")
+      .map((p) => ("delta" in p ? p.delta : ""))
+      .join("");
     expect(text).toBe("Hello");
-    const reasoning = parts.filter((p) => p.type === "reasoning-delta").map((p) => ("delta" in p ? p.delta : "")).join("");
+    const reasoning = parts
+      .filter((p) => p.type === "reasoning-delta")
+      .map((p) => ("delta" in p ? p.delta : ""))
+      .join("");
     expect(reasoning).toBe("Thinking...");
   });
 });
@@ -82,7 +100,11 @@ describe("TurnTranslator — client (custom) tools", () => {
         {
           type: "action_required",
           chat_id: "c",
-          action_required: { tool_calls: [{ tool_call_id: "tc1", tool_name: "getWeather", args: '{"city":"Paris"}' }] },
+          action_required: {
+            tool_calls: [
+              { tool_call_id: "tc1", tool_name: "getWeather", args: '{"city":"Paris"}' },
+            ],
+          },
         },
         status("requires_action"),
       ],
@@ -101,8 +123,17 @@ describe("TurnTranslator — client (custom) tools", () => {
 describe("TurnTranslator — server (provider-executed) tools", () => {
   it("surfaces chatd's own tools as provider-executed call + result", () => {
     const { parts } = run([
-      msg(2, "assistant", [{ type: "tool-call", tool_call_id: "s1", tool_name: "read_file", args: { path: "/x" } }]),
-      msg(3, "tool", [{ type: "tool-result", tool_call_id: "s1", tool_name: "read_file", result: { content: "data" } }]),
+      msg(2, "assistant", [
+        { type: "tool-call", tool_call_id: "s1", tool_name: "read_file", args: { path: "/x" } },
+      ]),
+      msg(3, "tool", [
+        {
+          type: "tool-result",
+          tool_call_id: "s1",
+          tool_name: "read_file",
+          result: { content: "data" },
+        },
+      ]),
       msg(4, "assistant", [{ type: "text", text: "Done" }]),
       status("waiting"),
     ]);
@@ -111,7 +142,10 @@ describe("TurnTranslator — server (provider-executed) tools", () => {
     const result = parts.find((p) => p.type === "tool-result");
     expect(result).toBeDefined();
     expect(result && "toolCallId" in result ? result.toolCallId : "").toBe("s1");
-    const text = parts.filter((p) => p.type === "text-delta").map((p) => ("delta" in p ? p.delta : "")).join("");
+    const text = parts
+      .filter((p) => p.type === "text-delta")
+      .map((p) => ("delta" in p ? p.delta : ""))
+      .join("");
     expect(text).toBe("Done");
   });
 });
@@ -119,7 +153,11 @@ describe("TurnTranslator — server (provider-executed) tools", () => {
 describe("TurnTranslator — errors", () => {
   it("emits an error part and finishes with error", () => {
     const { parts } = run([
-      { type: "error", chat_id: "c", error: { message: "overloaded", kind: "overloaded", retryable: true } },
+      {
+        type: "error",
+        chat_id: "c",
+        error: { message: "overloaded", kind: "overloaded", retryable: true },
+      },
       status("error"),
     ]);
     expect(parts.some((p) => p.type === "error")).toBe(true);

@@ -43,7 +43,10 @@ class FakeClient {
   }
 
   async createChatMessage(): Promise<CreateChatMessageResponse> {
-    return { queued: false, message: { id: ++this.#nextMessageId, chat_id: "chat-1", role: "user", created_at: "" } };
+    return {
+      queued: false,
+      message: { id: ++this.#nextMessageId, chat_id: "chat-1", role: "user", created_at: "" },
+    };
   }
 
   async submitToolResults(_chatId: string, req: SubmitToolResultsRequest): Promise<void> {
@@ -65,11 +68,23 @@ class FakeClient {
   }
 }
 
-function msg(id: number, role: "user" | "assistant" | "tool", content: { type: string; text?: string }[]): ChatStreamEvent {
-  return { type: "message", chat_id: "chat-1", message: { id, chat_id: "chat-1", role, created_at: "", content: content as never } };
+function msg(
+  id: number,
+  role: "user" | "assistant" | "tool",
+  content: { type: string; text?: string }[],
+): ChatStreamEvent {
+  return {
+    type: "message",
+    chat_id: "chat-1",
+    message: { id, chat_id: "chat-1", role, created_at: "", content: content as never },
+  };
 }
 function textPart(text: string): ChatStreamEvent {
-  return { type: "message_part", chat_id: "chat-1", message_part: { role: "assistant", part: { type: "text", text } } };
+  return {
+    type: "message_part",
+    chat_id: "chat-1",
+    message_part: { role: "assistant", part: { type: "text", text } },
+  };
 }
 function status(s: string): ChatStreamEvent {
   return { type: "status", chat_id: "chat-1", status: { status: s as never } };
@@ -87,7 +102,12 @@ function makeAgent<T extends Record<string, unknown>>(fake: FakeClient, tools?: 
 describe("CoderAgent integration (mock client)", () => {
   it("generates plain text over one turn", async () => {
     const fake = new FakeClient([
-      [status("running"), textPart("Hello!"), msg(2, "assistant", [{ type: "text", text: "Hello!" }]), status("waiting")],
+      [
+        status("running"),
+        textPart("Hello!"),
+        msg(2, "assistant", [{ type: "text", text: "Hello!" }]),
+        status("waiting"),
+      ],
     ]);
     const agent = makeAgent(fake);
     const result = await agent.generate({ prompt: "hi" });
@@ -122,11 +142,20 @@ describe("CoderAgent integration (mock client)", () => {
         {
           type: "action_required",
           chat_id: "chat-1",
-          action_required: { tool_calls: [{ tool_call_id: "tc1", tool_name: "getWeather", args: '{"city":"Paris"}' }] },
+          action_required: {
+            tool_calls: [
+              { tool_call_id: "tc1", tool_name: "getWeather", args: '{"city":"Paris"}' },
+            ],
+          },
         },
       ],
       // Turn 2: after results are submitted, assistant produces the final text.
-      [status("running"), textPart("It's 21°C in Paris."), msg(3, "assistant", [{ type: "text", text: "It's 21°C in Paris." }]), status("waiting")],
+      [
+        status("running"),
+        textPart("It's 21°C in Paris."),
+        msg(3, "assistant", [{ type: "text", text: "It's 21°C in Paris." }]),
+        status("waiting"),
+      ],
     ]);
 
     const agent = makeAgent(fake, tools);
@@ -151,7 +180,14 @@ describe("CoderAgent integration (mock client)", () => {
 
   it("streams text deltas via stream()", async () => {
     const fake = new FakeClient([
-      [status("running"), textPart("a"), textPart("b"), textPart("c"), msg(2, "assistant", [{ type: "text", text: "abc" }]), status("waiting")],
+      [
+        status("running"),
+        textPart("a"),
+        textPart("b"),
+        textPart("c"),
+        msg(2, "assistant", [{ type: "text", text: "abc" }]),
+        status("waiting"),
+      ],
     ]);
     const agent = makeAgent(fake);
     const result = await agent.stream({ prompt: "spell it" });
@@ -185,7 +221,14 @@ describe("CoderLanguageModel guards", () => {
     const blocking = {
       resolveModelConfigId: async () => undefined,
       createChat: async () => ({
-        id: "c1", organization_id: "o", owner_id: "u", title: "t", status: "running", created_at: "", updated_at: "", archived: false,
+        id: "c1",
+        organization_id: "o",
+        owner_id: "u",
+        title: "t",
+        status: "running",
+        created_at: "",
+        updated_at: "",
+        archived: false,
       }),
       // Yields one non-terminal event then blocks (on a releasable gate),
       // keeping turn 1 in-flight while we attempt a concurrent turn 2.
@@ -194,13 +237,20 @@ describe("CoderLanguageModel guards", () => {
         await gate;
       },
     };
-    const model = new CoderLanguageModel({ client: blocking as unknown as CoderChatClient, organizationId: "o" });
+    const model = new CoderLanguageModel({
+      client: blocking as unknown as CoderChatClient,
+      organizationId: "o",
+    });
 
-    const s1 = await model.doStream({ prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }] } as never);
+    const s1 = await model.doStream({
+      prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    } as never);
     const r1 = s1.stream.getReader();
     await r1.read(); // starts turn 1 → sets in-flight
 
-    const s2 = await model.doStream({ prompt: [{ role: "user", content: [{ type: "text", text: "hi2" }] }] } as never);
+    const s2 = await model.doStream({
+      prompt: [{ role: "user", content: [{ type: "text", text: "hi2" }] }],
+    } as never);
     const r2 = s2.stream.getReader();
     await expect(r2.read()).rejects.toThrow(/single-flight/);
 

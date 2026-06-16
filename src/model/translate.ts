@@ -124,7 +124,11 @@ export class TurnTranslator {
     if (full.length <= this.#text.len && this.#text.id) return;
     this.#openText(out);
     if (full.length > this.#text.len) {
-      out.push({ type: "text-delta", id: this.#text.id as string, delta: full.slice(this.#text.len) });
+      out.push({
+        type: "text-delta",
+        id: this.#text.id as string,
+        delta: full.slice(this.#text.len),
+      });
       this.#text.len = full.length;
     }
   }
@@ -132,7 +136,11 @@ export class TurnTranslator {
     if (full.length <= this.#reasoning.len && this.#reasoning.id) return;
     this.#openReasoning(out);
     if (full.length > this.#reasoning.len) {
-      out.push({ type: "reasoning-delta", id: this.#reasoning.id as string, delta: full.slice(this.#reasoning.len) });
+      out.push({
+        type: "reasoning-delta",
+        id: this.#reasoning.id as string,
+        delta: full.slice(this.#reasoning.len),
+      });
       this.#reasoning.len = full.length;
     }
   }
@@ -197,7 +205,12 @@ export class TurnTranslator {
           this.#clientToolCallSeen = true;
           out.push({ type: "tool-input-start", id: tc.tool_call_id, toolName: tc.tool_name });
           out.push({ type: "tool-input-end", id: tc.tool_call_id });
-          out.push({ type: "tool-call", toolCallId: tc.tool_call_id, toolName: tc.tool_name, input: tc.args });
+          out.push({
+            type: "tool-call",
+            toolCallId: tc.tool_call_id,
+            toolName: tc.tool_name,
+            input: tc.args,
+          });
         }
         break;
       case "error":
@@ -219,7 +232,7 @@ export class TurnTranslator {
 
   #ingestMessagePart(out: LanguageModelV3StreamPart[], ev: ChatStreamEvent): void {
     const mp = ev.message_part;
-    if (!mp || mp.role !== "assistant" && mp.role !== "tool") return;
+    if (!mp || (mp.role !== "assistant" && mp.role !== "tool")) return;
     const part = mp.part;
     switch (part.type) {
       case "text":
@@ -269,20 +282,29 @@ export class TurnTranslator {
       this.#currentAssistantId = message.id;
 
       if (!this.#text.sawDelta) {
-        const full = content.filter((p) => p.type === "text").map((p) => p.text ?? "").join("");
+        const full = content
+          .filter((p) => p.type === "text")
+          .map((p) => p.text ?? "")
+          .join("");
         if (full.length > 0) this.#emitTextUpTo(out, full);
       }
       if (!this.#reasoning.sawDelta) {
-        const full = content.filter((p) => p.type === "reasoning").map((p) => p.text ?? "").join("");
+        const full = content
+          .filter((p) => p.type === "reasoning")
+          .map((p) => p.text ?? "")
+          .join("");
         if (full.length > 0) this.#emitReasoningUpTo(out, full);
       }
       for (const part of content) {
-        if (part.type === "tool-call" && !this.#isClientTool(part.tool_name)) this.#emitServerToolCall(out, part);
-        else if (part.type === "tool-result" && !this.#isClientTool(part.tool_name)) this.#emitServerToolResult(out, part);
+        if (part.type === "tool-call" && !this.#isClientTool(part.tool_name))
+          this.#emitServerToolCall(out, part);
+        else if (part.type === "tool-result" && !this.#isClientTool(part.tool_name))
+          this.#emitServerToolResult(out, part);
       }
     } else if (message.role === "tool") {
       for (const part of content) {
-        if (part.type === "tool-result" && !this.#isClientTool(part.tool_name)) this.#emitServerToolResult(out, part);
+        if (part.type === "tool-result" && !this.#isClientTool(part.tool_name))
+          this.#emitServerToolResult(out, part);
       }
     }
   }
@@ -296,7 +318,8 @@ export class TurnTranslator {
 
     let unified: LanguageModelV3FinishReason["unified"];
     if (this.#error || this.#terminalStatus === "error") unified = "error";
-    else if (this.#clientToolCallSeen || this.#terminalStatus === "requires_action") unified = "tool-calls";
+    else if (this.#clientToolCallSeen || this.#terminalStatus === "requires_action")
+      unified = "tool-calls";
     else unified = "stop";
 
     out.push({

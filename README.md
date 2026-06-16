@@ -34,8 +34,8 @@ import { z } from "zod";
 const agent = new CoderAgent({
   baseUrl: "https://dev.coder.com",
   token: process.env.CODER_SESSION_TOKEN!, // Coder API/session token
-  organizationId: "703f72a1-…",            // your org UUID
-  model: "claude-sonnet-4-6",              // hint: UUID, provider:model, model id, or display-name substring
+  organizationId: "703f72a1-…", // your org UUID
+  model: "claude-sonnet-4-6", // hint: UUID, provider:model, model id, or display-name substring
   instructions: "You are a helpful coding assistant.",
   tools: {
     getWeather: tool({
@@ -56,7 +56,7 @@ for await (const delta of result.textStream) process.stdout.write(delta);
 
 `generate()` returns a real AI SDK `GenerateTextResult`; `stream()` returns a real
 `StreamTextResult` (so `.textStream`, `.fullStream`, `.toUIMessageStream()`, `.steps`,
-`.usage`, etc. all work). Because `CoderAgent` *is* an `Agent`, it composes with the rest
+`.usage`, etc. all work). Because `CoderAgent` _is_ an `Agent`, it composes with the rest
 of the AI SDK.
 
 ## Examples
@@ -119,19 +119,19 @@ A single instance is **single‑flight** — don't run concurrent generations ag
 
 `CoderAgentSettings`:
 
-| field | description |
-|---|---|
-| `client` \| (`baseUrl` + `token`) | connection (one or the other) |
-| `organizationId` | org UUID that owns the chat (required) |
-| `model` | model hint: UUID, `provider:model`, model id, or display‑name substring |
-| `instructions` | system prompt |
-| `tools` | AI SDK `ToolSet` (client‑executed) |
-| `workspaceId` | bind the chat to a Coder workspace (enables workspace‑scoped tools) |
-| `mcpServerIds` | chatd‑side MCP servers to enable |
-| `planMode` | chatd plan mode (`"plan"`) |
-| `stopWhen` | AI SDK stop condition(s); default `stepCountIs(64)` |
-| `maxRetries` | default `0` — SDK retries can duplicate server‑side turns; override with care |
-| `chatId` | resume an existing chat |
+| field                             | description                                                                   |
+| --------------------------------- | ----------------------------------------------------------------------------- |
+| `client` \| (`baseUrl` + `token`) | connection (one or the other)                                                 |
+| `organizationId`                  | org UUID that owns the chat (required)                                        |
+| `model`                           | model hint: UUID, `provider:model`, model id, or display‑name substring       |
+| `instructions`                    | system prompt                                                                 |
+| `tools`                           | AI SDK `ToolSet` (client‑executed)                                            |
+| `workspaceId`                     | bind the chat to a Coder workspace (enables workspace‑scoped tools)           |
+| `mcpServerIds`                    | chatd‑side MCP servers to enable                                              |
+| `planMode`                        | chatd plan mode (`"plan"`)                                                    |
+| `stopWhen`                        | AI SDK stop condition(s); default `stepCountIs(64)`                           |
+| `maxRetries`                      | default `0` — SDK retries can duplicate server‑side turns; override with care |
+| `chatId`                          | resume an existing chat                                                       |
 
 ## How it works
 
@@ -154,6 +154,9 @@ CoderAgent  (implements ai.Agent)
 ```bash
 pnpm test          # unit tests (hermetic, mocked client)
 pnpm typecheck
+pnpm lint          # lint with oxlint
+pnpm format        # format with oxfmt (or `pnpm format:check` to verify only)
+pnpm check         # format check + lint + typecheck (CI gate)
 pnpm build
 ```
 

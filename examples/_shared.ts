@@ -36,9 +36,13 @@ export async function loadEnv(): Promise<ExampleEnv> {
 
   let organizationId = process.env.CODER_ORG_ID ?? "";
   if (!organizationId) {
-    const res = await fetch(`${baseUrl}/api/v2/users/me`, { headers: { "Coder-Session-Token": token } });
+    const res = await fetch(`${baseUrl}/api/v2/users/me`, {
+      headers: { "Coder-Session-Token": token },
+    });
     if (!res.ok) {
-      console.error(`Failed to look up your Coder user (HTTP ${res.status}). Check CODER_URL and CODER_SESSION_TOKEN.`);
+      console.error(
+        `Failed to look up your Coder user (HTTP ${res.status}). Check CODER_URL and CODER_SESSION_TOKEN.`,
+      );
       process.exit(1);
     }
     const me = (await res.json()) as { organization_ids?: string[] };

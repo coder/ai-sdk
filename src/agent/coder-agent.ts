@@ -89,7 +89,9 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
         webSocketFactory: settings.webSocketFactory,
       });
     } else {
-      throw new CoderAgentError("CoderAgent requires either `client` or both `baseUrl` and `token`.");
+      throw new CoderAgentError(
+        "CoderAgent requires either `client` or both `baseUrl` and `token`.",
+      );
     }
 
     this.#model = new CoderLanguageModel({

@@ -1,6 +1,6 @@
 allowBuilds:
   esbuild: true
 minimumReleaseAgeExclude:
-  - '@ai-sdk/gateway@3.0.132'
-  - '@ai-sdk/react@3.0.208'
+  - "@ai-sdk/gateway@3.0.132"
+  - "@ai-sdk/react@3.0.208"
   - ai@6.0.206

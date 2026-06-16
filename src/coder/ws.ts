@@ -21,7 +21,10 @@ export interface WebSocketLike {
   removeEventListener(type: "close", cb: (ev: { code?: number; reason?: string }) => void): void;
 }
 
-export type WebSocketFactory = (url: string, protocols: { headers: Record<string, string> }) => WebSocketLike;
+export type WebSocketFactory = (
+  url: string,
+  protocols: { headers: Record<string, string> },
+) => WebSocketLike;
 
 const defaultFactory: WebSocketFactory = (url, { headers }) => {
   // `ws` accepts custom handshake headers, which lets us authenticate with the

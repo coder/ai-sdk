@@ -2,24 +2,29 @@
   "name": "@coder/ai-sdk-agent",
   "version": "0.1.0",
   "description": "A Vercel AI SDK-compliant agent (and chat transport) for Coder chatd. `new CoderAgent()` returns an AI SDK Agent backed by a remote Coder agent runtime.",
-  "type": "module",
   "license": "Apache-2.0",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     }
   },
-  "main": "./dist/index.js",
-  "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "files": [
-    "dist",
-    "README.md"
-  ],
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check .",
+    "check": "oxfmt --check . && oxlint && tsc --noEmit",
     "test": "vitest run test/unit",
     "test:unit": "vitest run test/unit",
     "test:e2e": "vitest run test/e2e",
@@ -29,11 +34,22 @@
     "example:tool": "tsx examples/03-custom-tool.ts",
     "example:multi-turn": "tsx examples/04-multi-turn.ts"
   },
-  "engines": {
-    "node": ">=20"
-  },
   "dependencies": {
     "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@ai-sdk/provider": "3.0.10",
+    "@ai-sdk/react": "3.0.208",
+    "@types/node": "^25.9.3",
+    "@types/ws": "^8.18.1",
+    "ai": "^6.0.206",
+    "oxfmt": "^0.54.0",
+    "oxlint": "^1.69.0",
+    "tsup": "^8.5.1",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8",
+    "zod": "4.4.3"
   },
   "peerDependencies": {
     "ai": "^6.0.0",
@@ -44,16 +60,7 @@
       "optional": true
     }
   },
-  "devDependencies": {
-    "@ai-sdk/provider": "3.0.10",
-    "@ai-sdk/react": "3.0.208",
-    "@types/node": "^25.9.3",
-    "@types/ws": "^8.18.1",
-    "ai": "^6.0.206",
-    "tsup": "^8.5.1",
-    "tsx": "^4.22.4",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.8",
-    "zod": "4.4.3"
+  "engines": {
+    "node": ">=20"
   }
 }

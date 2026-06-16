@@ -9,33 +9,56 @@ import {
 
 describe("classifyTurnAction", () => {
   it("treats a trailing user message as a new turn", () => {
-    const prompt: LanguageModelV3Prompt = [{ role: "user", content: [{ type: "text", text: "hi there" }] }];
+    const prompt: LanguageModelV3Prompt = [
+      { role: "user", content: [{ type: "text", text: "hi there" }] },
+    ];
     const action = classifyTurnAction(prompt);
     expect(action.kind).toBe("new-turn");
-    if (action.kind === "new-turn") expect(action.content).toEqual([{ type: "text", text: "hi there" }]);
+    if (action.kind === "new-turn")
+      expect(action.content).toEqual([{ type: "text", text: "hi there" }]);
   });
 
   it("treats a trailing tool message as a resume with mapped tool results", () => {
     const prompt: LanguageModelV3Prompt = [
       { role: "user", content: [{ type: "text", text: "q" }] },
-      { role: "assistant", content: [{ type: "tool-call", toolCallId: "tc1", toolName: "t", input: {} }] },
+      {
+        role: "assistant",
+        content: [{ type: "tool-call", toolCallId: "tc1", toolName: "t", input: {} }],
+      },
       {
         role: "tool",
         content: [
-          { type: "tool-result", toolCallId: "tc1", toolName: "t", output: { type: "json", value: { ok: true } } },
+          {
+            type: "tool-result",
+            toolCallId: "tc1",
+            toolName: "t",
+            output: { type: "json", value: { ok: true } },
+          },
         ],
       },
     ];
     const action = classifyTurnAction(prompt);
     expect(action.kind).toBe("resume");
     if (action.kind === "resume") {
-      expect(action.toolResults).toEqual([{ tool_call_id: "tc1", output: { ok: true }, is_error: false }]);
+      expect(action.toolResults).toEqual([
+        { tool_call_id: "tc1", output: { ok: true }, is_error: false },
+      ]);
     }
   });
 
   it("maps error tool outputs to is_error", () => {
     const prompt: LanguageModelV3Prompt = [
-      { role: "tool", content: [{ type: "tool-result", toolCallId: "x", toolName: "t", output: { type: "error-text", value: "boom" } }] },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "x",
+            toolName: "t",
+            output: { type: "error-text", value: "boom" },
+          },
+        ],
+      },
     ];
     const action = classifyTurnAction(prompt);
     if (action.kind === "resume") {
@@ -55,13 +78,20 @@ describe("extractSystemPrompt", () => {
     expect(extractSystemPrompt(prompt)).toBe("be terse");
   });
   it("returns undefined when no system message", () => {
-    expect(extractSystemPrompt([{ role: "user", content: [{ type: "text", text: "q" }] }])).toBeUndefined();
+    expect(
+      extractSystemPrompt([{ role: "user", content: [{ type: "text", text: "q" }] }]),
+    ).toBeUndefined();
   });
 });
 
 describe("toolsToDynamicTools / dynamicToolNames", () => {
   const tools: LanguageModelV3CallOptions["tools"] = [
-    { type: "function", name: "getWeather", description: "d", inputSchema: { type: "object", properties: {} } },
+    {
+      type: "function",
+      name: "getWeather",
+      description: "d",
+      inputSchema: { type: "object", properties: {} },
+    },
   ];
   it("maps function tools to chatd dynamic tools", () => {
     expect(toolsToDynamicTools(tools)).toEqual([

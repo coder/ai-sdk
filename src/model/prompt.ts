@@ -8,13 +8,20 @@ import type { ChatInputPart, DynamicTool, ToolResult } from "../coder/types.js";
 
 /** Concatenated system messages, mapped to chatd's `system_prompt`. */
 export function extractSystemPrompt(prompt: LanguageModelV3Prompt): string | undefined {
-  const parts = prompt.filter((m): m is Extract<LanguageModelV3Message, { role: "system" }> => m.role === "system");
+  const parts = prompt.filter(
+    (m): m is Extract<LanguageModelV3Message, { role: "system" }> => m.role === "system",
+  );
   if (parts.length === 0) return undefined;
-  const joined = parts.map((m) => m.content).join("\n\n").trim();
+  const joined = parts
+    .map((m) => m.content)
+    .join("\n\n")
+    .trim();
   return joined.length > 0 ? joined : undefined;
 }
 
-function userContentToInputParts(message: Extract<LanguageModelV3Message, { role: "user" }>): ChatInputPart[] {
+function userContentToInputParts(
+  message: Extract<LanguageModelV3Message, { role: "user" }>,
+): ChatInputPart[] {
   const out: ChatInputPart[] = [];
   for (const part of message.content) {
     if (part.type === "text" && part.text.length > 0) {
@@ -25,7 +32,10 @@ function userContentToInputParts(message: Extract<LanguageModelV3Message, { role
   return out;
 }
 
-function toolResultOutputToChatd(output: LanguageModelV3ToolResultOutput): { value: unknown; isError: boolean } {
+function toolResultOutputToChatd(output: LanguageModelV3ToolResultOutput): {
+  value: unknown;
+  isError: boolean;
+} {
   switch (output.type) {
     case "text":
       return { value: output.value, isError: false };

@@ -43,7 +43,12 @@ export class CoderChatClient {
     this.#webSocketFactory = options.webSocketFactory;
   }
 
-  async #request<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  async #request<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    signal?: AbortSignal,
+  ): Promise<T> {
     const headers: Record<string, string> = { "Coder-Session-Token": this.#token };
     if (body !== undefined) headers["Content-Type"] = "application/json";
 
@@ -78,7 +83,12 @@ export class CoderChatClient {
   // --- REST -----------------------------------------------------------------
 
   listModelConfigs(signal?: AbortSignal): Promise<ChatModelConfig[]> {
-    return this.#request<ChatModelConfig[]>("GET", `${API_PREFIX}/model-configs`, undefined, signal);
+    return this.#request<ChatModelConfig[]>(
+      "GET",
+      `${API_PREFIX}/model-configs`,
+      undefined,
+      signal,
+    );
   }
 
   createChat(req: CreateChatRequest, signal?: AbortSignal): Promise<Chat> {
@@ -94,7 +104,12 @@ export class CoderChatClient {
     req: CreateChatMessageRequest,
     signal?: AbortSignal,
   ): Promise<CreateChatMessageResponse> {
-    return this.#request<CreateChatMessageResponse>("POST", `${API_PREFIX}/${chatId}/messages`, req, signal);
+    return this.#request<CreateChatMessageResponse>(
+      "POST",
+      `${API_PREFIX}/${chatId}/messages`,
+      req,
+      signal,
+    );
   }
 
   getMessages(
@@ -115,7 +130,11 @@ export class CoderChatClient {
     );
   }
 
-  submitToolResults(chatId: string, req: SubmitToolResultsRequest, signal?: AbortSignal): Promise<void> {
+  submitToolResults(
+    chatId: string,
+    req: SubmitToolResultsRequest,
+    signal?: AbortSignal,
+  ): Promise<void> {
     return this.#request<void>("POST", `${API_PREFIX}/${chatId}/tool-results`, req, signal);
   }
 
@@ -173,7 +192,9 @@ export class CoderChatClient {
     const pool = candidates.length > 0 ? candidates : configs;
 
     const exact = pool.find(
-      (c) => c.model.toLowerCase() === model && (provider === undefined || c.provider.toLowerCase() === provider),
+      (c) =>
+        c.model.toLowerCase() === model &&
+        (provider === undefined || c.provider.toLowerCase() === provider),
     );
     if (exact) return exact.id;
 

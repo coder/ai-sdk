@@ -163,6 +163,52 @@ createCoderWorkspace({
 })
 ```
 
+## Terminal UI
+
+For an interactive chat in your terminal instead of one-shot `generate()` calls,
+wrap the same agent with the AI SDK terminal UI ([`@ai-sdk/tui`](https://ai-sdk.dev/v7/docs/ai-sdk-harnesses/terminal-ui)):
+
+```bash
+npm add @ai-sdk/tui@canary
+```
+
+The TUI drives a session-less agent, so adapt the `HarnessAgent` (whose
+`generate`/`stream` take a session) by injecting the session for the TUI's
+lifetime:
+
+```ts
+import { HarnessAgent, type HarnessAgentSession } from '@ai-sdk/harness/agent';
+import { createClaudeCode } from '@ai-sdk/harness-claude-code';
+import { runAgentTUI, type AgentTUIAgent } from '@ai-sdk/tui';
+import { createCoderWorkspace } from '@coder/ai-sdk-sandbox';
+
+const agent = new HarnessAgent({
+  harness: createClaudeCode({ thinking: 'adaptive' }),
+  sandbox: createCoderWorkspace({ workspace: 'my-dev-ws' }),
+  // or, to create a fresh workspace per session from a template:
+  // sandbox: createCoderWorkspace({ create: { template: 'claude-code-test' } }),
+});
+
+const toTUIAgent = (agent: HarnessAgent, session: HarnessAgentSession): AgentTUIAgent => ({
+  version: 'agent-v1',
+  id: agent.id,
+  tools: agent.tools,
+  generate: (request) => agent.generate({ ...request, session }),
+  stream: (request) => agent.stream({ ...request, session }),
+});
+
+const session = await agent.createSession();
+try {
+  await runAgentTUI({ title: 'Claude Code @ Coder', agent: toTUIAgent(agent, session) });
+} finally {
+  await session.destroy();
+}
+```
+
+See [`examples/claude-code-tui.ts`](./examples/claude-code-tui.ts) for a runnable
+version: `CODER_WORKSPACE=my-dev-ws npx tsx examples/claude-code-tui.ts` (exit with
+Esc or Ctrl+C).
+
 ## Workspace requirements
 
 Because the bridge runs inside the workspace, the workspace image must have:

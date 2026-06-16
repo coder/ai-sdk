@@ -3,6 +3,7 @@ name: CI
 on:
   push:
   pull_request:
+  merge_group:
 
 jobs:
   build:
@@ -32,3 +33,16 @@ jobs:
       - run: npm run build
       - run: npx publint
       - run: npm run attw
+
+  # Single, stable required status check for branch protection. Green only if
+  # every `build` matrix job succeeded — so the ruleset can require one context
+  # ("Required") regardless of how the matrix expands, and it runs in the merge
+  # queue (merge_group) too.
+  Required:
+    if: ${{ always() }}
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any required job did not succeed
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: exit 1

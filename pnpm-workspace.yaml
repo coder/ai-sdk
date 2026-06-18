@@ -29,6 +29,7 @@ overrides:
 # Excludes for pnpm's `minimumReleaseAge` supply-chain delay (when configured),
 # so the fast-moving Vercel AI SDK packages stay installable immediately.
 minimumReleaseAgeExclude:
+  - "@ai-sdk/anthropic"
   - "@ai-sdk/gateway"
   - "@ai-sdk/react"
   - "@ai-sdk/harness"

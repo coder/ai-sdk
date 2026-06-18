@@ -1,0 +1,31 @@
+{
+  "name": "@coder/release-please-ai",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A release-please changelog generator that adds an AI-written editorial summary and highlights on top of release-please's standard changelog. Registers a custom changelog-type you select in your release-please config.",
+  "license": "Apache-2.0",
+  "author": "Coder Technologies, Inc. (https://coder.com)",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run test/unit",
+    "test:unit": "vitest run test/unit",
+    "test:e2e": "vitest run test/e2e",
+    "release": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.0",
+    "ai": "^6.0.206",
+    "release-please": "~17.9.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

@@ -1,0 +1,89 @@
+{
+  "name": "@coder/ai-sdk-provider",
+  "version": "0.1.0",
+  "description": "Vercel AI SDK provider for Coder AI Gateway. Point the AI SDK at your Coder deployment with a Coder API token and use any model your deployment proxies — across AI Gateway's OpenAI- and Anthropic-compatible surfaces.",
+  "keywords": [
+    "ai",
+    "ai-gateway",
+    "ai-sdk",
+    "aibridge",
+    "anthropic",
+    "coder",
+    "llm",
+    "openai",
+    "provider",
+    "vercel-ai-sdk"
+  ],
+  "homepage": "https://github.com/coder/ai-sdk/tree/main/packages/provider#readme",
+  "bugs": {
+    "url": "https://github.com/coder/ai-sdk/issues"
+  },
+  "license": "Apache-2.0",
+  "author": "Coder Technologies, Inc. (https://coder.com)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coder/ai-sdk.git",
+    "directory": "packages/provider"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "attw": "attw --pack --ignore-rules cjs-resolves-to-esm",
+    "example:generate": "tsx examples/01-generate.ts",
+    "example:stream": "tsx examples/02-stream.ts",
+    "example:anthropic": "tsx examples/03-anthropic.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.85",
+    "@ai-sdk/openai-compatible": "^2.0.51",
+    "@ai-sdk/provider": "3.0.10"
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.0",
+    "@types/node": "^25.9.3",
+    "@vitest/coverage-v8": "^4.1.9",
+    "ai": "^6.0.206",
+    "publint": "^0.3.0",
+    "tsup": "^8.5.1",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9",
+    "zod": "4.4.3"
+  },
+  "peerDependencies": {
+    "ai": "^6.0.0",
+    "zod": "^3.25.76 || ^4.1.8"
+  },
+  "peerDependenciesMeta": {
+    "zod": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

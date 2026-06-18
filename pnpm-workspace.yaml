@@ -34,6 +34,7 @@ minimumReleaseAgeExclude:
   - "@ai-sdk/react"
   - "@ai-sdk/harness"
   - "@ai-sdk/harness-claude-code"
+  - "@ai-sdk/openai-compatible"
   - "@ai-sdk/provider-utils"
   - "@ai-sdk/tui"
   - "ai"

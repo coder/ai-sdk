@@ -41,6 +41,7 @@ jobs:
           scopes: |
             sandbox
             agent
+            provider
           requireScope: false
           subjectPattern: ^(?![A-Z])(?!.*\.$).+$
           subjectPatternError: |

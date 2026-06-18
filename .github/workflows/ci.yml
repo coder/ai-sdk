@@ -80,12 +80,12 @@ jobs:
       - name: Build
         run: pnpm build
 
-      # ESM-only publish gates — sandbox only (the root scripts --filter it).
+      # ESM-only publish gates — sandbox + provider (the root scripts --filter them).
       # Run after build so dist/ exists.
-      - name: Publint (sandbox)
+      - name: Publint (sandbox, provider)
         run: pnpm publint
 
-      - name: Are the types wrong? (sandbox)
+      - name: Are the types wrong? (sandbox, provider)
         run: pnpm attw
 
   lint-workflows:

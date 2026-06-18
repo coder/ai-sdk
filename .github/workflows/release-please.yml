@@ -43,74 +43,59 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
+  # Publish jobs authenticate to npm via OIDC trusted publishing (no NPM_TOKEN).
+  # Requires a trusted publisher configured per package on npmjs.com pointing at
+  # this repo + workflow file. Provenance is attested via the OIDC id-token.
   publish-sandbox:
     needs: release-please
     if: ${{ needs.release-please.outputs.sandbox_released == 'true' }}
     runs-on: ubuntu-latest
     permissions:
-      contents: write # npm provenance attests against the GitHub release
-      id-token: write # npm provenance (Sigstore OIDC)
+      contents: read # checkout only
+      id-token: write # OIDC: trusted-publishing auth + provenance
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
       - name: Install node and pnpm via mise
         uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4
-      - name: Configure npm auth
-        run: echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > "$HOME/.npmrc"
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @coder/ai-sdk-sandbox build
       - name: Publish @coder/ai-sdk-sandbox
         run: pnpm --filter @coder/ai-sdk-sandbox publish --provenance --access public --no-git-checks
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   publish-agent:
     needs: release-please
     if: ${{ needs.release-please.outputs.agent_released == 'true' }}
     runs-on: ubuntu-latest
     permissions:
-      contents: write # npm provenance attests against the GitHub release
-      id-token: write # npm provenance (Sigstore OIDC)
+      contents: read # checkout only
+      id-token: write # OIDC: trusted-publishing auth + provenance
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
       - name: Install node and pnpm via mise
         uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4
-      - name: Configure npm auth
-        run: echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > "$HOME/.npmrc"
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @coder/ai-sdk-agent build
       - name: Publish @coder/ai-sdk-agent
         run: pnpm --filter @coder/ai-sdk-agent publish --provenance --access public --no-git-checks
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   publish-provider:
     needs: release-please
     if: ${{ needs.release-please.outputs.provider_released == 'true' }}
     runs-on: ubuntu-latest
     permissions:
-      contents: write # npm provenance attests against the GitHub release
-      id-token: write # npm provenance (Sigstore OIDC)
+      contents: read # checkout only
+      id-token: write # OIDC: trusted-publishing auth + provenance
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
       - name: Install node and pnpm via mise
         uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4
-      - name: Configure npm auth
-        run: echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > "$HOME/.npmrc"
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @coder/ai-sdk-provider build
       - name: Publish @coder/ai-sdk-provider
         run: pnpm --filter @coder/ai-sdk-provider publish --provenance --access public --no-git-checks
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

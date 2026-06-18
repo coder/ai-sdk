@@ -23,18 +23,15 @@
   "packages": {
     "packages/sandbox": {
       "package-name": "@coder/ai-sdk-sandbox",
-      "component": "sandbox",
-      "release-as": "0.1.0"
+      "component": "sandbox"
     },
     "packages/agent": {
       "package-name": "@coder/ai-sdk-agent",
-      "component": "agent",
-      "release-as": "0.1.0"
+      "component": "agent"
     },
     "packages/provider": {
       "package-name": "@coder/ai-sdk-provider",
-      "component": "provider",
-      "release-as": "0.1.0"
+      "component": "provider"
     }
   }
 }

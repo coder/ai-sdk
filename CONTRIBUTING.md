@@ -1,7 +1,10 @@
 # Contributing
 
 `coder/ai-sdk` is a pnpm monorepo of two independent, independently-published
-packages — see the [README](./README.md) for what each one is.
+packages — see the [README](./README.md) for what each one is. The two target
+different Vercel AI SDK generations (`@coder/ai-sdk-sandbox` on v7,
+`@coder/ai-sdk-agent` on v6); pnpm isolates their dependency trees, so both `ai`
+versions coexist without conflict.
 
 ## Setup
 

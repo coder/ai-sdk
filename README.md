@@ -30,17 +30,6 @@ A Vercel AI SDK–compliant **`Agent`** (AI SDK v6) backed by **Coder Agents**,
 Coder's server-side agent runtime. `new CoderAgent()` returns a real `Agent` —
 `generate()`, `stream()`, tool calls, the whole interface.
 
-## Repository layout
-
-```text
-packages/
-  sandbox/   @coder/ai-sdk-sandbox   — Vercel AI SDK v7 (@ai-sdk/harness)
-  agent/     @coder/ai-sdk-agent     — Vercel AI SDK v6 (ai)
-```
-
-The two deliberately target different AI SDK generations. pnpm keeps their
-dependency trees isolated, so they coexist without forcing a single `ai` version.
-
 ## Contributing
 
 Development setup, the command reference, and how releases work all live in

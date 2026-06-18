@@ -1,6 +1,6 @@
 # @coder/ai-sdk-agent
 
-[![CI](https://github.com/coder/ai-sdk-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/coder/ai-sdk-agent/actions/workflows/ci.yml)
+[![CI](https://github.com/coder/ai-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/coder/ai-sdk/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@coder/ai-sdk-agent.svg)](https://www.npmjs.com/package/@coder/ai-sdk-agent)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 

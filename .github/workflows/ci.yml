@@ -28,17 +28,28 @@ jobs:
         # on these. 26.3.0 matches the version pinned in mise.toml.
         node: ["22", "24", "26.3.0"]
     env:
-      # mise-action installs pnpm from mise.toml; this overrides only the node
-      # version per matrix cell.
+      # Override the node version per matrix cell. MISE_LOCKFILE=false disables
+      # mise's locked mode for this job: mise.lock only pins node 26.3.0, so the
+      # 22/24 cells aren't in the lock and locked mode would refuse them. Tool
+      # versions still come from mise.toml; the lock stays authoritative for local
+      # dev and the (un-overridden) lint-workflows job below.
       MISE_NODE_VERSION: ${{ matrix.node }}
+      MISE_LOCKFILE: "false"
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
 
-      - name: Install node and pnpm via mise
+      - name: Set up mise
         uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4
+        with:
+          # Don't auto-install: the action force-adds `--locked` when a lockfile
+          # is present, which fails for matrix node versions not in the lock.
+          install: false
+
+      - name: Install node and pnpm via mise
+        run: mise install node pnpm
 
       - name: Resolve pnpm store path
         run: echo "STORE_PATH=$(pnpm store path --silent)" >> "$GITHUB_ENV"

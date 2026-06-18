@@ -4,20 +4,21 @@
 [![npm](https://img.shields.io/npm/v/@coder/ai-sdk-agent.svg)](https://www.npmjs.com/package/@coder/ai-sdk-agent)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-A **Vercel AI SDK–compliant agent for Coder `chatd`**. Call `new CoderAgent(...)` and
-get back an object that implements the AI SDK's [`Agent`](https://ai-sdk.dev/docs/reference/ai-sdk-core/agent)
-interface (`generate()` / `stream()`), backed by a remote Coder agent runtime. Script it,
-stream from it, and attach your own tools — exactly like the SDK's own `ToolLoopAgent`.
+A **Vercel AI SDK–compliant agent backed by Coder Agents** — Coder's server‑side
+agent runtime. Call `new CoderAgent(...)` and get back an object that implements the
+AI SDK's [`Agent`](https://ai-sdk.dev/docs/reference/ai-sdk-core/agent) interface
+(`generate()` / `stream()`). Script it, stream from it, and attach your own tools —
+exactly like the SDK's own `ToolLoopAgent`.
 
 > Status: works end‑to‑end against Coder's experimental chat API (`/api/experimental/chats`).
 > Both the Coder API and this package are pre‑1.0; expect change.
 
 ## Why
 
-Coder `chatd` is a complete, **server‑side** agent runtime: it runs the multi‑step tool
-loop itself, with built‑in tools, MCP, sub‑agents, multi‑provider model routing, and
-automatic context compaction. The Vercel AI SDK runs its loop **client‑side**. This package
-bridges the two so a Coder agent looks and feels like a native AI SDK agent — without
+**Coder Agents** runs a complete agent loop **server‑side** — the multi‑step tool
+loop, built‑in tools, MCP, sub‑agents, multi‑provider model routing, and automatic
+context compaction. The Vercel AI SDK runs its loop **client‑side**. This package
+bridges the two, so a Coder agent looks and feels like a native AI SDK agent without
 re‑implementing the loop.
 
 ## Install
@@ -82,13 +83,13 @@ Each example creates a new chat and archives it when done — it never touches w
 
 ## Custom tools
 
-Tools you pass are registered with chatd as **client‑executed** ("dynamic") tools. When the
-model calls one, chatd pauses; the AI SDK runs your tool's `execute`, and this package
-submits the result back to chatd, which then resumes. This is the standard AI SDK tool loop —
-your `execute` runs in your process.
+Tools you pass are registered with Coder Agents as **client‑executed** ("dynamic") tools.
+When the model calls one, the run pauses on the server; the AI SDK runs your tool's
+`execute`, this package submits the result back, and the run resumes. This is the standard
+AI SDK tool loop — your `execute` runs in your process.
 
 - Give tools an `execute` for scripting use (the loop runs to completion automatically).
-- chatd's own server‑side tools (file editing, shell, MCP, …) still run on the server and
+- Coder's own server‑side tools (file editing, shell, MCP, …) still run on the server and
   appear in the transcript as `providerExecuted` tool calls/results — you observe them, you
   don't execute them.
 
@@ -108,9 +109,9 @@ const agent = new CoderAgent({ client, organizationId });
 
 ## Sessions
 
-One `CoderAgent` instance maps to one chatd chat ("session"). The chat is created on the
-first turn and reused for subsequent `generate()`/`stream()` calls (multi‑turn conversation
-with server‑side history). `agent.chatId` is the current chat id.
+One `CoderAgent` instance maps to one chat ("session") on the Coder server. The chat is
+created on the first turn and reused for subsequent `generate()`/`stream()` calls (multi‑turn
+conversation with server‑side history). `agent.chatId` is the current chat id.
 
 - `agent.resetSession()` — start a fresh chat on the next turn.
 - `agent.interrupt()` — interrupt an in‑flight generation.
@@ -131,8 +132,8 @@ A single instance is **single‑flight** — don't run concurrent generations ag
 | `instructions`                    | system prompt                                                                 |
 | `tools`                           | AI SDK `ToolSet` (client‑executed)                                            |
 | `workspaceId`                     | bind the chat to a Coder workspace (enables workspace‑scoped tools)           |
-| `mcpServerIds`                    | chatd‑side MCP servers to enable                                              |
-| `planMode`                        | chatd plan mode (`"plan"`)                                                    |
+| `mcpServerIds`                    | server‑side MCP servers to enable                                             |
+| `planMode`                        | enable plan mode (`"plan"`)                                                   |
 | `stopWhen`                        | AI SDK stop condition(s); default `stepCountIs(64)`                           |
 | `maxRetries`                      | default `0` — SDK retries can duplicate server‑side turns; override with care |
 | `chatId`                          | resume an existing chat                                                       |
@@ -144,12 +145,12 @@ CoderAgent  (implements ai.Agent)
   └─ ToolLoopAgent (ai)            ← inherits generate()/stream(), loop control
        └─ CoderLanguageModel       ← implements @ai-sdk/provider LanguageModelV3
             └─ CoderChatClient      ← REST + WebSocket to /api/experimental/chats
-                 └─ Coder chatd      ← runs the agent loop SERVER-side
+                 └─ Coder Agents     ← runs the agent loop SERVER-side
 ```
 
 - One `doStream` call advances the chat until it **settles** (`waiting`/`completed`) or
-  **pauses** for a client tool (`requires_action`). The SDK loop and chatd's loop mesh at the
-  client‑tool boundary, so there's no double loop.
+  **pauses** for a client tool (`requires_action`). The SDK loop and the server‑side loop
+  mesh at the client‑tool boundary, so there's no double loop.
 - Streaming text is emitted from `message_part` deltas; fast turns that only produce a full
   `message` snapshot are diffed against an emitted‑length cursor — so neither double‑counts.
 
@@ -177,7 +178,7 @@ The e2e suite creates **new chats only** (no workspaces) and archives them after
 ## Limitations
 
 - The Coder chat API is experimental (`/api/experimental/chats`); wire types may change.
-- File/image **inputs** are not yet forwarded to chatd (text prompts only).
+- File/image **inputs** are not yet forwarded to the server (text prompts only).
 - Designed for Node (WebSocket via `ws`); a browser build can inject a `webSocketFactory`.
 - A v7 `@ai-sdk/harness` adapter (the conceptually exact fit) is a future direction once that
   experimental API stabilizes.

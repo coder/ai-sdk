@@ -2,7 +2,7 @@
 
 **Coder's integrations with the [Vercel AI SDK](https://ai-sdk.dev).** Run coding
 agents inside Coder workspaces, and drive Coder's server-side agent runtime from
-AI SDK code — two small, focused packages in one monorepo.
+AI SDK code.
 
 > [!NOTE]
 > Both packages are pre-1.0 and track experimental upstreams (the AI SDK harness

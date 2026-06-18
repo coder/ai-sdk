@@ -1,6 +1,6 @@
 {
   "name": "@coder/ai-sdk-agent",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A Vercel AI SDK-compliant agent backed by Coder Agents, Coder's server-side agent runtime. `new CoderAgent()` returns a real AI SDK Agent (generate/stream).",
   "keywords": [
     "agent",

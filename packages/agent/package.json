@@ -1,0 +1,90 @@
+{
+  "name": "@coder/ai-sdk-agent",
+  "version": "0.1.0",
+  "description": "A Vercel AI SDK-compliant agent (and chat transport) for Coder chatd. `new CoderAgent()` returns an AI SDK Agent backed by a remote Coder agent runtime.",
+  "keywords": [
+    "agent",
+    "ai",
+    "ai-sdk",
+    "chatd",
+    "coder",
+    "llm",
+    "streaming",
+    "tools",
+    "vercel-ai-sdk"
+  ],
+  "homepage": "https://github.com/coder/ai-sdk-agent#readme",
+  "bugs": {
+    "url": "https://github.com/coder/ai-sdk-agent/issues"
+  },
+  "license": "Apache-2.0",
+  "author": "Coder Technologies, Inc. (https://coder.com)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coder/ai-sdk-agent.git"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check .",
+    "check": "oxfmt --check . && oxlint && tsc --noEmit",
+    "test": "vitest run test/unit",
+    "test:unit": "vitest run test/unit",
+    "test:e2e": "vitest run test/e2e",
+    "test:watch": "vitest",
+    "example:generate": "tsx examples/01-generate.ts",
+    "example:stream": "tsx examples/02-stream.ts",
+    "example:tool": "tsx examples/03-custom-tool.ts",
+    "example:multi-turn": "tsx examples/04-multi-turn.ts"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@ai-sdk/provider": "3.0.10",
+    "@ai-sdk/react": "3.0.208",
+    "@types/node": "^25.9.3",
+    "@types/ws": "^8.18.1",
+    "ai": "^6.0.206",
+    "oxfmt": "^0.54.0",
+    "oxlint": "^1.69.0",
+    "tsup": "^8.5.1",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8",
+    "zod": "4.4.3"
+  },
+  "peerDependencies": {
+    "ai": "^6.0.0",
+    "zod": "^3.23.0 || ^4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "zod": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

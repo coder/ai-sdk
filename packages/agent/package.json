@@ -13,15 +13,16 @@
     "tools",
     "vercel-ai-sdk"
   ],
-  "homepage": "https://github.com/coder/ai-sdk-agent#readme",
+  "homepage": "https://github.com/coder/ai-sdk/tree/main/packages/agent#readme",
   "bugs": {
-    "url": "https://github.com/coder/ai-sdk-agent/issues"
+    "url": "https://github.com/coder/ai-sdk/issues"
   },
   "license": "Apache-2.0",
   "author": "Coder Technologies, Inc. (https://coder.com)",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/coder/ai-sdk-agent.git"
+    "url": "git+https://github.com/coder/ai-sdk.git",
+    "directory": "packages/agent"
   },
   "files": [
     "dist",
@@ -44,11 +45,6 @@
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint",
-    "lint:fix": "oxlint --fix",
-    "format": "oxfmt .",
-    "format:check": "oxfmt --check .",
-    "check": "oxfmt --check . && oxlint && tsc --noEmit",
     "test": "vitest run test/unit",
     "test:unit": "vitest run test/unit",
     "test:e2e": "vitest run test/e2e",
@@ -67,8 +63,6 @@
     "@types/node": "^25.9.3",
     "@types/ws": "^8.18.1",
     "ai": "^6.0.206",
-    "oxfmt": "^0.54.0",
-    "oxlint": "^1.69.0",
     "tsup": "^8.5.1",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",

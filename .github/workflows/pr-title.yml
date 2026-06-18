@@ -17,6 +17,9 @@ permissions: {}
 jobs:
   validate:
     name: Validate PR title
+    # Release PRs are bot-generated with titles like "chore(main): release ..."
+    # ("main" isn't an allowed scope), so skip title validation for them.
+    if: ${{ !startsWith(github.head_ref, 'release-please--') }}
     runs-on: ubuntu-latest
     permissions:
       pull-requests: read

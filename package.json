@@ -1,0 +1,38 @@
+{
+  "name": "coder-ai-sdk",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Monorepo for Coder's Vercel AI SDK packages (@coder/ai-sdk-sandbox, @coder/ai-sdk-agent).",
+  "homepage": "https://github.com/coder/ai-sdk#readme",
+  "bugs": {
+    "url": "https://github.com/coder/ai-sdk/issues"
+  },
+  "license": "Apache-2.0",
+  "author": "Coder Technologies, Inc. (https://coder.com)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coder/ai-sdk.git"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "test:coverage": "pnpm -r test:coverage",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check .",
+    "check": "oxfmt --check . && oxlint && pnpm -r typecheck",
+    "publint": "pnpm --filter @coder/ai-sdk-sandbox exec publint",
+    "attw": "pnpm --filter @coder/ai-sdk-sandbox attw"
+  },
+  "devDependencies": {
+    "oxfmt": "^0.55.0",
+    "oxlint": "^1.70.0"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@11.7.0"
+}

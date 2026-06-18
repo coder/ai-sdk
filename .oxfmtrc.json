@@ -1,4 +1,11 @@
 {
   "$schema": "./node_modules/oxfmt/configuration_schema.json",
-  "ignorePatterns": ["**/dist", "**/node_modules", "**/coverage", "**/*-lock.yaml", "**/mise.lock"]
+  "ignorePatterns": [
+    "**/dist",
+    "**/node_modules",
+    "**/coverage",
+    "**/*-lock.yaml",
+    "**/mise.lock",
+    "**/CHANGELOG.md"
+  ]
 }

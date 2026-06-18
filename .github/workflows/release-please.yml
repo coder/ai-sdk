@@ -23,12 +23,24 @@ jobs:
       sandbox_released: ${{ steps.release.outputs['packages/sandbox--release_created'] }}
       agent_released: ${{ steps.release.outputs['packages/agent--release_created'] }}
     steps:
-      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5
-        id: release
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
+          persist-credentials: false
+      - name: Install node and pnpm via mise
+        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4
+      - run: pnpm install --frozen-lockfile
+      # Runs release-please as a library with our AI changelog-notes hook
+      # registered (changelog-type: "ai" in the config). release-please itself
+      # writes the CHANGELOG, the release PR, and the GitHub Release — nothing
+      # downstream overwrites its output. The harness emits the same per-path
+      # outputs the stock action did, so the publish jobs below are unchanged.
+      - name: Run release-please (AI changelog notes)
+        id: release
+        run: pnpm --filter @coder/release-please-ai exec tsx src/cli.ts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
   publish-sandbox:
     needs: release-please

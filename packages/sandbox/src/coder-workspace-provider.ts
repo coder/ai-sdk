@@ -1,23 +1,23 @@
-import { createHash } from 'node:crypto';
-import { setTimeout as delay } from 'node:timers/promises';
-import type { HarnessV1SandboxProvider } from '@ai-sdk/harness';
-import { CoderCliTransport } from './cli-transport.js';
-import { CoderWorkspaceSession } from './coder-workspace-session.js';
+import { createHash } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
+import type { HarnessV1SandboxProvider } from "@ai-sdk/harness";
+import { CoderCliTransport } from "./cli-transport.js";
+import { CoderWorkspaceSession } from "./coder-workspace-session.js";
 import type {
   CoderTransport,
   CreateWorkspaceOptions,
   PresetInfo,
   WorkspaceStatus,
-} from './transport.js';
+} from "./transport.js";
 
 /** Stable provider id reported on the {@link HarnessV1SandboxProvider}. */
-export const CODER_WORKSPACE_PROVIDER_ID = 'coder-workspace';
+export const CODER_WORKSPACE_PROVIDER_ID = "coder-workspace";
 
 const DEFAULT_BRIDGE_PORT = 4000;
-const DEFAULT_WORKING_DIRECTORY = '/home/coder';
+const DEFAULT_WORKING_DIRECTORY = "/home/coder";
 const DEFAULT_READY_TIMEOUT_MS = 300_000;
 const READY_POLL_INTERVAL_MS = 2_000;
-const DEFAULT_NAME_PREFIX = 'agent';
+const DEFAULT_NAME_PREFIX = "agent";
 
 /**
  * Settings for creating a workspace on demand from a template. Set this as the
@@ -51,7 +51,7 @@ export interface CoderCreateSettings {
   /** Auto-stop the workspace after this duration, e.g. `'8h'` (`--stop-after`). */
   stopAfter?: string;
   /** `--automatic-updates` setting (default: Coder's, `never`). */
-  automaticUpdates?: 'always' | 'never';
+  automaticUpdates?: "always" | "never";
   /** Organization name or uuid for ambiguous template names (`--org`). */
   org?: string;
   /**
@@ -65,7 +65,7 @@ export interface CoderCreateSettings {
    * What to do if a workspace with the target name already exists:
    * `'attach'` (default) reuses it; `'error'` fails.
    */
-  ifExists?: 'attach' | 'error';
+  ifExists?: "attach" | "error";
   /**
    * Prefix for the workspace name derived from the harness sessionId when no
    * explicit `workspace` is set (fresh-per-session). Default: `'agent'`.
@@ -188,19 +188,19 @@ export function createCoderWorkspace(settings: CoderWorkspaceSettings): HarnessV
   const readyTimeoutMs = settings.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
 
   const resolveWorkspace = (sessionId: string | undefined): string => {
-    if (typeof settings.workspace === 'function') return settings.workspace(sessionId);
-    if (typeof settings.workspace === 'string') return settings.workspace;
+    if (typeof settings.workspace === "function") return settings.workspace(sessionId);
+    if (typeof settings.workspace === "string") return settings.workspace;
     if (settings.create !== undefined) {
       const name = deriveWorkspaceName(
         settings.create.namePrefix ?? DEFAULT_NAME_PREFIX,
         sessionId,
       );
       const owner = settings.create.owner;
-      return owner !== undefined && owner !== '' ? `${owner}/${name}` : name;
+      return owner !== undefined && owner !== "" ? `${owner}/${name}` : name;
     }
     // Unreachable for typed callers — the settings type requires `workspace` or
     // `create`. This guards untyped / `as`-cast usage.
-    throw new Error('createCoderWorkspace: set `workspace`, `create`, or both.');
+    throw new Error("createCoderWorkspace: set `workspace`, `create`, or both.");
   };
 
   /** Resolve whether this session owns its workspace's lifecycle. */
@@ -238,7 +238,7 @@ export function createCoderWorkspace(settings: CoderWorkspaceSettings): HarnessV
   };
 
   return {
-    specificationVersion: 'harness-sandbox-v1',
+    specificationVersion: "harness-sandbox-v1",
     providerId: CODER_WORKSPACE_PROVIDER_ID,
     // `bridgePorts` intentionally left undefined: this provider binds one
     // workspace per session rather than leasing ports from a shared sandbox.
@@ -295,7 +295,7 @@ async function ensureWorkspace(
     await transport.create(toCreateOptions(workspace, create, abortSignal));
     createdByProvider = true;
   } else {
-    if (create.ifExists === 'error') {
+    if (create.ifExists === "error") {
       throw new Error(
         `createCoderWorkspace: workspace "${workspace}" already exists (create.ifExists: 'error').`,
       );
@@ -311,9 +311,9 @@ async function ensureWorkspace(
 
 function isStopped(status: WorkspaceStatus): boolean {
   return (
-    status.buildStatus === 'stopped' ||
-    status.buildStatus === 'stopping' ||
-    status.transition === 'stop'
+    status.buildStatus === "stopped" ||
+    status.buildStatus === "stopping" ||
+    status.transition === "stop"
   );
 }
 
@@ -344,7 +344,7 @@ function stringifyParams(
   if (params === undefined) return undefined;
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(params)) {
-    out[key] = typeof value === 'string' ? value : String(value);
+    out[key] = typeof value === "string" ? value : String(value);
   }
   return out;
 }
@@ -355,7 +355,7 @@ async function validatePreset(
   create: CoderCreateSettings,
   abortSignal?: AbortSignal,
 ): Promise<void> {
-  if (create.preset === undefined || create.preset.toLowerCase() === 'none') return;
+  if (create.preset === undefined || create.preset.toLowerCase() === "none") return;
   let presets: PresetInfo[];
   try {
     presets = await transport.listPresets({
@@ -372,10 +372,10 @@ async function validatePreset(
   // either way there's nothing reliable to validate against.
   if (presets.length === 0) return;
   if (!presets.some((preset) => preset.name === create.preset)) {
-    const available = presets.map((preset) => `"${preset.name}"`).join(', ');
+    const available = presets.map((preset) => `"${preset.name}"`).join(", ");
     throw new Error(
       `createCoderWorkspace: preset "${create.preset}" not found for template ` +
-        `"${create.template}". Available presets: ${available || '(none)'}.`,
+        `"${create.template}". Available presets: ${available || "(none)"}.`,
     );
   }
 }
@@ -392,35 +392,35 @@ async function waitForReady(
   abortSignal?: AbortSignal,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
-  let last = 'unknown';
+  let last = "unknown";
   for (;;) {
-    if (abortSignal?.aborted) throw abortSignal.reason ?? new Error('aborted');
+    if (abortSignal?.aborted) throw abortSignal.reason ?? new Error("aborted");
     const status = await transport.status(workspace, { abortSignal });
     if (status !== null) {
       last =
         `build=${status.buildStatus} agents=[` +
-        status.agents.map((a) => `${a.name || '?'}:${a.status}/${a.lifecycleState}`).join(', ') +
-        ']';
-      if (status.buildStatus === 'failed') {
+        status.agents.map((a) => `${a.name || "?"}:${a.status}/${a.lifecycleState}`).join(", ") +
+        "]";
+      if (status.buildStatus === "failed") {
         throw new Error(`createCoderWorkspace: workspace "${workspace}" build failed (${last}).`);
       }
-      if (status.buildStatus === 'canceled' || status.buildStatus === 'deleted') {
+      if (status.buildStatus === "canceled" || status.buildStatus === "deleted") {
         throw new Error(
           `createCoderWorkspace: workspace "${workspace}" is ${status.buildStatus} (${last}).`,
         );
       }
       const errored = status.agents.find(
-        (a) => a.lifecycleState === 'start_error' || a.lifecycleState === 'start_timeout',
+        (a) => a.lifecycleState === "start_error" || a.lifecycleState === "start_timeout",
       );
       if (errored) {
         throw new Error(
-          `createCoderWorkspace: workspace "${workspace}" agent "${errored.name || '?'}" ` +
+          `createCoderWorkspace: workspace "${workspace}" agent "${errored.name || "?"}" ` +
             `failed to start (lifecycle: ${errored.lifecycleState}).`,
         );
       }
       if (
-        status.buildStatus === 'running' &&
-        status.agents.some((a) => a.status === 'connected' && a.lifecycleState === 'ready')
+        status.buildStatus === "running" &&
+        status.agents.some((a) => a.status === "connected" && a.lifecycleState === "ready")
       ) {
         return;
       }
@@ -437,13 +437,13 @@ async function waitForReady(
 
 /** A deterministic, valid workspace name derived from the harness sessionId. */
 function deriveWorkspaceName(prefix: string, sessionId: string | undefined): string {
-  if (sessionId === undefined || sessionId === '') {
+  if (sessionId === undefined || sessionId === "") {
     throw new Error(
-      'createCoderWorkspace: create mode needs either an explicit `workspace` or a ' +
-        'sessionId to derive a fresh per-session workspace name from.',
+      "createCoderWorkspace: create mode needs either an explicit `workspace` or a " +
+        "sessionId to derive a fresh per-session workspace name from.",
     );
   }
-  const hash = createHash('sha1').update(sessionId).digest('hex').slice(0, 12);
+  const hash = createHash("sha1").update(sessionId).digest("hex").slice(0, 12);
   const cleanPrefix = sanitizeNameSegment(prefix) || DEFAULT_NAME_PREFIX;
   return `${cleanPrefix}-${hash}`.slice(0, 32);
 }
@@ -452,8 +452,8 @@ function deriveWorkspaceName(prefix: string, sessionId: string | undefined): str
 function sanitizeNameSegment(value: string): string {
   return value
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 /** Best-effort lookup of the workspace's `$HOME`, defaulting to `/home/coder`. */
@@ -469,7 +469,7 @@ async function resolveHomeDirectory(
       abortSignal,
     });
     const home = result.stdout.trim();
-    if (result.exitCode === 0 && home.startsWith('/')) {
+    if (result.exitCode === 0 && home.startsWith("/")) {
       return home;
     }
   } catch {

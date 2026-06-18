@@ -49,37 +49,37 @@ export interface CoderTransport {
  * same idiom is used by the other status unions below).
  */
 export type WorkspaceBuildStatus =
-  | 'pending'
-  | 'starting'
-  | 'running'
-  | 'stopping'
-  | 'stopped'
-  | 'failed'
-  | 'canceling'
-  | 'canceled'
-  | 'deleting'
-  | 'deleted'
+  | "pending"
+  | "starting"
+  | "running"
+  | "stopping"
+  | "stopped"
+  | "failed"
+  | "canceling"
+  | "canceled"
+  | "deleting"
+  | "deleted"
   | (string & Record<never, never>);
 
 /** Connectivity of a workspace agent (`agent.status`). */
 export type WorkspaceAgentStatus =
-  | 'connecting'
-  | 'connected'
-  | 'disconnected'
-  | 'timeout'
+  | "connecting"
+  | "connected"
+  | "disconnected"
+  | "timeout"
   | (string & Record<never, never>);
 
 /** Startup-script lifecycle of a workspace agent (`agent.lifecycle_state`). */
 export type WorkspaceAgentLifecycle =
-  | 'created'
-  | 'starting'
-  | 'start_timeout'
-  | 'start_error'
-  | 'ready'
-  | 'shutting_down'
-  | 'shutdown_timeout'
-  | 'shutdown_error'
-  | 'off'
+  | "created"
+  | "starting"
+  | "start_timeout"
+  | "start_error"
+  | "ready"
+  | "shutting_down"
+  | "shutdown_timeout"
+  | "shutdown_error"
+  | "off"
   | (string & Record<never, never>);
 
 export interface WorkspaceAgentInfo {
@@ -97,7 +97,7 @@ export interface WorkspaceStatus {
   /** Workspace-level build status (`latest_build.status`). */
   buildStatus: WorkspaceBuildStatus;
   /** Direction of the latest build: `'start' | 'stop' | 'delete'`. */
-  transition: 'start' | 'stop' | 'delete' | (string & Record<never, never>);
+  transition: "start" | "stop" | "delete" | (string & Record<never, never>);
   /** Agents across the latest build's resources. */
   agents: WorkspaceAgentInfo[];
 }
@@ -122,7 +122,7 @@ export interface CreateWorkspaceOptions {
   /** Auto-stop the workspace after this duration, e.g. `'8h'` (`--stop-after`). */
   stopAfter?: string;
   /** `--automatic-updates` setting. */
-  automaticUpdates?: 'always' | 'never';
+  automaticUpdates?: "always" | "never";
   /** Organization name or uuid for ambiguous template names (`--org`). */
   org?: string;
   abortSignal?: AbortSignal;

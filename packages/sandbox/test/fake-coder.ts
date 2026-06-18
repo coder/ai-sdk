@@ -1,6 +1,6 @@
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 /**
  * A stand-in for the `coder` CLI used by the integration tests. It runs
@@ -83,9 +83,9 @@ export interface FakeCoder {
 }
 
 export async function createFakeCoder(): Promise<FakeCoder> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'fake-coder-'));
-  const binary = path.join(dir, 'coder');
-  await writeFile(binary, SCRIPT, 'utf8');
+  const dir = await mkdtemp(path.join(os.tmpdir(), "fake-coder-"));
+  const binary = path.join(dir, "coder");
+  await writeFile(binary, SCRIPT, "utf8");
   await chmod(binary, 0o755);
   return {
     path: binary,
@@ -119,9 +119,9 @@ fi
 `;
 
 export async function createFakeSsh(): Promise<FakeCoder> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'fake-ssh-'));
-  const binary = path.join(dir, 'ssh');
-  await writeFile(binary, SSH_SCRIPT, 'utf8');
+  const dir = await mkdtemp(path.join(os.tmpdir(), "fake-ssh-"));
+  const binary = path.join(dir, "ssh");
+  await writeFile(binary, SSH_SCRIPT, "utf8");
   await chmod(binary, 0o755);
   return {
     path: binary,

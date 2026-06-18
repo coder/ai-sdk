@@ -1,7 +1,7 @@
-import { type ChildProcess, spawn as nodeSpawn } from 'node:child_process';
-import net from 'node:net';
-import { Readable } from 'node:stream';
-import { buildRemoteScript, shellQuote } from './shell.js';
+import { type ChildProcess, spawn as nodeSpawn } from "node:child_process";
+import net from "node:net";
+import { Readable } from "node:stream";
+import { buildRemoteScript, shellQuote } from "./shell.js";
 import type {
   CoderTransport,
   CreateWorkspaceOptions,
@@ -15,7 +15,7 @@ import type {
   TransportExecOptions,
   WorkspaceAgentInfo,
   WorkspaceStatus,
-} from './transport.js';
+} from "./transport.js";
 
 export interface CoderCliTransportOptions {
   /** Path or name of the coder binary. Default: `coder`. */
@@ -46,7 +46,7 @@ export interface CoderCliTransportOptions {
    * (or stream the logs of) startup scripts. Set `'auto'`/`'yes'` if your
    * workspace provisions required tooling in a blocking startup script.
    */
-  waitMode?: 'yes' | 'no' | 'auto';
+  waitMode?: "yes" | "no" | "auto";
   /**
    * Redirect the ProxyCommand's own stderr to /dev/null so coder CLI chatter
    * (version-mismatch warnings, startup logs) does not bleed into a command's
@@ -62,7 +62,7 @@ const DEFAULT_PORT_FORWARD_TIMEOUT_MS = 30_000;
 export interface SshArgsOptions {
   coderBinary: string;
   loginShell: boolean;
-  waitMode: 'yes' | 'no' | 'auto';
+  waitMode: "yes" | "no" | "auto";
   silenceProxyStderr: boolean;
 }
 
@@ -80,21 +80,21 @@ export function buildSshArgs(
   remoteScript: string,
   options: SshArgsOptions,
 ): string[] {
-  const shell = options.loginShell ? 'bash -lc' : 'bash -c';
+  const shell = options.loginShell ? "bash -lc" : "bash -c";
   const remoteCommand = `${shell} ${shellQuote(remoteScript)}`;
   const proxy =
     `${shellQuote(options.coderBinary)} ssh --stdio --wait=${options.waitMode} ${shellQuote(workspace)}` +
-    (options.silenceProxyStderr ? ' 2>/dev/null' : '');
+    (options.silenceProxyStderr ? " 2>/dev/null" : "");
   return [
-    '-o',
+    "-o",
     `ProxyCommand=${proxy}`,
-    '-o',
-    'StrictHostKeyChecking=no',
-    '-o',
-    'UserKnownHostsFile=/dev/null',
-    '-o',
-    'LogLevel=ERROR',
-    '-T',
+    "-o",
+    "StrictHostKeyChecking=no",
+    "-o",
+    "UserKnownHostsFile=/dev/null",
+    "-o",
+    "LogLevel=ERROR",
+    "-T",
     sshHostAlias(workspace),
     remoteCommand,
   ];
@@ -102,7 +102,7 @@ export function buildSshArgs(
 
 /** A stable, ssh-safe host label. The real workspace is fixed in ProxyCommand. */
 export function sshHostAlias(workspace: string): string {
-  return `coder.${workspace.replace(/[^A-Za-z0-9_.-]/g, '-')}`;
+  return `coder.${workspace.replace(/[^A-Za-z0-9_.-]/g, "-")}`;
 }
 
 /**
@@ -117,24 +117,24 @@ export function buildLocalForwardArgs(
   workspace: string,
   localPort: number,
   remotePort: number,
-  options: { coderBinary: string; waitMode: 'yes' | 'no' | 'auto'; silenceProxyStderr: boolean },
+  options: { coderBinary: string; waitMode: "yes" | "no" | "auto"; silenceProxyStderr: boolean },
 ): string[] {
   const proxy =
     `${shellQuote(options.coderBinary)} ssh --stdio --wait=${options.waitMode} ${shellQuote(workspace)}` +
-    (options.silenceProxyStderr ? ' 2>/dev/null' : '');
+    (options.silenceProxyStderr ? " 2>/dev/null" : "");
   return [
-    '-o',
+    "-o",
     `ProxyCommand=${proxy}`,
-    '-o',
-    'StrictHostKeyChecking=no',
-    '-o',
-    'UserKnownHostsFile=/dev/null',
-    '-o',
-    'LogLevel=ERROR',
-    '-o',
-    'ExitOnForwardFailure=yes',
-    '-N',
-    '-L',
+    "-o",
+    "StrictHostKeyChecking=no",
+    "-o",
+    "UserKnownHostsFile=/dev/null",
+    "-o",
+    "LogLevel=ERROR",
+    "-o",
+    "ExitOnForwardFailure=yes",
+    "-N",
+    "-L",
     `${localPort}:127.0.0.1:${remotePort}`,
     sshHostAlias(workspace),
   ];
@@ -150,33 +150,33 @@ export function buildLocalForwardArgs(
  * same name, Coder applies the preset's value — pick one per parameter.
  */
 export function buildCreateArgs(options: CreateWorkspaceOptions): string[] {
-  const args = ['create', options.workspace, '--yes', '--template', options.template];
+  const args = ["create", options.workspace, "--yes", "--template", options.template];
   if (options.templateVersion !== undefined) {
-    args.push('--template-version', options.templateVersion);
+    args.push("--template-version", options.templateVersion);
   }
   if (options.preset !== undefined) {
-    args.push('--preset', options.preset);
+    args.push("--preset", options.preset);
   }
   for (const [name, value] of Object.entries(options.parameters ?? {})) {
-    args.push('--parameter', `${name}=${value}`);
+    args.push("--parameter", `${name}=${value}`);
   }
   if (options.parameterFile !== undefined) {
-    args.push('--rich-parameter-file', options.parameterFile);
+    args.push("--rich-parameter-file", options.parameterFile);
   }
   if (options.useParameterDefaults) {
-    args.push('--use-parameter-defaults');
+    args.push("--use-parameter-defaults");
   }
   for (const [name, value] of Object.entries(options.ephemeralParameters ?? {})) {
-    args.push('--ephemeral-parameter', `${name}=${value}`);
+    args.push("--ephemeral-parameter", `${name}=${value}`);
   }
   if (options.stopAfter !== undefined) {
-    args.push('--stop-after', options.stopAfter);
+    args.push("--stop-after", options.stopAfter);
   }
   if (options.automaticUpdates !== undefined) {
-    args.push('--automatic-updates', options.automaticUpdates);
+    args.push("--automatic-updates", options.automaticUpdates);
   }
   if (options.org !== undefined) {
-    args.push('--org', options.org);
+    args.push("--org", options.org);
   }
   return args;
 }
@@ -187,14 +187,14 @@ export function parseWorkspaceRef(ref: string): { owner: string; name: string } 
   if (slashCount > 1) {
     throw new Error(`invalid workspace reference "${ref}"; expected [owner/]name[.agent]`);
   }
-  const [ownerOrName, maybeName] = ref.includes('/')
-    ? (ref.split('/', 2) as [string, string])
-    : (['me', ref] as [string, string]);
-  const name = (maybeName ?? ownerOrName).split('.')[0] ?? '';
-  if (name === '' || !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(name)) {
+  const [ownerOrName, maybeName] = ref.includes("/")
+    ? (ref.split("/", 2) as [string, string])
+    : (["me", ref] as [string, string]);
+  const name = (maybeName ?? ownerOrName).split(".")[0] ?? "";
+  if (name === "" || !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(name)) {
     throw new Error(`invalid workspace reference "${ref}"; expected [owner/]name[.agent]`);
   }
-  return { owner: ownerOrName === '' ? 'me' : ownerOrName, name };
+  return { owner: ownerOrName === "" ? "me" : ownerOrName, name };
 }
 
 /**
@@ -212,16 +212,16 @@ export function parseWorkspaceStatus(workspace: unknown): WorkspaceStatus {
     for (const agent of list) {
       const a = asRecord(agent);
       agents.push({
-        name: typeof a.name === 'string' ? a.name : '',
-        status: typeof a.status === 'string' ? a.status : 'connecting',
-        lifecycleState: typeof a.lifecycle_state === 'string' ? a.lifecycle_state : 'created',
+        name: typeof a.name === "string" ? a.name : "",
+        status: typeof a.status === "string" ? a.status : "connecting",
+        lifecycleState: typeof a.lifecycle_state === "string" ? a.lifecycle_state : "created",
       });
     }
   }
   return {
-    name: typeof ws.name === 'string' ? ws.name : '',
-    buildStatus: typeof build.status === 'string' ? build.status : 'pending',
-    transition: typeof build.transition === 'string' ? build.transition : 'start',
+    name: typeof ws.name === "string" ? ws.name : "",
+    buildStatus: typeof build.status === "string" ? build.status : "pending",
+    transition: typeof build.transition === "string" ? build.transition : "start",
     agents,
   };
 }
@@ -234,7 +234,7 @@ export function parseWorkspaceStatus(workspace: unknown): WorkspaceStatus {
  */
 export function parsePresetsOutput(stdout: string): PresetInfo[] {
   const trimmed = stdout.trim();
-  if (trimmed === '' || /^no presets found/i.test(trimmed)) return [];
+  if (trimmed === "" || /^no presets found/i.test(trimmed)) return [];
   return parsePresetList(JSON.parse(trimmed));
 }
 
@@ -249,30 +249,30 @@ export function parsePresetList(json: unknown): PresetInfo[] {
   return json.map((entry) => {
     const record = asRecord(entry);
     const preset = asRecord(record.TemplatePreset ?? record);
-    const name = pickString(preset, 'Name', 'name') ?? '';
-    const description = pickString(preset, 'Description', 'description');
+    const name = pickString(preset, "Name", "name") ?? "";
+    const description = pickString(preset, "Description", "description");
     return {
       name,
-      default: pickBoolean(preset, 'Default', 'default') ?? false,
-      ...(description !== undefined && description !== '' ? { description } : {}),
+      default: pickBoolean(preset, "Default", "default") ?? false,
+      ...(description !== undefined && description !== "" ? { description } : {}),
     };
   });
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
-  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
 }
 
 function pickString(record: Record<string, unknown>, ...keys: string[]): string | undefined {
   for (const key of keys) {
-    if (typeof record[key] === 'string') return record[key] as string;
+    if (typeof record[key] === "string") return record[key] as string;
   }
   return undefined;
 }
 
 function pickBoolean(record: Record<string, unknown>, ...keys: string[]): boolean | undefined {
   for (const key of keys) {
-    if (typeof record[key] === 'boolean') return record[key] as boolean;
+    if (typeof record[key] === "boolean") return record[key] as boolean;
   }
   return undefined;
 }
@@ -289,18 +289,18 @@ export class CoderCliTransport implements CoderTransport {
   readonly #token?: string;
   readonly #extraEnv: Record<string, string>;
   readonly #loginShell: boolean;
-  readonly #waitMode: 'yes' | 'no' | 'auto';
+  readonly #waitMode: "yes" | "no" | "auto";
   readonly #silenceProxyStderr: boolean;
   readonly #portForwardTimeoutMs: number;
 
   constructor(options: CoderCliTransportOptions = {}) {
-    this.#coderBinary = options.coderBinary ?? 'coder';
-    this.#sshBinary = options.sshBinary ?? 'ssh';
+    this.#coderBinary = options.coderBinary ?? "coder";
+    this.#sshBinary = options.sshBinary ?? "ssh";
     this.#url = options.url;
     this.#token = options.token;
     this.#extraEnv = options.env ?? {};
     this.#loginShell = options.loginShell ?? true;
-    this.#waitMode = options.waitMode ?? 'no';
+    this.#waitMode = options.waitMode ?? "no";
     this.#silenceProxyStderr = options.silenceProxyStderr ?? true;
     this.#portForwardTimeoutMs = options.portForwardTimeoutMs ?? DEFAULT_PORT_FORWARD_TIMEOUT_MS;
   }
@@ -337,7 +337,7 @@ export class CoderCliTransport implements CoderTransport {
 
   spawn(options: TransportExecOptions): SpawnedProcess {
     const child = nodeSpawn(this.#sshBinary, this.#sshArgs(options), {
-      stdio: [options.stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+      stdio: [options.stdin !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
       env: this.#childEnv(),
       signal: options.abortSignal,
     });
@@ -355,47 +355,47 @@ export class CoderCliTransport implements CoderTransport {
         silenceProxyStderr: this.#silenceProxyStderr,
       }),
       {
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: ["ignore", "pipe", "pipe"],
         env: this.#childEnv(),
         signal: options.abortSignal,
       },
     );
 
     let closed = false;
-    child.once('close', () => {
+    child.once("close", () => {
       closed = true;
     });
-    child.once('error', () => {
+    child.once("error", () => {
       closed = true;
     });
 
-    let stderr = '';
-    child.stderr?.setEncoding('utf8');
+    let stderr = "";
+    child.stderr?.setEncoding("utf8");
     const onStderr = (chunk: string) => {
       stderr += chunk;
     };
-    child.stderr?.on('data', onStderr);
+    child.stderr?.on("data", onStderr);
 
     try {
       await waitForLocalPort(localPort, child, this.#portForwardTimeoutMs, options.abortSignal);
     } catch (error) {
-      child.kill('SIGTERM');
+      child.kill("SIGTERM");
       const code = (error as NodeJS.ErrnoException)?.code;
-      if (code === 'ENOENT' || code === 'EACCES') {
+      if (code === "ENOENT" || code === "EACCES") {
         throw describeSpawnError(error, this.#sshBinary);
       }
       const detail = stderr.trim();
       throw new Error(
         `ssh -L forward (${options.workspace} :${options.remotePort}) failed to become ready` +
-          (detail ? `: ${detail}` : ''),
+          (detail ? `: ${detail}` : ""),
         { cause: error },
       );
     }
     // Readiness done: stop buffering stderr for the tunnel's remaining lifetime.
-    child.stderr?.off('data', onStderr);
+    child.stderr?.off("data", onStderr);
 
     return {
-      localHost: '127.0.0.1',
+      localHost: "127.0.0.1",
       localPort,
       get closed() {
         return closed;
@@ -403,28 +403,28 @@ export class CoderCliTransport implements CoderTransport {
       close: async () => {
         if (closed) return;
         closed = true;
-        child.kill('SIGTERM');
+        child.kill("SIGTERM");
       },
     };
   }
 
   async start(workspace: string, options?: LifecycleOptions): Promise<void> {
-    await this.#runLifecycle(['start', workspace, '--yes'], workspace, 'start', options);
+    await this.#runLifecycle(["start", workspace, "--yes"], workspace, "start", options);
   }
 
   async stop(workspace: string, options?: LifecycleOptions): Promise<void> {
-    await this.#runLifecycle(['stop', workspace, '--yes'], workspace, 'stop', options);
+    await this.#runLifecycle(["stop", workspace, "--yes"], workspace, "stop", options);
   }
 
   async destroy(workspace: string, options?: LifecycleOptions): Promise<void> {
-    await this.#runLifecycle(['delete', workspace, '--yes'], workspace, 'delete', options);
+    await this.#runLifecycle(["delete", workspace, "--yes"], workspace, "delete", options);
   }
 
   async status(workspace: string, options?: LifecycleOptions): Promise<WorkspaceStatus | null> {
     const { owner, name } = parseWorkspaceRef(workspace);
     const result = await this.#run(
       this.#coderBinary,
-      ['list', '--output', 'json', '--search', `owner:${owner} name:${name}`],
+      ["list", "--output", "json", "--search", `owner:${owner} name:${name}`],
       { abortSignal: options?.abortSignal },
     );
     if (result.exitCode !== 0) {
@@ -457,12 +457,12 @@ export class CoderCliTransport implements CoderTransport {
   }
 
   async listPresets(options: ListPresetsOptions): Promise<PresetInfo[]> {
-    const args = ['templates', 'presets', 'list', options.template, '--output', 'json'];
+    const args = ["templates", "presets", "list", options.template, "--output", "json"];
     if (options.templateVersion !== undefined) {
-      args.push('--template-version', options.templateVersion);
+      args.push("--template-version", options.templateVersion);
     }
     if (options.org !== undefined) {
-      args.push('--org', options.org);
+      args.push("--org", options.org);
     }
     const result = await this.#run(this.#coderBinary, args, {
       abortSignal: options.abortSignal,
@@ -510,24 +510,24 @@ export class CoderCliTransport implements CoderTransport {
   ): Promise<ExecResult> {
     return new Promise<ExecResult>((resolve, reject) => {
       const child = nodeSpawn(binary, args, {
-        stdio: [options.stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+        stdio: [options.stdin !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
         env: this.#childEnv(),
         signal: options.abortSignal,
       });
 
-      let stdout = '';
-      let stderr = '';
-      child.stdout?.setEncoding('utf8');
-      child.stdout?.on('data', (chunk: string) => {
+      let stdout = "";
+      let stderr = "";
+      child.stdout?.setEncoding("utf8");
+      child.stdout?.on("data", (chunk: string) => {
         stdout += chunk;
       });
-      child.stderr?.setEncoding('utf8');
-      child.stderr?.on('data', (chunk: string) => {
+      child.stderr?.setEncoding("utf8");
+      child.stderr?.on("data", (chunk: string) => {
         stderr += chunk;
       });
 
-      child.on('error', (error) => reject(describeSpawnError(error, binary)));
-      child.on('close', (code) => {
+      child.on("error", (error) => reject(describeSpawnError(error, binary)));
+      child.on("close", (code) => {
         resolve({ exitCode: code ?? 0, stdout, stderr });
       });
 
@@ -543,9 +543,9 @@ export class CoderCliTransport implements CoderTransport {
  */
 function describeSpawnError(error: unknown, binary: string): Error {
   const code = (error as NodeJS.ErrnoException)?.code;
-  if (code === 'ENOENT' || code === 'EACCES') {
+  if (code === "ENOENT" || code === "EACCES") {
     return new Error(
-      `failed to launch "${binary}": ${code === 'ENOENT' ? 'not found on PATH' : 'not executable'}. ` +
+      `failed to launch "${binary}": ${code === "ENOENT" ? "not found on PATH" : "not executable"}. ` +
         `Install the Coder CLI (https://coder.com/docs/install) and run \`coder login\`, ensure an OpenSSH ` +
         `client is on PATH, or set explicit paths via new CoderCliTransport({ coderBinary, sshBinary }).`,
       { cause: error as Error },
@@ -557,7 +557,7 @@ function describeSpawnError(error: unknown, binary: string): Error {
 function writeStdin(child: ChildProcess, stdin?: Uint8Array | string): void {
   if (stdin === undefined || child.stdin === null) return;
   // Swallow EPIPE if the process exits before consuming stdin.
-  child.stdin.on('error', () => {});
+  child.stdin.on("error", () => {});
   child.stdin.end(stdin);
 }
 
@@ -573,22 +573,22 @@ function toSpawnedProcess(
   const wait = new Promise<{ exitCode: number }>((resolve, reject) => {
     const onError = (error: Error) => finish(() => reject(describeSpawnError(error, binary)));
     const onClose = (code: number | null) => finish(() => resolve({ exitCode: code ?? 0 }));
-    const onAbort = () => finish(() => reject(abortSignal?.reason ?? new Error('aborted')));
+    const onAbort = () => finish(() => reject(abortSignal?.reason ?? new Error("aborted")));
     const finish = (fn: () => void) => {
       if (settled) return;
       settled = true;
-      child.off('error', onError);
-      child.off('close', onClose);
-      abortSignal?.removeEventListener('abort', onAbort);
+      child.off("error", onError);
+      child.off("close", onClose);
+      abortSignal?.removeEventListener("abort", onAbort);
       fn();
     };
-    child.on('error', onError);
-    child.on('close', onClose);
+    child.on("error", onError);
+    child.on("close", onClose);
     if (abortSignal) {
       if (abortSignal.aborted) {
-        finish(() => reject(abortSignal.reason ?? new Error('aborted')));
+        finish(() => reject(abortSignal.reason ?? new Error("aborted")));
       } else {
-        abortSignal.addEventListener('abort', onAbort, { once: true });
+        abortSignal.addEventListener("abort", onAbort, { once: true });
       }
     }
   });
@@ -599,7 +599,7 @@ function toSpawnedProcess(
     stderr,
     wait: () => wait,
     kill: async () => {
-      child.kill('SIGTERM');
+      child.kill("SIGTERM");
     },
   };
 }
@@ -620,12 +620,12 @@ function allocateLocalPort(): Promise<number> {
   return new Promise<number>((resolve, reject) => {
     const server = net.createServer();
     server.unref();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
       const address = server.address();
-      const port = typeof address === 'object' && address !== null ? address.port : 0;
+      const port = typeof address === "object" && address !== null ? address.port : 0;
       server.close(() => {
-        if (port === 0) reject(new Error('failed to allocate a local port'));
+        if (port === 0) reject(new Error("failed to allocate a local port"));
         else resolve(port);
       });
     });
@@ -645,28 +645,28 @@ function waitForLocalPort(
     const settle = (fn: () => void) => {
       if (done) return;
       done = true;
-      child.off('close', onClose);
-      child.off('error', onError);
-      abortSignal?.removeEventListener('abort', onAbort);
+      child.off("close", onClose);
+      child.off("error", onError);
+      abortSignal?.removeEventListener("abort", onAbort);
       fn();
     };
     const onClose = (code: number | null) =>
-      settle(() => reject(new Error(`ssh -L forward exited early (code ${code ?? 'null'})`)));
+      settle(() => reject(new Error(`ssh -L forward exited early (code ${code ?? "null"})`)));
     const onError = (error: Error) => settle(() => reject(error));
-    const onAbort = () => settle(() => reject(abortSignal?.reason ?? new Error('aborted')));
+    const onAbort = () => settle(() => reject(abortSignal?.reason ?? new Error("aborted")));
 
-    child.on('close', onClose);
-    child.on('error', onError);
-    abortSignal?.addEventListener('abort', onAbort, { once: true });
+    child.on("close", onClose);
+    child.on("error", onError);
+    abortSignal?.addEventListener("abort", onAbort, { once: true });
 
     const attempt = () => {
       if (done) return;
-      const socket = net.connect(port, '127.0.0.1');
-      socket.once('connect', () => {
+      const socket = net.connect(port, "127.0.0.1");
+      socket.once("connect", () => {
         socket.destroy();
         settle(resolve);
       });
-      socket.once('error', () => {
+      socket.once("error", () => {
         socket.destroy();
         if (done) return;
         if (Date.now() > deadline) {

@@ -1,17 +1,17 @@
-import type { HarnessV1NetworkSandboxSession } from '@ai-sdk/harness';
-import type { Experimental_SandboxSession } from '@ai-sdk/provider-utils';
-import * as fileIo from './file-io.js';
+import type { HarnessV1NetworkSandboxSession } from "@ai-sdk/harness";
+import type { Experimental_SandboxSession } from "@ai-sdk/provider-utils";
+import * as fileIo from "./file-io.js";
 import type {
   CoderTransport,
   ExecResult,
   PortForward,
   SpawnedProcess,
   TransportExecOptions,
-} from './transport.js';
+} from "./transport.js";
 
 // Derived from the moving canary contract so the run/spawn option bag can never
 // silently drift from the AI SDK's sandbox-session shape.
-type SandboxProcessOptions = Parameters<Experimental_SandboxSession['run']>[0];
+type SandboxProcessOptions = Parameters<Experimental_SandboxSession["run"]>[0];
 
 export interface CoderWorkspaceSessionConfig {
   transport: CoderTransport;
@@ -62,7 +62,7 @@ export class CoderWorkspaceSession implements HarnessV1NetworkSandboxSession {
     this.description =
       `Coder workspace "${config.workspace}". ` +
       `Default working directory: ${config.defaultWorkingDirectory}. ` +
-      `Exposed ports: ${this.#ports.length > 0 ? this.#ports.join(', ') : 'none'}. ` +
+      `Exposed ports: ${this.#ports.length > 0 ? this.#ports.join(", ") : "none"}. ` +
       `Commands run inside the workspace via 'coder ssh'.`;
   }
 
@@ -120,10 +120,10 @@ export class CoderWorkspaceSession implements HarnessV1NetworkSandboxSession {
 
   readonly getPortUrl = async (options: {
     port: number;
-    protocol?: 'http' | 'https' | 'ws';
+    protocol?: "http" | "https" | "ws";
   }): Promise<string> => {
     if (this.#stopped) {
-      throw new Error('cannot resolve a port URL: the sandbox session is stopped');
+      throw new Error("cannot resolve a port URL: the sandbox session is stopped");
     }
     let forward = this.#forwards.get(options.port);
     if (forward !== undefined) {
@@ -146,7 +146,7 @@ export class CoderWorkspaceSession implements HarnessV1NetworkSandboxSession {
       forward.catch(() => this.#forwards.delete(options.port));
     }
     const resolved = await forward;
-    const scheme = localScheme(options.protocol ?? 'ws');
+    const scheme = localScheme(options.protocol ?? "ws");
     return `${scheme}://${resolved.localHost}:${resolved.localPort}`;
   };
 
@@ -209,12 +209,12 @@ export class CoderWorkspaceSession implements HarnessV1NetworkSandboxSession {
  * secure schemes collapse to their plaintext local equivalent. Bridge adapters
  * request `ws`, which is the common case.
  */
-function localScheme(protocol: 'http' | 'https' | 'ws'): 'http' | 'ws' {
+function localScheme(protocol: "http" | "https" | "ws"): "http" | "ws" {
   switch (protocol) {
-    case 'ws':
-      return 'ws';
-    case 'http':
-    case 'https':
-      return 'http';
+    case "ws":
+      return "ws";
+    case "http":
+    case "https":
+      return "http";
   }
 }

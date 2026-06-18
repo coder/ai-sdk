@@ -1,6 +1,6 @@
-import path from 'node:path';
-import { shellQuote } from './shell.js';
-import type { CoderTransport } from './transport.js';
+import path from "node:path";
+import { shellQuote } from "./shell.js";
+import type { CoderTransport } from "./transport.js";
 
 /**
  * File I/O for {@link CoderWorkspaceSession}, implemented over the
@@ -42,7 +42,7 @@ export interface WriteTextFileOptions extends WriteFileOptions<string> {
 
 /** Resolve a (possibly relative) sandbox path against the default working dir. */
 export function resolveRemotePath(ctx: FileIoContext, p: string): string {
-  return p.startsWith('/') ? p : path.posix.join(ctx.defaultWorkingDirectory, p);
+  return p.startsWith("/") ? p : path.posix.join(ctx.defaultWorkingDirectory, p);
 }
 
 export async function readBinaryFile(
@@ -63,8 +63,8 @@ export async function readBinaryFile(
   if (result.exitCode !== 0) {
     throw new Error(`failed to read ${abs} (exit ${result.exitCode}): ${result.stderr.trim()}`);
   }
-  const base64 = result.stdout.replace(/\s+/g, '');
-  return new Uint8Array(Buffer.from(base64, 'base64'));
+  const base64 = result.stdout.replace(/\s+/g, "");
+  return new Uint8Array(Buffer.from(base64, "base64"));
 }
 
 export async function readFile(
@@ -104,7 +104,7 @@ export async function writeBinaryFile(
   const abs = resolveRemotePath(ctx, options.path);
   const dir = path.posix.dirname(abs);
   const command = `mkdir -p ${shellQuote(dir)} && base64 -d > ${shellQuote(abs)}`;
-  const base64 = Buffer.from(options.content).toString('base64');
+  const base64 = Buffer.from(options.content).toString("base64");
   const result = await ctx.transport.exec({
     workspace: ctx.workspace,
     command,
@@ -142,35 +142,35 @@ export async function writeTextFile(
 
 /** Slice text to a 1-based inclusive line range; tolerant of out-of-range bounds. */
 export function sliceLines(text: string, startLine?: number, endLine?: number): string {
-  const lines = text.split('\n');
+  const lines = text.split("\n");
   const start = Math.max(1, startLine ?? 1) - 1;
   const end = endLine === undefined ? lines.length : Math.min(lines.length, endLine);
-  return lines.slice(start, end).join('\n');
+  return lines.slice(start, end).join("\n");
 }
 
 /** Map common encoding labels to Node's `BufferEncoding`; defaults to utf-8. */
 export function normalizeEncoding(encoding?: string): BufferEncoding {
-  if (encoding === undefined) return 'utf8';
-  const normalized = encoding.toLowerCase().replace(/[-_]/g, '');
+  if (encoding === undefined) return "utf8";
+  const normalized = encoding.toLowerCase().replace(/[-_]/g, "");
   switch (normalized) {
-    case 'utf8':
-    case 'utf':
-      return 'utf8';
-    case 'utf16le':
-    case 'ucs2':
-      return 'utf16le';
-    case 'latin1':
-    case 'binary':
-    case 'iso88591':
-      return 'latin1';
-    case 'ascii':
-      return 'ascii';
-    case 'base64':
-      return 'base64';
-    case 'hex':
-      return 'hex';
+    case "utf8":
+    case "utf":
+      return "utf8";
+    case "utf16le":
+    case "ucs2":
+      return "utf16le";
+    case "latin1":
+    case "binary":
+    case "iso88591":
+      return "latin1";
+    case "ascii":
+      return "ascii";
+    case "base64":
+      return "base64";
+    case "hex":
+      return "hex";
     default:
-      return 'utf8';
+      return "utf8";
   }
 }
 

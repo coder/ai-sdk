@@ -1,4 +1,4 @@
-export { CoderCliTransport, type CoderCliTransportOptions } from './cli-transport.js';
+export { CoderCliTransport, type CoderCliTransportOptions } from "./cli-transport.js";
 export {
   CODER_WORKSPACE_PROVIDER_ID,
   type CoderCreateSettings,
@@ -6,11 +6,11 @@ export {
   type CoderWorkspaceRef,
   type CoderWorkspaceSettings,
   createCoderWorkspace,
-} from './coder-workspace-provider.js';
+} from "./coder-workspace-provider.js";
 export {
   CoderWorkspaceSession,
   type CoderWorkspaceSessionConfig,
-} from './coder-workspace-session.js';
+} from "./coder-workspace-session.js";
 export type {
   CoderTransport,
   CreateWorkspaceOptions,
@@ -27,4 +27,4 @@ export type {
   WorkspaceAgentStatus,
   WorkspaceBuildStatus,
   WorkspaceStatus,
-} from './transport.js';
+} from "./transport.js";

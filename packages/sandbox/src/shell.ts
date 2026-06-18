@@ -38,17 +38,17 @@ export interface RemoteCommandOptions {
 export function buildRemoteScript(options: RemoteCommandOptions): string {
   const segments: string[] = [];
 
-  if (options.workingDirectory !== undefined && options.workingDirectory !== '') {
+  if (options.workingDirectory !== undefined && options.workingDirectory !== "") {
     segments.push(`cd ${shellQuote(options.workingDirectory)} &&`);
   }
 
   const envEntries = Object.entries(options.env ?? {});
   if (envEntries.length > 0) {
-    const assignments = envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`).join(' ');
+    const assignments = envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`).join(" ");
     segments.push(`env ${assignments} bash -c ${shellQuote(options.command)}`);
   } else {
     segments.push(options.command);
   }
 
-  return segments.join(' ');
+  return segments.join(" ");
 }

@@ -19,10 +19,10 @@
  * Usage:
  *   CODER_WORKSPACE=my-dev-ws npx tsx examples/claude-code-tui.ts
  */
-import { HarnessAgent, type HarnessAgentSession } from '@ai-sdk/harness/agent';
-import { createClaudeCode } from '@ai-sdk/harness-claude-code';
-import { type AgentTUIAgent, runAgentTUI } from '@ai-sdk/tui';
-import { createCoderWorkspace } from '../src/index.js';
+import { HarnessAgent, type HarnessAgentSession } from "@ai-sdk/harness/agent";
+import { createClaudeCode } from "@ai-sdk/harness-claude-code";
+import { type AgentTUIAgent, runAgentTUI } from "@ai-sdk/tui";
+import { createCoderWorkspace } from "../src/index.js";
 
 /**
  * Adapt a {@link HarnessAgent} — whose `generate`/`stream` need a session — into
@@ -31,7 +31,7 @@ import { createCoderWorkspace } from '../src/index.js';
  */
 function toTUIAgent(agent: HarnessAgent, session: HarnessAgentSession): AgentTUIAgent {
   return {
-    version: 'agent-v1',
+    version: "agent-v1",
     id: agent.id,
     tools: agent.tools,
     generate: (request) => agent.generate({ ...request, session }),
@@ -42,26 +42,26 @@ function toTUIAgent(agent: HarnessAgent, session: HarnessAgentSession): AgentTUI
 async function main(): Promise<void> {
   const workspace = process.env.CODER_WORKSPACE;
   if (!workspace) {
-    throw new Error('Set CODER_WORKSPACE to the workspace to use, e.g. CODER_WORKSPACE=my-dev-ws');
+    throw new Error("Set CODER_WORKSPACE to the workspace to use, e.g. CODER_WORKSPACE=my-dev-ws");
   }
 
   const agent = new HarnessAgent({
-    harness: createClaudeCode({ thinking: 'adaptive' }),
+    harness: createClaudeCode({ thinking: "adaptive" }),
     sandbox: createCoderWorkspace({ workspace }),
     // To create a fresh workspace from a template instead of wrapping one:
     // sandbox: createCoderWorkspace({
     //   create: { template: 'claude-code-test', useParameterDefaults: true },
     // }),
-    instructions: 'You are a careful coding assistant. Prefer small, well-explained changes.',
+    instructions: "You are a careful coding assistant. Prefer small, well-explained changes.",
   });
 
   const session = await agent.createSession();
   try {
     await runAgentTUI({
-      title: 'Claude Code @ Coder',
+      title: "Claude Code @ Coder",
       agent: toTUIAgent(agent, session),
-      tools: 'auto-collapsed',
-      reasoning: 'collapsed',
+      tools: "auto-collapsed",
+      reasoning: "collapsed",
     });
   } finally {
     await session.destroy();

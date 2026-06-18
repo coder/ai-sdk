@@ -2,7 +2,30 @@
   "name": "@coder/ai-sdk-sandbox",
   "version": "0.1.0",
   "description": "Coder workspace sandbox provider for the Vercel AI SDK v7 HarnessAgent",
+  "keywords": [
+    "ai-sdk",
+    "claude-code",
+    "coder",
+    "codex",
+    "harness",
+    "sandbox"
+  ],
+  "homepage": "https://github.com/coder/ai-sdk/tree/main/packages/sandbox#readme",
+  "bugs": {
+    "url": "https://github.com/coder/ai-sdk/issues"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coder/ai-sdk.git",
+    "directory": "packages/sandbox"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "type": "module",
+  "sideEffects": false,
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -13,66 +36,41 @@
       "default": "./dist/index.js"
     }
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/coder/ai-sdk-sandbox.git"
-  },
-  "homepage": "https://github.com/coder/ai-sdk-sandbox#readme",
-  "bugs": {
-    "url": "https://github.com/coder/ai-sdk-sandbox/issues"
-  },
   "publishConfig": {
     "access": "public",
     "provenance": true
   },
-  "files": [
-    "dist",
-    "README.md"
-  ],
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts --clean",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "format": "biome format --write .",
-    "lint": "biome lint .",
-    "check": "biome check .",
     "attw": "attw --pack --ignore-rules cjs-resolves-to-esm",
     "verify:real": "tsx scripts/verify-real.ts",
     "verify:create": "tsx scripts/verify-create.ts",
-    "prepublishOnly": "npm run build && npm run typecheck && npm test && publint && npm run attw"
-  },
-  "keywords": [
-    "coder",
-    "ai-sdk",
-    "harness",
-    "sandbox",
-    "claude-code",
-    "codex"
-  ],
-  "license": "Apache-2.0",
-  "engines": {
-    "node": ">=22"
-  },
-  "sideEffects": false,
-  "peerDependencies": {
-    "@ai-sdk/harness": "^1.0.0-canary.11",
-    "@ai-sdk/provider-utils": "^5.0.0-canary.48"
+    "prepublishOnly": "pnpm run build && pnpm run typecheck && pnpm test && publint && pnpm run attw"
   },
   "devDependencies": {
-    "@ai-sdk/harness": "^1.0.0-canary.11",
-    "@ai-sdk/harness-claude-code": "^1.0.0-canary.7",
-    "@ai-sdk/provider-utils": "^5.0.0-canary.48",
-    "@ai-sdk/tui": "^1.0.0-canary.11",
+    "@ai-sdk/harness": "1.0.0-canary.11",
+    "@ai-sdk/harness-claude-code": "1.0.0-canary.7",
+    "@ai-sdk/provider-utils": "5.0.0-canary.48",
+    "@ai-sdk/tui": "1.0.0-canary.11",
     "@arethetypeswrong/cli": "^0.18.0",
-    "@biomejs/biome": "2.5.0",
     "@types/node": "^22",
     "@vitest/coverage-v8": "^4.1.9",
     "publint": "^0.3.0",
     "tsup": "^8.5.1",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.9"
+    "vitest": "^4.1.9",
+    "zod": "4.4.3"
+  },
+  "peerDependencies": {
+    "@ai-sdk/harness": "^1.0.0-canary.11",
+    "@ai-sdk/provider-utils": "^5.0.0-canary.48"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

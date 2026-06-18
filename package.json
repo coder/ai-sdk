@@ -2,7 +2,7 @@
   "name": "coder-ai-sdk",
   "version": "0.0.0",
   "private": true,
-  "description": "Monorepo for Coder's Vercel AI SDK packages (@coder/ai-sdk-sandbox, @coder/ai-sdk-agent).",
+  "description": "Monorepo for Coder's Vercel AI SDK packages (@coder/ai-sdk-sandbox, @coder/ai-sdk-agent, @coder/ai-sdk-provider).",
   "homepage": "https://github.com/coder/ai-sdk#readme",
   "bugs": {
     "url": "https://github.com/coder/ai-sdk/issues"
@@ -24,8 +24,8 @@
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "check": "oxfmt --check . && oxlint && pnpm -r typecheck",
-    "publint": "pnpm --filter @coder/ai-sdk-sandbox exec publint",
-    "attw": "pnpm --filter @coder/ai-sdk-sandbox attw"
+    "publint": "pnpm --filter @coder/ai-sdk-sandbox --filter @coder/ai-sdk-provider exec publint",
+    "attw": "pnpm --filter @coder/ai-sdk-sandbox --filter @coder/ai-sdk-provider attw"
   },
   "devDependencies": {
     "oxfmt": "^0.55.0",

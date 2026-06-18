@@ -1,6 +1,8 @@
 [tools]
 node = "26.3.0"
 pnpm = "11.7.0"
+actionlint = "1.7.12"
+zizmor = "1.25.2"
 
 [settings]
 lockfile = true

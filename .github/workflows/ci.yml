@@ -34,6 +34,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
 
       - name: Install node and pnpm via mise
         uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4
@@ -75,17 +77,41 @@ jobs:
       - name: Are the types wrong? (sandbox)
         run: pnpm attw
 
+  lint-workflows:
+    name: Lint workflows (actionlint + zizmor)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install tools via mise
+        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4
+
+      - name: actionlint
+        run: actionlint
+
+      - name: zizmor
+        run: zizmor .github/workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   # Single, stable required status check. The branch ruleset requires exactly
-  # one context named "Required"; it stays valid no matter how the matrix
-  # changes. `needs.build.result` is the matrix's aggregate — 'success' only if
-  # every leg passed. Runs in the merge queue (merge_group) too.
+  # one context named "Required"; it aggregates every other job, so it stays
+  # valid no matter how the matrix or job list changes — 'success' only if all
+  # passed. Runs in the merge queue (merge_group) too.
   Required:
     name: Required
     if: ${{ always() }}
-    needs: [build]
+    needs: [build, lint-workflows]
     runs-on: ubuntu-latest
     steps:
-      - name: Verify the build matrix succeeded
+      - name: Verify all jobs succeeded
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+          LINT_RESULT: ${{ needs.lint-workflows.result }}
         run: |
-          echo "build matrix result: ${{ needs.build.result }}"
-          test "${{ needs.build.result }}" = "success"
+          echo "build=$BUILD_RESULT lint-workflows=$LINT_RESULT"
+          test "$BUILD_RESULT" = "success"
+          test "$LINT_RESULT" = "success"

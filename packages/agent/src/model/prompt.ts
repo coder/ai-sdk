@@ -1,10 +1,20 @@
 import type {
   LanguageModelV3CallOptions,
+  LanguageModelV3DataContent,
   LanguageModelV3Message,
   LanguageModelV3Prompt,
   LanguageModelV3ToolResultOutput,
 } from "@ai-sdk/provider";
 import type { ChatInputPart, DynamicTool, ToolResult } from "../coder/types.js";
+
+/** Namespace key for this package's options on AI SDK message-part `providerOptions`. */
+export const CODER_PROVIDER_OPTIONS = "coder";
+
+/** Shape of this package's `providerOptions.coder` payload on a file part. */
+export interface CoderFileProviderOptions {
+  /** A pre-uploaded chat-file id to reuse instead of uploading the part's bytes. */
+  fileId?: string;
+}
 
 /** Concatenated system messages, mapped to chatd's `system_prompt`. */
 export function extractSystemPrompt(prompt: LanguageModelV3Prompt): string | undefined {
@@ -28,15 +38,17 @@ export type UserContent = Extract<LanguageModelV3Message, { role: "user" }>["con
  * here so {@link userContentToInputParts} stays pure and testable.
  */
 export type FilePartUploader = (file: {
-  data: Uint8Array | string | URL;
+  data: LanguageModelV3DataContent;
   mediaType: string;
   filename?: string;
 }) => Promise<string>;
 
 /** Reads a pre-uploaded file id from a file part's `providerOptions.coder.fileId`. */
 function coderFileId(providerOptions: unknown): string | undefined {
-  const coder = (providerOptions as { coder?: { fileId?: unknown } } | undefined)?.coder;
-  return typeof coder?.fileId === "string" ? coder.fileId : undefined;
+  const ns = (providerOptions as Record<string, CoderFileProviderOptions> | undefined)?.[
+    CODER_PROVIDER_OPTIONS
+  ];
+  return typeof ns?.fileId === "string" ? ns.fileId : undefined;
 }
 
 /**
@@ -49,22 +61,26 @@ export async function userContentToInputParts(
   content: UserContent,
   uploadFile: FilePartUploader,
 ): Promise<ChatInputPart[]> {
-  const out: ChatInputPart[] = [];
-  for (const part of content) {
-    if (part.type === "text") {
-      if (part.text.length > 0) out.push({ type: "text", text: part.text });
-    } else if (part.type === "file") {
-      const fileId =
-        coderFileId(part.providerOptions) ??
-        (await uploadFile({
-          data: part.data,
-          mediaType: part.mediaType,
-          filename: part.filename,
-        }));
-      out.push({ type: "file", file_id: fileId });
-    }
-  }
-  return out;
+  // Uploads are independent, so run them concurrently; `map` preserves order.
+  const parts = await Promise.all(
+    content.map(async (part): Promise<ChatInputPart | null> => {
+      if (part.type === "text") {
+        return part.text.length > 0 ? { type: "text", text: part.text } : null;
+      }
+      if (part.type === "file") {
+        const fileId =
+          coderFileId(part.providerOptions) ??
+          (await uploadFile({
+            data: part.data,
+            mediaType: part.mediaType,
+            filename: part.filename,
+          }));
+        return { type: "file", file_id: fileId };
+      }
+      return null;
+    }),
+  );
+  return parts.filter((p): p is ChatInputPart => p !== null);
 }
 
 function toolResultOutputToChatd(output: LanguageModelV3ToolResultOutput): {

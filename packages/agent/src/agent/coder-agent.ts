@@ -17,6 +17,7 @@ import {
 import { CoderAgentError } from "../errors.js";
 import type { FileContent } from "../files.js";
 import { CoderLanguageModel } from "../model/language-model.js";
+import { CODER_PROVIDER_OPTIONS } from "../model/prompt.js";
 import type { WorkspaceFileStore, WorkspacePlacement } from "../workspace-files.js";
 
 type InnerAgent<TOOLS extends ToolSet> = ToolLoopAgent<never, TOOLS, never>;
@@ -40,7 +41,7 @@ function makeChatAttachment(file: UploadedChatFile): ChatAttachment {
       data: "",
       mediaType: file.mediaType,
       ...(file.name ? { filename: file.name } : {}),
-      providerOptions: { coder: { fileId: file.id } },
+      providerOptions: { [CODER_PROVIDER_OPTIONS]: { fileId: file.id } },
     }),
   };
 }

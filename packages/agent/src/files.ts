@@ -1,3 +1,4 @@
+import type { LanguageModelV3DataContent } from "@ai-sdk/provider";
 import { CoderAgentError } from "./errors.js";
 
 /**
@@ -61,12 +62,9 @@ export function resolveFileContent(
   } else if (isReadableStream(content)) {
     body = content;
     size = undefined;
-  } else if (content instanceof Uint8Array) {
+  } else if (content instanceof Uint8Array || content instanceof ArrayBuffer) {
     size = content.byteLength;
     body = new Blob([content as BlobPart]);
-  } else if (content instanceof ArrayBuffer) {
-    size = content.byteLength;
-    body = new Blob([content]);
   } else {
     throw new CoderAgentError(
       "Unsupported file content: expected a Blob/File, ReadableStream, Uint8Array, or ArrayBuffer.",
@@ -97,7 +95,7 @@ function base64ToBytes(b64: string): Uint8Array {
  * not expected: this model declares no `supportedUrls`, so the SDK downloads
  * them to bytes before calling us — a URL here is therefore an error.
  */
-export function dataContentToFileContent(data: Uint8Array | string | URL): FileContent {
+export function dataContentToFileContent(data: LanguageModelV3DataContent): FileContent {
   if (data instanceof Uint8Array) return data;
   if (typeof data === "string") return base64ToBytes(data);
   throw new CoderAgentError(

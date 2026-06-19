@@ -57,9 +57,6 @@ export const CHAT_ATTACHMENT_MEDIA_TYPES: ReadonlySet<string> = new Set<ChatAtta
 /** Per-file size cap enforced by the chat-file upload endpoint (10 MiB). */
 export const MAX_CHAT_FILE_SIZE_BYTES = 10 * 1024 * 1024;
 
-/** Maximum number of distinct file ids that may be associated with one chat. */
-export const MAX_CHAT_FILE_IDS = 50;
-
 export type ChatClientType = "ui" | "api";
 export type ChatPlanMode = "" | "plan";
 export type ChatBusyBehavior = "queue" | "interrupt";
@@ -270,16 +267,6 @@ export interface ChatMessagesResponse {
 /** Response from `POST /api/experimental/chats/files`: the uploaded file's id. */
 export interface UploadChatFileResponse {
   id: string;
-}
-
-/** Lightweight metadata about a chat file (no content). Mirrors `codersdk.ChatFileMetadata`. */
-export interface ChatFileMetadata {
-  id: string;
-  owner_id: string;
-  organization_id: string;
-  name: string;
-  mime_type: string;
-  created_at: string;
 }
 
 export interface ChatModelConfig {

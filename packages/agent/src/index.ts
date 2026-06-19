@@ -43,6 +43,8 @@ export type { WorkspaceFileStore, WorkspacePlacement } from "./workspace-files.j
 export { TurnTranslator } from "./model/translate.js";
 export {
   classifyTurnAction,
+  CODER_PROVIDER_OPTIONS,
+  type CoderFileProviderOptions,
   dynamicToolNames,
   extractSystemPrompt,
   type FilePartUploader,
@@ -54,9 +56,5 @@ export {
 export { streamChatEvents, type WebSocketFactory, type WebSocketLike } from "./coder/ws.js";
 export { CoderAgentError, CoderApiError, CoderChatError } from "./errors.js";
 // Runtime constants (the `export type *` below only re-exports types).
-export {
-  CHAT_ATTACHMENT_MEDIA_TYPES,
-  MAX_CHAT_FILE_IDS,
-  MAX_CHAT_FILE_SIZE_BYTES,
-} from "./coder/types.js";
+export { CHAT_ATTACHMENT_MEDIA_TYPES, MAX_CHAT_FILE_SIZE_BYTES } from "./coder/types.js";
 export type * from "./coder/types.js";

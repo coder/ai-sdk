@@ -105,6 +105,17 @@ export class CoderChatClient {
     return res;
   }
 
+  /** Read a response body as JSON, tolerating an empty or malformed body (→ undefined). */
+  async #json<T>(res: Response): Promise<T | undefined> {
+    const text = await res.text();
+    if (text.length === 0) return undefined;
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      return undefined;
+    }
+  }
+
   async #request<T>(
     method: string,
     path: string,
@@ -116,13 +127,7 @@ export class CoderChatClient {
       headers: body === undefined ? undefined : { "Content-Type": "application/json" },
       signal,
     });
-    const text = await res.text();
-    if (text.length === 0) return undefined as T;
-    try {
-      return JSON.parse(text) as T;
-    } catch {
-      return undefined as T;
-    }
+    return (await this.#json<T>(res)) as T;
   }
 
   // --- REST -----------------------------------------------------------------
@@ -240,9 +245,8 @@ export class CoderChatClient {
       `${API_PREFIX}/files?organization=${encodeURIComponent(organizationId)}`,
       { body: resolved.body, headers, signal },
     );
-    const text = await res.text();
-    const parsed = (text.length > 0 ? JSON.parse(text) : {}) as UploadChatFileResponse;
-    return { id: parsed.id, mediaType: resolved.mediaType, name: resolved.name };
+    const parsed = await this.#json<UploadChatFileResponse>(res);
+    return { id: parsed?.id ?? "", mediaType: resolved.mediaType, name: resolved.name };
   }
 
   /** Download a chat file's bytes and media type by id. */

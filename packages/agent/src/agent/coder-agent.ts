@@ -1,5 +1,6 @@
 import {
   type Agent,
+  type FilePart,
   type StopCondition,
   stepCountIs,
   type SystemModelMessage,
@@ -7,11 +8,47 @@ import {
   ToolLoopAgent,
   type ToolSet,
 } from "ai";
-import { CoderChatClient, type CoderChatClientOptions } from "../coder/client.js";
+import {
+  type ChatFileInput,
+  CoderChatClient,
+  type CoderChatClientOptions,
+  type UploadedChatFile,
+} from "../coder/client.js";
 import { CoderAgentError } from "../errors.js";
+import type { FileContent } from "../files.js";
 import { CoderLanguageModel } from "../model/language-model.js";
+import { CODER_PROVIDER_OPTIONS } from "../model/prompt.js";
+import type { WorkspaceFileStore, WorkspacePlacement } from "../workspace-files.js";
 
 type InnerAgent<TOOLS extends ToolSet> = ToolLoopAgent<never, TOOLS, never>;
+
+/** A handle to a file uploaded as a chat attachment (see {@link CoderAgent.attach}). */
+export interface ChatAttachment extends UploadedChatFile {
+  /**
+   * A native AI SDK `file` part that references this upload by id. Drop it into
+   * a user message's `content` to reuse the file across turns without
+   * re-uploading — the agent recognizes the id and skips the upload.
+   *
+   * The reference travels in `providerOptions.coder.fileId`; if you persist the
+   * part through a store that strips `providerOptions`, the reference is lost
+   * (re-`attach()` instead of persisting the handle).
+   */
+  toFilePart(): FilePart;
+}
+
+function makeChatAttachment(file: UploadedChatFile): ChatAttachment {
+  return {
+    ...file,
+    toFilePart: () => ({
+      type: "file",
+      // Bytes are unused: the reference travels in providerOptions.coder.fileId.
+      data: "",
+      mediaType: file.mediaType,
+      ...(file.name ? { filename: file.name } : {}),
+      providerOptions: { [CODER_PROVIDER_OPTIONS]: { fileId: file.id } },
+    }),
+  };
+}
 
 /** Default step ceiling. Each "step" is one client-tool round-trip; chatd caps
  * its own server-side loop at 1200 steps independently. */
@@ -35,6 +72,12 @@ export interface CoderAgentSettings<TOOLS extends ToolSet = {}> {
   model?: string;
   /** Bind the chat to a Coder workspace (enables workspace-scoped tools). */
   workspaceId?: string;
+  /**
+   * Adapter for writing files onto a workspace filesystem, enabling
+   * {@link CoderAgent.uploadToWorkspace}. Supply one backed by a workspace
+   * connection (e.g. a `@coder/ai-sdk-eve-sandbox` session).
+   */
+  workspaceFiles?: WorkspaceFileStore;
   /** chatd-side MCP servers to enable for this chat. */
   mcpServerIds?: string[];
   /** chatd plan mode. */
@@ -77,6 +120,8 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
   readonly #client: CoderChatClient;
   readonly #model: CoderLanguageModel;
   readonly #inner: InnerAgent<TOOLS>;
+  readonly #organizationId: string;
+  readonly #workspaceFiles: WorkspaceFileStore | undefined;
 
   constructor(settings: CoderAgentSettings<TOOLS>) {
     if (settings.client) {
@@ -91,6 +136,21 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
     } else {
       throw new CoderAgentError(
         "CoderAgent requires either `client` or both `baseUrl` and `token`.",
+      );
+    }
+
+    this.#organizationId = settings.organizationId;
+    this.#workspaceFiles = settings.workspaceFiles;
+
+    // A file written to one workspace isn't visible to a chat bound to another.
+    if (
+      settings.workspaceFiles &&
+      settings.workspaceId &&
+      settings.workspaceFiles.workspaceId !== settings.workspaceId
+    ) {
+      throw new CoderAgentError(
+        `workspaceFiles.workspaceId (${settings.workspaceFiles.workspaceId}) does not match the ` +
+          `agent's workspaceId (${settings.workspaceId}); the chat's tools would not see uploaded files.`,
       );
     }
 
@@ -162,5 +222,54 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
   async archive(): Promise<void> {
     const id = this.#model.chatId;
     if (id) await this.#client.archiveChat(id);
+  }
+
+  // --- files ----------------------------------------------------------------
+
+  /**
+   * Upload a file as a chat attachment — content for the model to *read* (a PDF,
+   * image, CSV, …). Returns a handle you can reference from a later turn via
+   * {@link ChatAttachment.toFilePart} (no re-upload). Validated against the chat
+   * allowlist and 10 MiB cap up front.
+   *
+   * You usually don't need this: a native AI SDK `file` part dropped into a
+   * message's `content` is uploaded transparently. Reach for `attach()` to
+   * pre-upload, to reuse one file across turns, or to validate before sending.
+   *
+   * For large or non-allowlisted files (zips, datasets, binaries) — material for
+   * the agent to *operate on* — use {@link CoderAgent.uploadToWorkspace}.
+   */
+  async attach(file: ChatFileInput, signal?: AbortSignal): Promise<ChatAttachment> {
+    const uploaded = await this.#client.uploadChatFile(this.#organizationId, file, signal);
+    return makeChatAttachment(uploaded);
+  }
+
+  /**
+   * Write a file onto the bound workspace's filesystem for the agent to operate
+   * on (extract, build, read with its tools). Requires a {@link WorkspaceFileStore}
+   * via the `workspaceFiles` setting. The file is written as-is — no unpacking;
+   * instruct the agent to `unzip`/`tar -x`, or extract over your own connection.
+   *
+   * The chat should be bound to the same workspace (`workspaceId`) so the agent's
+   * server-side tools can see the file.
+   */
+  async uploadToWorkspace(file: {
+    content: FileContent;
+    /** Destination path inside the workspace (the adapter may resolve relatives). */
+    path: string;
+    signal?: AbortSignal;
+  }): Promise<WorkspacePlacement> {
+    if (!this.#workspaceFiles) {
+      throw new CoderAgentError(
+        "uploadToWorkspace requires a `workspaceFiles` adapter. Construct the agent with " +
+          "`workspaceFiles` (e.g. backed by a @coder/ai-sdk-eve-sandbox session) to enable it.",
+      );
+    }
+    const { path } = await this.#workspaceFiles.write({
+      content: file.content,
+      path: file.path,
+      signal: file.signal,
+    });
+    return { workspaceId: this.#workspaceFiles.workspaceId, path };
   }
 }

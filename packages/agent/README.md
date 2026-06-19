@@ -76,6 +76,7 @@ pnpm example:generate     # non-streaming generate()
 pnpm example:stream       # streaming via textStream
 pnpm example:tool         # custom (client-executed) tool round-trip
 pnpm example:multi-turn   # multi-turn session memory
+pnpm example:file         # attach a file to a chat (optional: pass a path)
 ```
 
 Each example creates a new chat and archives it when done — it never touches workspaces. See
@@ -92,6 +93,74 @@ AI SDK tool loop — your `execute` runs in your process.
 - Coder's own server‑side tools (file editing, shell, MCP, …) still run on the server and
   appear in the transcript as `providerExecuted` tool calls/results — you observe them, you
   don't execute them.
+
+## Files
+
+There are two distinct ways to get a file to the agent, depending on whether the model should
+**read** it or **operate on** it.
+
+**Chat attachments** — content for the model to read (a PDF, image, CSV…). Drop a native AI SDK
+`file` part into a message and it's uploaded transparently:
+
+```ts
+import { readFile } from "node:fs/promises";
+
+await agent.generate({
+  messages: [
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "Summarize this report." },
+        {
+          type: "file",
+          data: await readFile("report.pdf"),
+          mediaType: "application/pdf",
+          filename: "report.pdf",
+        },
+      ],
+    },
+  ],
+});
+```
+
+Or upload once and reuse across turns with `attach()` — which also accepts a `Blob`/`File` or
+stream (use `fs.openAsBlob` to avoid reading the whole file into memory):
+
+```ts
+const file = await agent.attach({
+  content: await openAsBlob("report.pdf"),
+  mediaType: "application/pdf",
+});
+await agent.generate({
+  messages: [
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "List the risks." },
+        file.toFilePart(), // references the upload by id — no re-upload
+      ],
+    },
+  ],
+});
+```
+
+Attachments are capped at **10 MiB** and restricted to a narrow media‑type allowlist
+(`application/pdf`, `application/json`, `text/{plain,markdown,csv}`, `image/{png,jpeg,gif,webp}`).
+Oversized or unsupported files throw a clear error up front.
+
+**Workspace files** — material for the agent to operate on (a zip of assets, a dataset, a
+binary — anything outside the allowlist or over the cap). Write it onto the workspace filesystem
+and let the agent's tools take over. This needs a `workspaceFiles` adapter (the agent core stays
+dependency‑free; whoever holds a workspace connection supplies a few‑line adapter):
+
+```ts
+const agent = new CoderAgent({ /* … */ workspaceId: ws.id, workspaceFiles });
+const { path } = await agent.uploadToWorkspace({
+  content: await openAsBlob("assets.zip"),
+  path: "assets.zip",
+});
+// Then ask the agent to `unzip assets.zip` — uploadToWorkspace writes bytes as-is; it does not unpack.
+```
 
 ## Auth
 
@@ -132,6 +201,7 @@ A single instance is **single‑flight** — don't run concurrent generations ag
 | `instructions`                    | system prompt                                                                 |
 | `tools`                           | AI SDK `ToolSet` (client‑executed)                                            |
 | `workspaceId`                     | bind the chat to a Coder workspace (enables workspace‑scoped tools)           |
+| `workspaceFiles`                  | adapter enabling `uploadToWorkspace()` (write files to the workspace FS)      |
 | `mcpServerIds`                    | server‑side MCP servers to enable                                             |
 | `planMode`                        | enable plan mode (`"plan"`)                                                   |
 | `stopWhen`                        | AI SDK stop condition(s); default `stepCountIs(64)`                           |
@@ -178,7 +248,6 @@ The e2e suite creates **new chats only** (no workspaces) and archives them after
 ## Limitations
 
 - The Coder chat API is experimental (`/api/experimental/chats`); wire types may change.
-- File/image **inputs** are not yet forwarded to the server (text prompts only).
 - Designed for Node (WebSocket via `ws`); a browser build can inject a `webSocketFactory`.
 - A v7 `@ai-sdk/harness` adapter (the conceptually exact fit) is a future direction once that
   experimental API stabilizes.

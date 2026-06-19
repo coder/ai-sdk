@@ -27,13 +27,15 @@ pnpm example:generate     # 01 — non-streaming generate()
 pnpm example:stream       # 02 — streaming via textStream
 pnpm example:tool         # 03 — custom (client-executed) tool round-trip
 pnpm example:multi-turn   # 04 — multi-turn session memory
+pnpm example:file         # 05 — attach a file to a chat (optional: pass a path)
 ```
 
 …or directly: `pnpm tsx examples/01-generate.ts`.
 
-| File                | Shows                                                                                 |
-| ------------------- | ------------------------------------------------------------------------------------- |
-| `01-generate.ts`    | `await agent.generate({ prompt })` → text, finish reason, usage                       |
-| `02-stream.ts`      | `await agent.stream({ prompt })` → live `textStream`                                  |
-| `03-custom-tool.ts` | a `tool({ inputSchema, execute })` the model must call; the round-trip + final answer |
-| `04-multi-turn.ts`  | reusing one agent as a session; the model recalls earlier context                     |
+| File                | Shows                                                                                     |
+| ------------------- | ----------------------------------------------------------------------------------------- |
+| `01-generate.ts`    | `await agent.generate({ prompt })` → text, finish reason, usage                           |
+| `02-stream.ts`      | `await agent.stream({ prompt })` → live `textStream`                                      |
+| `03-custom-tool.ts` | a `tool({ inputSchema, execute })` the model must call; the round-trip + final answer     |
+| `04-multi-turn.ts`  | reusing one agent as a session; the model recalls earlier context                         |
+| `05-file-upload.ts` | `agent.attach()` + `toFilePart()` to read a file in a chat (defaults to an in-memory doc) |

@@ -1,16 +1,40 @@
-import { CoderApiError } from "../errors.js";
+import { CoderAgentError, CoderApiError } from "../errors.js";
+import { type FileContent, resolveFileContent } from "../files.js";
 import {
   type Chat,
+  CHAT_ATTACHMENT_MEDIA_TYPES,
   type ChatMessagesResponse,
   type ChatModelConfig,
   type ChatStreamEvent,
   type CreateChatMessageRequest,
   type CreateChatMessageResponse,
   type CreateChatRequest,
+  MAX_CHAT_FILE_SIZE_BYTES,
   type SubmitToolResultsRequest,
   type UpdateChatRequest,
+  type UploadChatFileResponse,
 } from "./types.js";
 import { streamChatEvents, type WebSocketFactory } from "./ws.js";
+
+/** A file to upload as a chat attachment. */
+export interface ChatFileInput {
+  content: FileContent;
+  /**
+   * Media type. Required unless `content` is a Blob/File with a non-empty `type`
+   * — note `fs.openAsBlob()` returns a Blob with no type, so pass it explicitly there.
+   */
+  mediaType?: string;
+  /** Original filename, surfaced to the model and UI. Defaults to a File's `name`. */
+  name?: string;
+}
+
+/** A file that has been uploaded to chat-file storage. */
+export interface UploadedChatFile {
+  /** Server-assigned file id, referenced from message content via a `file` part. */
+  id: string;
+  mediaType: string;
+  name?: string;
+}
 
 export interface CoderChatClientOptions {
   /** Base URL of the Coder deployment, e.g. `https://dev.coder.com`. */
@@ -43,32 +67,29 @@ export class CoderChatClient {
     this.#webSocketFactory = options.webSocketFactory;
   }
 
-  async #request<T>(
+  /**
+   * Issue a request and return the raw `Response` on success (body unread). On a
+   * non-2xx status the body is consumed to build a {@link CoderApiError}. Shared
+   * by JSON requests and the raw upload/download endpoints.
+   */
+  async #send(
     method: string,
     path: string,
-    body?: unknown,
-    signal?: AbortSignal,
-  ): Promise<T> {
-    const headers: Record<string, string> = { "Coder-Session-Token": this.#token };
-    if (body !== undefined) headers["Content-Type"] = "application/json";
-
-    const res = await this.#fetch(`${this.baseUrl}${path}`, {
-      method,
-      headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal,
-    });
-
-    const text = await res.text();
-    let parsed: unknown;
-    try {
-      parsed = text.length > 0 ? JSON.parse(text) : undefined;
-    } catch {
-      parsed = undefined;
+    opts?: { body?: BodyInit; headers?: Record<string, string>; signal?: AbortSignal },
+  ): Promise<Response> {
+    const headers: Record<string, string> = {
+      "Coder-Session-Token": this.#token,
+      ...opts?.headers,
+    };
+    const init: RequestInit = { method, headers, body: opts?.body, signal: opts?.signal };
+    // A streaming request body requires half-duplex mode on Node's fetch (undici).
+    if (typeof ReadableStream !== "undefined" && opts?.body instanceof ReadableStream) {
+      (init as RequestInit & { duplex?: "half" }).duplex = "half";
     }
 
+    const res = await this.#fetch(`${this.baseUrl}${path}`, init);
     if (!res.ok) {
-      const errObj = (parsed ?? {}) as { message?: string; detail?: string };
+      const errObj = (await this.#json<{ message?: string; detail?: string }>(res)) ?? {};
       throw new CoderApiError({
         status: res.status,
         method,
@@ -77,7 +98,32 @@ export class CoderChatClient {
         detail: errObj.detail,
       });
     }
-    return parsed as T;
+    return res;
+  }
+
+  /** Read a response body as JSON, tolerating an unreadable/empty/malformed body (→ undefined). */
+  async #json<T>(res: Response): Promise<T | undefined> {
+    const text = await res.text().catch(() => "");
+    if (text.length === 0) return undefined;
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      return undefined;
+    }
+  }
+
+  async #request<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    const res = await this.#send(method, path, {
+      body: body === undefined ? undefined : JSON.stringify(body),
+      headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+      signal,
+    });
+    return (await this.#json<T>(res)) as T;
   }
 
   // --- REST -----------------------------------------------------------------
@@ -149,6 +195,86 @@ export class CoderChatClient {
   /** Convenience: archive a chat (soft-hide; safe for cleanup). */
   archiveChat(chatId: string, signal?: AbortSignal): Promise<void> {
     return this.updateChat(chatId, { archived: true }, signal);
+  }
+
+  // --- Files ----------------------------------------------------------------
+
+  /**
+   * Upload a file as a durable chat attachment, returning its id (referenced
+   * from message content via a `file` input part). The server enforces a narrow
+   * media-type allowlist and a 10 MiB cap; both are checked client-side first so
+   * unsupported files fail fast with a clear error instead of an opaque 4xx.
+   *
+   * The body is sent raw (not multipart): `Content-Type` carries the media type
+   * and `Content-Disposition` the filename, mirroring `codersdk`.
+   */
+  async uploadChatFile(
+    organizationId: string,
+    file: ChatFileInput,
+    signal?: AbortSignal,
+  ): Promise<UploadedChatFile> {
+    const resolved = resolveFileContent(file.content, {
+      mediaType: file.mediaType,
+      name: file.name,
+    });
+    // Match the allowlist on the media type alone, ignoring parameters such as
+    // `; charset=utf-8` that a Blob/File commonly carries.
+    const mediaType = (resolved.mediaType.split(";")[0] ?? resolved.mediaType).trim().toLowerCase();
+    if (!CHAT_ATTACHMENT_MEDIA_TYPES.has(mediaType)) {
+      throw new CoderAgentError(
+        `Media type "${mediaType}" is not allowed for chat attachments ` +
+          `(allowed: ${[...CHAT_ATTACHMENT_MEDIA_TYPES].join(", ")}). ` +
+          `Write other file types to a workspace instead.`,
+      );
+    }
+    if (resolved.size !== undefined && resolved.size > MAX_CHAT_FILE_SIZE_BYTES) {
+      throw new CoderAgentError(
+        `File is ${resolved.size} bytes, over the ${MAX_CHAT_FILE_SIZE_BYTES}-byte ` +
+          `(10 MiB) chat attachment limit. Write large files to a workspace instead.`,
+      );
+    }
+
+    const headers: Record<string, string> = { "Content-Type": mediaType };
+    if (resolved.name) {
+      // RFC 6266: a sanitized ASCII `filename` plus an RFC 5987 `filename*` that
+      // preserves the exact name. Both are pure ASCII, so a non-Latin-1 name
+      // (CJK, emoji, accents) can't trip fetch's ByteString header check, and
+      // CR/LF/quote/backslash are encoded away rather than breaking the header.
+      const ascii = resolved.name.replace(/[^\x20-\x7e]/g, "_").replace(/(["\\])/g, "\\$1");
+      const utf8 = encodeURIComponent(resolved.name).replace(
+        /['()*]/g,
+        (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
+      );
+      headers["Content-Disposition"] = `attachment; filename="${ascii}"; filename*=UTF-8''${utf8}`;
+    }
+    const res = await this.#send(
+      "POST",
+      `${API_PREFIX}/files?organization=${encodeURIComponent(organizationId)}`,
+      { body: resolved.body, headers, signal },
+    );
+    const parsed = await this.#json<UploadChatFileResponse>(res);
+    if (!parsed?.id) {
+      throw new CoderApiError({
+        status: res.status,
+        method: "POST",
+        path: `${API_PREFIX}/files`,
+        message: "upload succeeded but the response contained no file id",
+      });
+    }
+    return { id: parsed.id, mediaType, name: resolved.name };
+  }
+
+  /** Download a chat file's bytes and media type by id. */
+  async getChatFile(
+    fileId: string,
+    signal?: AbortSignal,
+  ): Promise<{ bytes: Uint8Array; mediaType: string }> {
+    const res = await this.#send("GET", `${API_PREFIX}/files/${fileId}`, { signal });
+    const buf = await res.arrayBuffer();
+    return {
+      bytes: new Uint8Array(buf),
+      mediaType: res.headers.get("Content-Type") ?? "application/octet-stream",
+    };
   }
 
   // --- Streaming ------------------------------------------------------------

@@ -1,10 +1,12 @@
 import type { LanguageModelV3CallOptions, LanguageModelV3Prompt } from "@ai-sdk/provider";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   classifyTurnAction,
   dynamicToolNames,
   extractSystemPrompt,
   toolsToDynamicTools,
+  type UserContent,
+  userContentToInputParts,
 } from "../../src/model/prompt.js";
 
 describe("classifyTurnAction", () => {
@@ -81,6 +83,57 @@ describe("extractSystemPrompt", () => {
     expect(
       extractSystemPrompt([{ role: "user", content: [{ type: "text", text: "q" }] }]),
     ).toBeUndefined();
+  });
+});
+
+describe("userContentToInputParts", () => {
+  it("passes non-empty text through and drops empty text", async () => {
+    const content: UserContent = [
+      { type: "text", text: "hello" },
+      { type: "text", text: "" },
+    ];
+    const parts = await userContentToInputParts(content, async () => "unused");
+    expect(parts).toEqual([{ type: "text", text: "hello" }]);
+  });
+
+  it("uploads a file part and emits a file input part with the returned id", async () => {
+    const upload = vi.fn(async () => "file-123");
+    const content: UserContent = [
+      { type: "text", text: "summarize" },
+      {
+        type: "file",
+        data: new Uint8Array([1, 2]),
+        mediaType: "application/pdf",
+        filename: "r.pdf",
+      },
+    ];
+    const parts = await userContentToInputParts(content, upload);
+
+    expect(parts).toEqual([
+      { type: "text", text: "summarize" },
+      { type: "file", file_id: "file-123" },
+    ]);
+    expect(upload).toHaveBeenCalledWith({
+      data: new Uint8Array([1, 2]),
+      mediaType: "application/pdf",
+      filename: "r.pdf",
+    });
+  });
+
+  it("reuses a pre-uploaded id from providerOptions.coder.fileId without uploading", async () => {
+    const upload = vi.fn(async () => "unused");
+    const content: UserContent = [
+      {
+        type: "file",
+        data: "",
+        mediaType: "application/pdf",
+        providerOptions: { coder: { fileId: "pre-789" } },
+      },
+    ];
+    const parts = await userContentToInputParts(content, upload);
+
+    expect(parts).toEqual([{ type: "file", file_id: "pre-789" }]);
+    expect(upload).not.toHaveBeenCalled();
   });
 });
 

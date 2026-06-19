@@ -1,10 +1,20 @@
 import type {
   LanguageModelV3CallOptions,
+  LanguageModelV3DataContent,
   LanguageModelV3Message,
   LanguageModelV3Prompt,
   LanguageModelV3ToolResultOutput,
 } from "@ai-sdk/provider";
 import type { ChatInputPart, DynamicTool, ToolResult } from "../coder/types.js";
+
+/** Namespace key for this package's options on AI SDK message-part `providerOptions`. */
+export const CODER_PROVIDER_OPTIONS = "coder";
+
+/** Shape of this package's `providerOptions.coder` payload on a file part. */
+export interface CoderFileProviderOptions {
+  /** A pre-uploaded chat-file id to reuse instead of uploading the part's bytes. */
+  fileId?: string;
+}
 
 /** Concatenated system messages, mapped to chatd's `system_prompt`. */
 export function extractSystemPrompt(prompt: LanguageModelV3Prompt): string | undefined {
@@ -19,17 +29,60 @@ export function extractSystemPrompt(prompt: LanguageModelV3Prompt): string | und
   return joined.length > 0 ? joined : undefined;
 }
 
-function userContentToInputParts(
-  message: Extract<LanguageModelV3Message, { role: "user" }>,
-): ChatInputPart[] {
-  const out: ChatInputPart[] = [];
-  for (const part of message.content) {
-    if (part.type === "text" && part.text.length > 0) {
-      out.push({ type: "text", text: part.text });
-    }
-    // NOTE: file/image input parts are not yet forwarded to chatd.
-  }
-  return out;
+/** The content array of a user message (text and file parts). */
+export type UserContent = Extract<LanguageModelV3Message, { role: "user" }>["content"];
+
+/**
+ * Uploads a file part's bytes and resolves to its chatd file id. Supplied by
+ * the language model (which holds the client + organization id); kept abstract
+ * here so {@link userContentToInputParts} stays pure and testable.
+ */
+export type FilePartUploader = (file: {
+  data: LanguageModelV3DataContent;
+  mediaType: string;
+  filename?: string;
+}) => Promise<string>;
+
+/** Reads a pre-uploaded file id from a file part's `providerOptions.coder.fileId`. */
+function coderFileId(providerOptions: unknown): string | undefined {
+  const ns = (providerOptions as Record<string, CoderFileProviderOptions> | undefined)?.[
+    CODER_PROVIDER_OPTIONS
+  ];
+  // Require a non-empty id: an empty string is not a usable reference, so fall
+  // back to uploading rather than emitting `file_id: ""`.
+  return typeof ns?.fileId === "string" && ns.fileId.length > 0 ? ns.fileId : undefined;
+}
+
+/**
+ * Maps a user message's content to chatd input parts. Text passes through;
+ * file parts are turned into `file` parts referencing an uploaded file id —
+ * either reused from `providerOptions.coder.fileId` (a pre-uploaded handle) or
+ * uploaded on the fly via {@link FilePartUploader}.
+ */
+export async function userContentToInputParts(
+  content: UserContent,
+  uploadFile: FilePartUploader,
+): Promise<ChatInputPart[]> {
+  // Uploads are independent, so run them concurrently; `map` preserves order.
+  const parts = await Promise.all(
+    content.map(async (part): Promise<ChatInputPart | null> => {
+      if (part.type === "text") {
+        return part.text.length > 0 ? { type: "text", text: part.text } : null;
+      }
+      if (part.type === "file") {
+        const fileId =
+          coderFileId(part.providerOptions) ??
+          (await uploadFile({
+            data: part.data,
+            mediaType: part.mediaType,
+            filename: part.filename,
+          }));
+        return { type: "file", file_id: fileId };
+      }
+      return null;
+    }),
+  );
+  return parts.filter((p): p is ChatInputPart => p !== null);
 }
 
 function toolResultOutputToChatd(output: LanguageModelV3ToolResultOutput): {
@@ -55,7 +108,7 @@ function toolResultOutputToChatd(output: LanguageModelV3ToolResultOutput): {
 }
 
 export type TurnAction =
-  | { kind: "new-turn"; content: ChatInputPart[] }
+  | { kind: "new-turn"; content: UserContent }
   | { kind: "resume"; toolResults: ToolResult[] }
   | { kind: "noop" };
 
@@ -86,7 +139,7 @@ export function classifyTurnAction(prompt: LanguageModelV3Prompt): TurnAction {
   }
 
   if (last.role === "user") {
-    return { kind: "new-turn", content: userContentToInputParts(last) };
+    return { kind: "new-turn", content: last.content };
   }
 
   return { kind: "noop" };

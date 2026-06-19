@@ -25,17 +25,36 @@
  * ```
  */
 
-export { CoderAgent, type CoderAgentSettings } from "./agent/coder-agent.js";
+export { type ChatAttachment, CoderAgent, type CoderAgentSettings } from "./agent/coder-agent.js";
 export { CoderLanguageModel, type CoderLanguageModelConfig } from "./model/language-model.js";
-export { CoderChatClient, type CoderChatClientOptions } from "./coder/client.js";
+export {
+  type ChatFileInput,
+  CoderChatClient,
+  type CoderChatClientOptions,
+  type UploadedChatFile,
+} from "./coder/client.js";
+export {
+  type FileContent,
+  dataContentToFileContent,
+  type ResolvedFile,
+  resolveFileContent,
+} from "./files.js";
+export type { WorkspaceFileStore, WorkspacePlacement } from "./workspace-files.js";
 export { TurnTranslator } from "./model/translate.js";
 export {
   classifyTurnAction,
+  CODER_PROVIDER_OPTIONS,
+  type CoderFileProviderOptions,
   dynamicToolNames,
   extractSystemPrompt,
+  type FilePartUploader,
   toolsToDynamicTools,
   type TurnAction,
+  type UserContent,
+  userContentToInputParts,
 } from "./model/prompt.js";
 export { streamChatEvents, type WebSocketFactory, type WebSocketLike } from "./coder/ws.js";
 export { CoderAgentError, CoderApiError, CoderChatError } from "./errors.js";
+// Runtime constants (the `export type *` below only re-exports types).
+export { CHAT_ATTACHMENT_MEDIA_TYPES, MAX_CHAT_FILE_SIZE_BYTES } from "./coder/types.js";
 export type * from "./coder/types.js";

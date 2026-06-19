@@ -28,6 +28,10 @@ export interface ChatAttachment extends UploadedChatFile {
    * A native AI SDK `file` part that references this upload by id. Drop it into
    * a user message's `content` to reuse the file across turns without
    * re-uploading — the agent recognizes the id and skips the upload.
+   *
+   * The reference travels in `providerOptions.coder.fileId`; if you persist the
+   * part through a store that strips `providerOptions`, the reference is lost
+   * (re-`attach()` instead of persisting the handle).
    */
   toFilePart(): FilePart;
 }
@@ -137,6 +141,18 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
 
     this.#organizationId = settings.organizationId;
     this.#workspaceFiles = settings.workspaceFiles;
+
+    // A file written to one workspace isn't visible to a chat bound to another.
+    if (
+      settings.workspaceFiles &&
+      settings.workspaceId &&
+      settings.workspaceFiles.workspaceId !== settings.workspaceId
+    ) {
+      throw new CoderAgentError(
+        `workspaceFiles.workspaceId (${settings.workspaceFiles.workspaceId}) does not match the ` +
+          `agent's workspaceId (${settings.workspaceId}); the chat's tools would not see uploaded files.`,
+      );
+    }
 
     this.#model = new CoderLanguageModel({
       client: this.#client,

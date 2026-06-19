@@ -19,7 +19,10 @@ import { streamChatEvents, type WebSocketFactory } from "./ws.js";
 /** A file to upload as a chat attachment. */
 export interface ChatFileInput {
   content: FileContent;
-  /** Media type. Required unless `content` is a Blob/File that carries its own `type`. */
+  /**
+   * Media type. Required unless `content` is a Blob/File with a non-empty `type`
+   * — note `fs.openAsBlob()` returns a Blob with no type, so pass it explicitly there.
+   */
   mediaType?: string;
   /** Original filename, surfaced to the model and UI. Defaults to a File's `name`. */
   name?: string;
@@ -86,14 +89,7 @@ export class CoderChatClient {
 
     const res = await this.#fetch(`${this.baseUrl}${path}`, init);
     if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      let parsed: unknown;
-      try {
-        parsed = text.length > 0 ? JSON.parse(text) : undefined;
-      } catch {
-        parsed = undefined;
-      }
-      const errObj = (parsed ?? {}) as { message?: string; detail?: string };
+      const errObj = (await this.#json<{ message?: string; detail?: string }>(res)) ?? {};
       throw new CoderApiError({
         status: res.status,
         method,
@@ -105,9 +101,9 @@ export class CoderChatClient {
     return res;
   }
 
-  /** Read a response body as JSON, tolerating an empty or malformed body (→ undefined). */
+  /** Read a response body as JSON, tolerating an unreadable/empty/malformed body (→ undefined). */
   async #json<T>(res: Response): Promise<T | undefined> {
-    const text = await res.text();
+    const text = await res.text().catch(() => "");
     if (text.length === 0) return undefined;
     try {
       return JSON.parse(text) as T;
@@ -221,9 +217,12 @@ export class CoderChatClient {
       mediaType: file.mediaType,
       name: file.name,
     });
-    if (!CHAT_ATTACHMENT_MEDIA_TYPES.has(resolved.mediaType)) {
+    // Match the allowlist on the media type alone, ignoring parameters such as
+    // `; charset=utf-8` that a Blob/File commonly carries.
+    const mediaType = (resolved.mediaType.split(";")[0] ?? resolved.mediaType).trim().toLowerCase();
+    if (!CHAT_ATTACHMENT_MEDIA_TYPES.has(mediaType)) {
       throw new CoderAgentError(
-        `Media type "${resolved.mediaType}" is not allowed for chat attachments ` +
+        `Media type "${mediaType}" is not allowed for chat attachments ` +
           `(allowed: ${[...CHAT_ATTACHMENT_MEDIA_TYPES].join(", ")}). ` +
           `Write other file types to a workspace instead.`,
       );
@@ -235,10 +234,18 @@ export class CoderChatClient {
       );
     }
 
-    const headers: Record<string, string> = { "Content-Type": resolved.mediaType };
+    const headers: Record<string, string> = { "Content-Type": mediaType };
     if (resolved.name) {
-      headers["Content-Disposition"] =
-        `attachment; filename="${resolved.name.replace(/"/g, '\\"')}"`;
+      // RFC 6266: a sanitized ASCII `filename` plus an RFC 5987 `filename*` that
+      // preserves the exact name. Both are pure ASCII, so a non-Latin-1 name
+      // (CJK, emoji, accents) can't trip fetch's ByteString header check, and
+      // CR/LF/quote/backslash are encoded away rather than breaking the header.
+      const ascii = resolved.name.replace(/[^\x20-\x7e]/g, "_").replace(/(["\\])/g, "\\$1");
+      const utf8 = encodeURIComponent(resolved.name).replace(
+        /['()*]/g,
+        (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
+      );
+      headers["Content-Disposition"] = `attachment; filename="${ascii}"; filename*=UTF-8''${utf8}`;
     }
     const res = await this.#send(
       "POST",
@@ -246,7 +253,15 @@ export class CoderChatClient {
       { body: resolved.body, headers, signal },
     );
     const parsed = await this.#json<UploadChatFileResponse>(res);
-    return { id: parsed?.id ?? "", mediaType: resolved.mediaType, name: resolved.name };
+    if (!parsed?.id) {
+      throw new CoderApiError({
+        status: res.status,
+        method: "POST",
+        path: `${API_PREFIX}/files`,
+        message: "upload succeeded but the response contained no file id",
+      });
+    }
+    return { id: parsed.id, mediaType, name: resolved.name };
   }
 
   /** Download a chat file's bytes and media type by id. */

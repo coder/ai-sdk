@@ -150,10 +150,13 @@ export class CoderLanguageModel implements LanguageModelV3 {
       let afterId: number | undefined;
 
       if (action.kind === "new-turn") {
-        const modelConfigId = await this.#resolveModelConfigId(signal);
-        // Upload any file parts now (before the chat exists) and resolve them to
-        // `file` input parts referencing their uploaded ids.
-        const content = await this.#buildContent(action.content, signal);
+        // Resolve the model config and upload any file parts concurrently — they
+        // are independent round-trips. (Uploads run before the chat exists and
+        // resolve file parts to `file` input parts referencing their uploaded ids.)
+        const [modelConfigId, content] = await Promise.all([
+          this.#resolveModelConfigId(signal),
+          this.#buildContent(action.content, signal),
+        ]);
         if (!this.#chatId) {
           const req: CreateChatRequest = {
             organization_id: this.#config.organizationId,

@@ -48,7 +48,9 @@ function coderFileId(providerOptions: unknown): string | undefined {
   const ns = (providerOptions as Record<string, CoderFileProviderOptions> | undefined)?.[
     CODER_PROVIDER_OPTIONS
   ];
-  return typeof ns?.fileId === "string" ? ns.fileId : undefined;
+  // Require a non-empty id: an empty string is not a usable reference, so fall
+  // back to uploading rather than emitting `file_id: ""`.
+  return typeof ns?.fileId === "string" && ns.fileId.length > 0 ? ns.fileId : undefined;
 }
 
 /**

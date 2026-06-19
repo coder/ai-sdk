@@ -1,5 +1,6 @@
 {
   "packages/sandbox": "0.1.0",
   "packages/agent": "0.1.0",
-  "packages/provider": "0.1.0"
+  "packages/provider": "0.1.0",
+  "packages/eve-sandbox": "0.1.0"
 }

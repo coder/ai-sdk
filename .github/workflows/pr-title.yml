@@ -40,6 +40,7 @@ jobs:
             chore
           scopes: |
             sandbox
+            eve-sandbox
             agent
             provider
           requireScope: false

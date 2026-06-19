@@ -38,3 +38,4 @@ minimumReleaseAgeExclude:
   - "@ai-sdk/provider-utils"
   - "@ai-sdk/tui"
   - "ai"
+  - eve@0.11.5

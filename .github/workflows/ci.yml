@@ -71,14 +71,18 @@ jobs:
       - name: Check formatting
         run: pnpm format:check
 
+      # Build before typecheck and test: a package may depend on a sibling workspace
+      # package's built output/types (e.g. @coder/ai-sdk-eve-sandbox imports
+      # @coder/ai-sdk-sandbox). `pnpm -r build` runs in topological order, so each
+      # dependency's dist/ exists before its dependents are typechecked, tested, or built.
+      - name: Build
+        run: pnpm build
+
       - name: Typecheck
         run: pnpm typecheck
 
       - name: Test
         run: pnpm test
-
-      - name: Build
-        run: pnpm build
 
       # ESM-only publish gates — sandbox + provider (the root scripts --filter them).
       # Run after build so dist/ exists.

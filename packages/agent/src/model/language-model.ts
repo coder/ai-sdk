@@ -9,12 +9,16 @@ import type {
 } from "@ai-sdk/provider";
 import { CoderAgentError, CoderChatError } from "../errors.js";
 import { CoderChatClient } from "../coder/client.js";
-import type { CreateChatRequest } from "../coder/types.js";
+import type { ChatInputPart, CreateChatRequest } from "../coder/types.js";
+import { dataContentToFileContent } from "../files.js";
 import {
   classifyTurnAction,
   dynamicToolNames,
   extractSystemPrompt,
+  type FilePartUploader,
   toolsToDynamicTools,
+  type UserContent,
+  userContentToInputParts,
 } from "./prompt.js";
 import { TurnTranslator } from "./translate.js";
 
@@ -101,6 +105,24 @@ export class CoderLanguageModel implements LanguageModelV3 {
     return this.#resolvedModelConfigId;
   }
 
+  /**
+   * Resolve a user message's content to chatd input parts, uploading any file
+   * parts to chat-file storage (the upload endpoint needs only the organization
+   * id, so this runs before the chat exists). Pre-uploaded files carried via
+   * `providerOptions.coder.fileId` are referenced without re-uploading.
+   */
+  #buildContent(content: UserContent, signal?: AbortSignal): Promise<ChatInputPart[]> {
+    const uploadFile: FilePartUploader = async (f) => {
+      const uploaded = await this.#config.client.uploadChatFile(
+        this.#config.organizationId,
+        { content: dataContentToFileContent(f.data), mediaType: f.mediaType, name: f.filename },
+        signal,
+      );
+      return uploaded.id;
+    };
+    return userContentToInputParts(content, uploadFile);
+  }
+
   async *#runTurn(
     options: LanguageModelV3CallOptions,
   ): AsyncGenerator<LanguageModelV3StreamPart, void, void> {
@@ -129,10 +151,13 @@ export class CoderLanguageModel implements LanguageModelV3 {
 
       if (action.kind === "new-turn") {
         const modelConfigId = await this.#resolveModelConfigId(signal);
+        // Upload any file parts now (before the chat exists) and resolve them to
+        // `file` input parts referencing their uploaded ids.
+        const content = await this.#buildContent(action.content, signal);
         if (!this.#chatId) {
           const req: CreateChatRequest = {
             organization_id: this.#config.organizationId,
-            content: action.content,
+            content,
             client_type: "api",
           };
           const system = extractSystemPrompt(prompt);
@@ -150,7 +175,7 @@ export class CoderLanguageModel implements LanguageModelV3 {
           const resp = await this.#config.client.createChatMessage(
             this.#chatId,
             {
-              content: action.content,
+              content,
               ...(modelConfigId ? { model_config_id: modelConfigId } : {}),
             },
             signal,

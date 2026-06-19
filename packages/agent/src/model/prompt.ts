@@ -19,15 +19,50 @@ export function extractSystemPrompt(prompt: LanguageModelV3Prompt): string | und
   return joined.length > 0 ? joined : undefined;
 }
 
-function userContentToInputParts(
-  message: Extract<LanguageModelV3Message, { role: "user" }>,
-): ChatInputPart[] {
+/** The content array of a user message (text and file parts). */
+export type UserContent = Extract<LanguageModelV3Message, { role: "user" }>["content"];
+
+/**
+ * Uploads a file part's bytes and resolves to its chatd file id. Supplied by
+ * the language model (which holds the client + organization id); kept abstract
+ * here so {@link userContentToInputParts} stays pure and testable.
+ */
+export type FilePartUploader = (file: {
+  data: Uint8Array | string | URL;
+  mediaType: string;
+  filename?: string;
+}) => Promise<string>;
+
+/** Reads a pre-uploaded file id from a file part's `providerOptions.coder.fileId`. */
+function coderFileId(providerOptions: unknown): string | undefined {
+  const coder = (providerOptions as { coder?: { fileId?: unknown } } | undefined)?.coder;
+  return typeof coder?.fileId === "string" ? coder.fileId : undefined;
+}
+
+/**
+ * Maps a user message's content to chatd input parts. Text passes through;
+ * file parts are turned into `file` parts referencing an uploaded file id —
+ * either reused from `providerOptions.coder.fileId` (a pre-uploaded handle) or
+ * uploaded on the fly via {@link FilePartUploader}.
+ */
+export async function userContentToInputParts(
+  content: UserContent,
+  uploadFile: FilePartUploader,
+): Promise<ChatInputPart[]> {
   const out: ChatInputPart[] = [];
-  for (const part of message.content) {
-    if (part.type === "text" && part.text.length > 0) {
-      out.push({ type: "text", text: part.text });
+  for (const part of content) {
+    if (part.type === "text") {
+      if (part.text.length > 0) out.push({ type: "text", text: part.text });
+    } else if (part.type === "file") {
+      const fileId =
+        coderFileId(part.providerOptions) ??
+        (await uploadFile({
+          data: part.data,
+          mediaType: part.mediaType,
+          filename: part.filename,
+        }));
+      out.push({ type: "file", file_id: fileId });
     }
-    // NOTE: file/image input parts are not yet forwarded to chatd.
   }
   return out;
 }
@@ -55,7 +90,7 @@ function toolResultOutputToChatd(output: LanguageModelV3ToolResultOutput): {
 }
 
 export type TurnAction =
-  | { kind: "new-turn"; content: ChatInputPart[] }
+  | { kind: "new-turn"; content: UserContent }
   | { kind: "resume"; toolResults: ToolResult[] }
   | { kind: "noop" };
 
@@ -86,7 +121,7 @@ export function classifyTurnAction(prompt: LanguageModelV3Prompt): TurnAction {
   }
 
   if (last.role === "user") {
-    return { kind: "new-turn", content: userContentToInputParts(last) };
+    return { kind: "new-turn", content: last.content };
   }
 
   return { kind: "noop" };

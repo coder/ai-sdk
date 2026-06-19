@@ -1,7 +1,11 @@
 import { tool } from "ai";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { CoderChatClient } from "../../src/coder/client.js";
+import {
+  type ChatFileInput,
+  CoderChatClient,
+  type UploadedChatFile,
+} from "../../src/coder/client.js";
 import { CoderAgent } from "../../src/agent/coder-agent.js";
 import { CoderLanguageModel } from "../../src/model/language-model.js";
 import type {
@@ -11,6 +15,7 @@ import type {
   CreateChatRequest,
   SubmitToolResultsRequest,
 } from "../../src/coder/types.js";
+import type { WorkspaceFileStore } from "../../src/workspace-files.js";
 
 /** A scripted, in-memory stand-in for {@link CoderChatClient}. */
 class FakeClient {
@@ -18,6 +23,7 @@ class FakeClient {
   #turnIndex = 0;
   createdChats: CreateChatRequest[] = [];
   submitted: SubmitToolResultsRequest[] = [];
+  uploads: ChatFileInput[] = [];
   #nextMessageId = 1000;
 
   constructor(turns: ChatStreamEvent[][]) {
@@ -51,6 +57,15 @@ class FakeClient {
 
   async submitToolResults(_chatId: string, req: SubmitToolResultsRequest): Promise<void> {
     this.submitted.push(req);
+  }
+
+  async uploadChatFile(_orgId: string, file: ChatFileInput): Promise<UploadedChatFile> {
+    this.uploads.push(file);
+    return {
+      id: `file-${this.uploads.length}`,
+      mediaType: file.mediaType ?? "application/octet-stream",
+      name: file.name,
+    };
   }
 
   async *streamEvents(): AsyncGenerator<ChatStreamEvent, void, void> {
@@ -196,6 +211,123 @@ describe("CoderAgent integration (mock client)", () => {
     for await (const delta of result.textStream) streamed += delta;
     expect(streamed).toBe("abc");
     expect(await result.text).toBe("abc");
+  });
+});
+
+describe("CoderAgent file uploads", () => {
+  it("uploads a file part transparently and references it by id in the new turn", async () => {
+    const fake = new FakeClient([
+      [
+        status("running"),
+        textPart("Summary."),
+        msg(2, "assistant", [{ type: "text", text: "Summary." }]),
+        status("waiting"),
+      ],
+    ]);
+    const agent = makeAgent(fake);
+
+    await agent.generate({
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "summarize" },
+            {
+              type: "file",
+              data: new Uint8Array([1, 2, 3]),
+              mediaType: "application/pdf",
+              filename: "r.pdf",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(fake.uploads).toHaveLength(1);
+    expect(fake.uploads[0]?.mediaType).toBe("application/pdf");
+    const content = fake.createdChats[0]?.content;
+    expect(content).toContainEqual({ type: "text", text: "summarize" });
+    expect(content).toContainEqual({ type: "file", file_id: "file-1" });
+  });
+
+  it("attach() uploads and returns a handle whose toFilePart() references the id", async () => {
+    const fake = new FakeClient([]);
+    const agent = makeAgent(fake);
+
+    const att = await agent.attach({
+      content: new Uint8Array([1, 2, 3]),
+      mediaType: "application/pdf",
+      name: "r.pdf",
+    });
+
+    expect(att.id).toBe("file-1");
+    expect(att.mediaType).toBe("application/pdf");
+    expect(fake.uploads).toHaveLength(1);
+    expect(att.toFilePart()).toMatchObject({
+      type: "file",
+      mediaType: "application/pdf",
+      filename: "r.pdf",
+      providerOptions: { coder: { fileId: "file-1" } },
+    });
+  });
+
+  it("reuses an attach()ed file via toFilePart() in generate() without re-uploading", async () => {
+    const fake = new FakeClient([
+      [
+        status("running"),
+        textPart("ok"),
+        msg(2, "assistant", [{ type: "text", text: "ok" }]),
+        status("waiting"),
+      ],
+    ]);
+    const agent = makeAgent(fake);
+
+    const att = await agent.attach({
+      content: new Uint8Array([1, 2, 3]),
+      mediaType: "application/pdf",
+      name: "r.pdf",
+    });
+    expect(fake.uploads).toHaveLength(1); // the attach() upload itself
+
+    await agent.generate({
+      messages: [{ role: "user", content: [{ type: "text", text: "again" }, att.toFilePart()] }],
+    });
+
+    // No second upload: the file is referenced by id (providerOptions flows
+    // through the AI SDK core→provider conversion).
+    expect(fake.uploads).toHaveLength(1);
+    expect(fake.createdChats[0]?.content).toContainEqual({ type: "file", file_id: "file-1" });
+  });
+
+  it("uploadToWorkspace() throws a helpful error without a workspaceFiles adapter", async () => {
+    const agent = makeAgent(new FakeClient([]));
+    await expect(
+      agent.uploadToWorkspace({ content: new Uint8Array([1]), path: "assets.zip" }),
+    ).rejects.toThrow(/workspaceFiles/);
+  });
+
+  it("uploadToWorkspace() writes via the adapter and returns the placement", async () => {
+    const writes: { path: string }[] = [];
+    const store: WorkspaceFileStore = {
+      workspaceId: "ws-1",
+      write: async ({ path }) => {
+        writes.push({ path });
+        return { path: `/home/coder/${path}` };
+      },
+    };
+    const agent = new CoderAgent({
+      client: new FakeClient([]) as unknown as CoderChatClient,
+      organizationId: "org-1",
+      workspaceFiles: store,
+    });
+
+    const placement = await agent.uploadToWorkspace({
+      content: new Uint8Array([1, 2]),
+      path: "assets.zip",
+    });
+
+    expect(placement).toEqual({ workspaceId: "ws-1", path: "/home/coder/assets.zip" });
+    expect(writes).toEqual([{ path: "assets.zip" }]);
   });
 });
 

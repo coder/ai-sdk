@@ -128,4 +128,50 @@ suite("CoderAgent e2e (live Coder)", () => {
       true,
     );
   }, 180_000);
+
+  it("uploads and downloads a chat file (round-trip)", async () => {
+    const text = "hello from the e2e suite\n";
+    const up = await client.uploadChatFile(organizationId, {
+      content: new TextEncoder().encode(text),
+      mediaType: "text/plain",
+      name: "hello.txt",
+    });
+    expect(up.id).toBeTruthy();
+    expect(up.mediaType).toBe("text/plain");
+
+    const got = await client.getChatFile(up.id);
+    expect(got.mediaType).toContain("text/plain");
+    expect(new TextDecoder().decode(got.bytes)).toBe(text);
+  }, 120_000);
+
+  it("attaches a file and the model reads its contents", async () => {
+    // An un-guessable token, so a correct answer proves the model actually read
+    // the uploaded file (not its own prior knowledge).
+    const secret = "ZEBRA-7731";
+    const doc = new TextEncoder().encode(
+      `# Internal Note\n\nThe access code is ${secret}. Keep it confidential.\n`,
+    );
+    const agent = new CoderAgent({
+      client,
+      organizationId,
+      model: process.env.CODER_MODEL ?? "haiku",
+      instructions: "Answer using only the attached file. Reply with just the value asked for.",
+    });
+
+    // Inline file part — uploaded transparently, then referenced by id.
+    const result = await agent.generate({
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "What is the access code in the attached file?" },
+            { type: "file", data: doc, mediaType: "text/markdown", filename: "note.md" },
+          ],
+        },
+      ],
+    });
+    if (agent.chatId) cleanup.push(agent.chatId);
+
+    expect(result.text).toContain(secret);
+  }, 120_000);
 });

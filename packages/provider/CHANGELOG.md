@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.0](https://github.com/coder/ai-sdk/compare/provider-v0.1.0...provider-v0.2.0) (2026-06-24)
+
+Adds agent cancellation and timeout support, typed errors, and lifecycle helpers to the provider package.
+
+### Highlights
+
+- Agents now support cancellation, timeouts, typed errors, and lifecycle helpers for more robust control over agent execution. ([#13](https://github.com/coder/ai-sdk/pull/13))
+
+### Features
+
+* **agent:** cancellation, timeouts, typed errors, and lifecycle helpers ([#13](https://github.com/coder/ai-sdk/issues/13)) ([08fa1dd](https://github.com/coder/ai-sdk/commit/08fa1ddacdd38934ec103a6d4bef2523255a81f4))
+
 ## [0.1.0](https://github.com/coder/ai-sdk/compare/provider-v0.1.0...provider-v0.1.0) (2026-06-18)
 
 Initial release of @coder/ai-sdk-provider, an AI SDK provider for the AI Gateway.

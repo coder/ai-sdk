@@ -14,6 +14,7 @@ import {
   type CoderChatClientOptions,
   type UploadedChatFile,
 } from "../coder/client.js";
+import type { ChatModelConfig } from "../coder/types.js";
 import { CoderAgentError } from "../errors.js";
 import type { FileContent } from "../files.js";
 import { CoderLanguageModel } from "../model/language-model.js";
@@ -100,6 +101,18 @@ export interface CoderAgentSettings<TOOLS extends ToolSet = {}> {
    * SDK retries could duplicate a turn. Override with care.
    */
   maxRetries?: number;
+  /**
+   * Per-segment time budget in milliseconds, applied to each model round-trip
+   * (chat creation / message / tool-result submission plus the server run until
+   * it settles). If a segment runs longer (e.g. the server is wedged or a
+   * workspace can't be scheduled), the run is interrupted server-side and the
+   * call rejects with a retryable {@link CoderChatError} (`kind: "timeout"`)
+   * instead of hanging. A multi-step `generate()` driving client tools makes
+   * several segments, so this bounds each one — to cap total wall-clock for the
+   * whole call, pass `abortSignal: AbortSignal.timeout(ms)`. Unset or
+   * non-positive means no limit.
+   */
+  requestTimeoutMs?: number;
 }
 
 /**
@@ -162,6 +175,7 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
       mcpServerIds: settings.mcpServerIds,
       planMode: settings.planMode,
       chatId: settings.chatId,
+      requestTimeoutMs: settings.requestTimeoutMs,
     });
 
     this.#inner = new ToolLoopAgent<never, TOOLS, never>({
@@ -207,6 +221,15 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
 
   // --- session helpers ------------------------------------------------------
 
+  /**
+   * List the model configs available on the deployment. Use this to discover
+   * valid values for the `model` hint instead of guessing ids — match on
+   * `id`, `provider`/`model`, or `display_name`.
+   */
+  listModels(signal?: AbortSignal): Promise<ChatModelConfig[]> {
+    return this.#client.listModelConfigs(signal);
+  }
+
   /** Start a fresh chatd chat on the next turn. */
   resetSession(): void {
     this.#model.resetSession();
@@ -222,6 +245,36 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
   async archive(): Promise<void> {
     const id = this.#model.chatId;
     if (id) await this.#client.archiveChat(id);
+  }
+
+  /**
+   * Clean up the chat when the agent leaves an `await using` scope, so cleanup
+   * rides scope exit instead of a separate call you have to remember in a
+   * `finally`. Interrupts any in-flight server run, then archives the chat.
+   * Best-effort: disposal errors are swallowed so they can't mask the scope's
+   * own error.
+   *
+   * @example
+   * ```ts
+   * await using agent = new CoderAgent({ ... });
+   * const { text } = await agent.generate({ prompt: "…" });
+   * // agent.interrupt() + agent.archive() run automatically here.
+   * ```
+   */
+  async [Symbol.asyncDispose](): Promise<void> {
+    // archive() only soft-hides the chat; it does not stop a generation. If the
+    // scope exits mid-turn (e.g. generate() threw, or an early return), interrupt
+    // first so chatd stops generating and releases the workspace, then archive.
+    try {
+      await this.interrupt();
+    } catch {
+      /* best-effort cleanup */
+    }
+    try {
+      await this.archive();
+    } catch {
+      /* best-effort cleanup */
+    }
   }
 
   // --- files ----------------------------------------------------------------

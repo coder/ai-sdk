@@ -35,6 +35,16 @@ audits usage per user. This package lets the Vercel AI SDK speak to it natively,
 your developers never handle raw provider keys — they authenticate with their Coder
 token and the deployment decides which models and providers are available.
 
+## Provider vs. Agent
+
+This package is for **plain model calls** — `generateText`, `streamText`, and
+`generateObject` (schema‑constrained structured output). If you need Coder's
+**server‑side agent** — the multi‑step tool loop, built‑in tools, MCP servers, or
+workspace file/shell tools — use **[`@coder/ai-sdk-agent`](../agent)** instead.
+Rule of thumb: **need a model → provider; need server‑side tools, MCP, or a
+workspace → Agent.** They compose: use the provider for pure text/JSON steps and
+the Agent for the tool‑driven ones.
+
 ## Install
 
 ```bash

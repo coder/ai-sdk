@@ -7,6 +7,7 @@ import {
   type UploadedChatFile,
 } from "../../src/coder/client.js";
 import { CoderAgent } from "../../src/agent/coder-agent.js";
+import { CoderAgentError, CoderChatError } from "../../src/errors.js";
 import { CoderLanguageModel } from "../../src/model/language-model.js";
 import type {
   Chat,
@@ -36,16 +37,7 @@ class FakeClient {
 
   async createChat(req: CreateChatRequest): Promise<Chat> {
     this.createdChats.push(req);
-    return {
-      id: "chat-1",
-      organization_id: req.organization_id,
-      owner_id: "u",
-      title: "t",
-      status: "running",
-      created_at: "",
-      updated_at: "",
-      archived: false,
-    };
+    return chatStub("chat-1", req.organization_id);
   }
 
   async createChatMessage(): Promise<CreateChatMessageResponse> {
@@ -103,6 +95,59 @@ function textPart(text: string): ChatStreamEvent {
 }
 function status(s: string): ChatStreamEvent {
   return { type: "status", chat_id: "chat-1", status: { status: s as never } };
+}
+
+function chatStub(id: string, organizationId = "org-1"): Chat {
+  return {
+    id,
+    organization_id: organizationId,
+    owner_id: "u",
+    title: "t",
+    status: "running",
+    created_at: "",
+    updated_at: "",
+    archived: false,
+  };
+}
+
+/** Resolves once the signal aborts (mirrors how the real WS reader unblocks). */
+function waitForAbort(signal: AbortSignal | undefined): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (signal?.aborted) return resolve();
+    signal?.addEventListener("abort", () => resolve(), { once: true });
+  });
+}
+
+/** Read a stream to completion (or until it errors). */
+async function drain(reader: ReadableStreamDefaultReader<unknown>): Promise<void> {
+  while (!(await reader.read()).done) {
+    /* discard */
+  }
+}
+
+/**
+ * A fake client whose single turn yields one non-terminal event then never
+ * settles until its signal aborts — for exercising cancellation/timeout. The
+ * returned `interrupted` array records every `interruptChat` call.
+ */
+function stallingClient(onRunning?: () => void): { client: unknown; interrupted: string[] } {
+  const interrupted: string[] = [];
+  const client = {
+    resolveModelConfigId: async () => undefined,
+    createChat: async () => chatStub("chat-1"),
+    interruptChat: async (id: string) => {
+      interrupted.push(id);
+      return chatStub(id);
+    },
+    archiveChat: async () => {},
+    streamEvents: (_id: string, opts?: { signal?: AbortSignal }) =>
+      (async function* () {
+        yield status("running");
+        onRunning?.();
+        await waitForAbort(opts?.signal);
+      })(),
+  };
+  return { client, interrupted };
 }
 
 function makeAgent<T extends Record<string, unknown>>(fake: FakeClient, tools?: T) {
@@ -331,7 +376,186 @@ describe("CoderAgent file uploads", () => {
   });
 });
 
+describe("CoderAgent cancellation & failures", () => {
+  it("interrupts the server run when the caller aborts mid-turn", async () => {
+    let reachedStream!: () => void;
+    const midStream = new Promise<void>((r) => {
+      reachedStream = r;
+    });
+    const { client, interrupted } = stallingClient(reachedStream);
+    const agent = new CoderAgent({
+      client: client as CoderChatClient,
+      organizationId: "org-1",
+    });
+
+    const ac = new AbortController();
+    const p = agent.generate({ prompt: "hi", abortSignal: ac.signal });
+    await midStream;
+    ac.abort();
+
+    await expect(p).rejects.toThrow();
+    // Aborting must stop the *server* run, not merely close the socket.
+    expect(interrupted).toEqual(["chat-1"]);
+  });
+
+  it("interrupts and errors a turn that exceeds requestTimeoutMs", async () => {
+    const { client, interrupted } = stallingClient();
+    const model = new CoderLanguageModel({
+      client: client as CoderChatClient,
+      organizationId: "o",
+      requestTimeoutMs: 30,
+    });
+
+    const { stream } = await model.doStream({
+      prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    } as never);
+    await expect(drain(stream.getReader())).rejects.toMatchObject({
+      name: "CoderChatError",
+      kind: "timeout",
+    });
+    expect(interrupted).toEqual(["chat-1"]);
+  });
+
+  it("errors (not a silent stop) when the stream ends before a terminal status", async () => {
+    // No terminal status — the socket closed mid-run.
+    const fake = new FakeClient([[status("running"), textPart("partial…")]]);
+    const model = new CoderLanguageModel({
+      client: fake as unknown as CoderChatClient,
+      organizationId: "o",
+    });
+
+    const { stream } = await model.doStream({
+      prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    } as never);
+    await expect(drain(stream.getReader())).rejects.toMatchObject({
+      name: "CoderChatError",
+      kind: "stream_closed",
+    });
+  });
+
+  it("re-throws a caller's own AbortSignal.timeout as an abort, not a coder timeout", async () => {
+    // Caller supplies their own deadline; the agent has no requestTimeoutMs. The
+    // abort must surface as the caller's TimeoutError, not be rewritten into a
+    // bogus CoderChatError(kind:"timeout", "…undefined ms…").
+    const { client, interrupted } = stallingClient();
+    const model = new CoderLanguageModel({
+      client: client as CoderChatClient,
+      organizationId: "o",
+    });
+
+    const { stream } = await model.doStream({
+      prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      abortSignal: AbortSignal.timeout(30),
+    } as never);
+    const err = await drain(stream.getReader()).then(
+      () => undefined,
+      (e) => e as { name?: string },
+    );
+    expect(err?.name).toBe("TimeoutError");
+    expect(err).not.toBeInstanceOf(CoderChatError);
+    expect(interrupted).toEqual(["chat-1"]);
+  });
+
+  it("surfaces a mid-turn stream transport error as a retryable stream_closed", async () => {
+    const client = {
+      resolveModelConfigId: async () => undefined,
+      createChat: async () => chatStub("chat-1"),
+      interruptChat: async (id: string) => chatStub(id),
+      streamEvents: () =>
+        (async function* () {
+          yield status("running");
+          throw new CoderAgentError("chat stream socket error");
+        })(),
+    };
+    const model = new CoderLanguageModel({
+      client: client as unknown as CoderChatClient,
+      organizationId: "o",
+    });
+
+    const { stream } = await model.doStream({
+      prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    } as never);
+    await expect(drain(stream.getReader())).rejects.toMatchObject({
+      name: "CoderChatError",
+      kind: "stream_closed",
+      retryable: true,
+    });
+  });
+
+  it("classifies a timeout during chat creation as a retryable timeout error", async () => {
+    const client = {
+      resolveModelConfigId: async () => undefined,
+      // Hangs until the per-turn timeout aborts the signal, then rejects like fetch.
+      createChat: async (_req: unknown, signal?: AbortSignal) => {
+        await waitForAbort(signal);
+        throw signal?.reason ?? new Error("aborted");
+      },
+      interruptChat: async (id: string) => chatStub(id),
+      streamEvents: () => (async function* () {})(),
+    };
+    const model = new CoderLanguageModel({
+      client: client as unknown as CoderChatClient,
+      organizationId: "o",
+      requestTimeoutMs: 30,
+    });
+
+    const { stream } = await model.doStream({
+      prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    } as never);
+    await expect(drain(stream.getReader())).rejects.toMatchObject({
+      name: "CoderChatError",
+      kind: "timeout",
+    });
+  });
+
+  it("interrupts the server run when the stream is cancelled mid-turn", async () => {
+    let reached!: () => void;
+    const midStream = new Promise<void>((r) => {
+      reached = r;
+    });
+    const { client, interrupted } = stallingClient(reached);
+    const model = new CoderLanguageModel({
+      client: client as CoderChatClient,
+      organizationId: "o",
+    });
+
+    const { stream } = await model.doStream({
+      prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    } as never);
+    const reader = stream.getReader();
+    await reader.read(); // stream-start
+    const pending = reader.read(); // drive to mid-stream, then block on the reader
+    await midStream;
+    await reader.cancel(); // teardown without aborting a caller signal
+    await pending.catch(() => {});
+
+    expect(interrupted).toEqual(["chat-1"]);
+  });
+});
+
 describe("CoderLanguageModel guards", () => {
+  it("warns that responseFormat is not enforced server-side", async () => {
+    const fake = new FakeClient([
+      [status("running"), msg(2, "assistant", [{ type: "text", text: "{}" }]), status("waiting")],
+    ]);
+    const model = new CoderLanguageModel({
+      client: fake as unknown as CoderChatClient,
+      organizationId: "o",
+    });
+
+    const { stream } = await model.doStream({
+      prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      responseFormat: { type: "json" },
+    } as never);
+    const reader = stream.getReader();
+    const first = await reader.read();
+    expect(first.value).toMatchObject({ type: "stream-start" });
+    expect((first.value as { warnings: unknown[] }).warnings).toContainEqual(
+      expect.objectContaining({ type: "unsupported", feature: "responseFormat" }),
+    );
+    await drain(reader);
+  });
+
   it("throws on a prompt with no user message or tool results", async () => {
     const model = new CoderLanguageModel({
       client: new FakeClient([]) as unknown as CoderChatClient,
@@ -352,16 +576,9 @@ describe("CoderLanguageModel guards", () => {
     });
     const blocking = {
       resolveModelConfigId: async () => undefined,
-      createChat: async () => ({
-        id: "c1",
-        organization_id: "o",
-        owner_id: "u",
-        title: "t",
-        status: "running",
-        created_at: "",
-        updated_at: "",
-        archived: false,
-      }),
+      createChat: async () => chatStub("c1", "o"),
+      interruptChat: async (id: string) => chatStub(id),
+      archiveChat: async () => {},
       // Yields one non-terminal event then blocks (on a releasable gate),
       // keeping turn 1 in-flight while we attempt a concurrent turn 2.
       streamEvents: async function* () {

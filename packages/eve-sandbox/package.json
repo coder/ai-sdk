@@ -1,0 +1,73 @@
+{
+  "name": "@coder/ai-sdk-eve-sandbox",
+  "version": "0.1.0",
+  "description": "Coder workspace sandbox backend for Vercel's eve agent framework",
+  "keywords": [
+    "ai-agents",
+    "coder",
+    "eve",
+    "sandbox",
+    "vercel"
+  ],
+  "homepage": "https://github.com/coder/ai-sdk/tree/main/packages/eve-sandbox#readme",
+  "bugs": {
+    "url": "https://github.com/coder/ai-sdk/issues"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coder/ai-sdk.git",
+    "directory": "packages/eve-sandbox"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "attw": "attw --pack --ignore-rules cjs-resolves-to-esm",
+    "prepublishOnly": "pnpm run build && pnpm run typecheck && pnpm test && publint && pnpm run attw"
+  },
+  "dependencies": {
+    "@coder/ai-sdk-sandbox": "workspace:^"
+  },
+  "devDependencies": {
+    "@ai-sdk/harness": "1.0.0-canary.11",
+    "@ai-sdk/provider-utils": "5.0.0-canary.48",
+    "@arethetypeswrong/cli": "^0.18.0",
+    "@types/node": "^22",
+    "@vitest/coverage-v8": "^4.1.9",
+    "eve": "0.11.5",
+    "publint": "^0.3.0",
+    "tsup": "^8.5.1",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
+  },
+  "peerDependencies": {
+    "eve": "^0.11.5"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

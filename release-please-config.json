@@ -32,6 +32,10 @@
     "packages/provider": {
       "package-name": "@coder/ai-sdk-provider",
       "component": "provider"
+    },
+    "packages/eve-sandbox": {
+      "package-name": "@coder/ai-sdk-eve-sandbox",
+      "component": "eve-sandbox"
     }
   }
 }

@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.0](https://github.com/coder/ai-sdk/compare/agent-v0.1.0...agent-v0.2.0) (2026-06-24)
+
+Adds cancellation, timeouts, typed errors, and lifecycle helpers for more robust agent control. Also introduces file upload support for chat attachments and workspace files.
+
+### Highlights
+
+- Agents now support cancellation, timeouts, typed errors, and lifecycle helpers for finer-grained control over execution. ([#13](https://github.com/coder/ai-sdk/pull/13))
+- Added file upload support, covering both chat attachments and workspace files. ([#10](https://github.com/coder/ai-sdk/pull/10))
+
+### Features
+
+* **agent:** add file uploads (chat attachments + workspace files) ([#10](https://github.com/coder/ai-sdk/issues/10)) ([cfc5dd9](https://github.com/coder/ai-sdk/commit/cfc5dd9290ee435442dc91a58867526cfde2542f))
+* **agent:** cancellation, timeouts, typed errors, and lifecycle helpers ([#13](https://github.com/coder/ai-sdk/issues/13)) ([08fa1dd](https://github.com/coder/ai-sdk/commit/08fa1ddacdd38934ec103a6d4bef2523255a81f4))
+
 ## [0.1.0](https://github.com/coder/ai-sdk/compare/agent-v0.1.0...agent-v0.1.0) (2026-06-18)
 
 Initial release of the agent package, migrated into the coder/ai-sdk monorepo. Documentation has been cleaned up to remove internal naming and point at the new repository.

@@ -96,6 +96,7 @@ pnpm example:stream       # streaming via textStream
 pnpm example:tool         # custom (client-executed) tool round-trip
 pnpm example:multi-turn   # multi-turn session memory
 pnpm example:file         # attach a file to a chat (optional: pass a path)
+pnpm example:structured   # typed structured output via the structured_output tool
 ```
 
 Each example creates a new chat and archives it when done — it never touches workspaces. See
@@ -285,13 +286,84 @@ retrying the whole step deliberately.
 
 ## Structured output
 
-`CoderAgent` does **not** constrain output to a JSON schema — chatd has no
-server‑side `response_format`, so a `responseFormat` / `experimental_output`
-request emits a warning and is best‑effort at most. For reliable
-schema‑constrained output, use **[`@coder/ai-sdk-provider`](../provider)** with
-`generateObject` / `Output.object` (requires AI Gateway enabled on the
-deployment). Use the Agent for the steps that need server‑side tools; use the
-provider for pure text‑in / JSON‑out steps.
+Coder Agents has no server‑side `response_format`, so `CoderAgent` cannot
+constrain what the model **says** to a JSON schema — a `responseFormat` /
+`experimental_output` request emits a warning and is best‑effort at most. Pick
+by what the step needs:
+
+- **Pure text‑in / JSON‑out, no server‑side tools** → use
+  **[`@coder/ai-sdk-provider`](../provider)** with `generateObject` /
+  `Output.object` (schema‑constrained; requires AI Gateway on the deployment).
+- **The answer must come out of an agent run** (server‑side tools, MCP, a
+  workspace) → use the **`structured_output` tool pattern** below. What the
+  model _says_ isn't schema‑constrained, but what it passes **into a tool** is
+  typed — so have it submit its answer by _calling a tool_ whose `inputSchema`
+  is your Zod schema. The answer arrives as the tool call's typed `input`; no
+  fishing JSON out of prose.
+
+```ts
+import { stepCountIs, tool } from "ai";
+import { z } from "zod";
+
+const Answer = z.object({ severity: z.enum(["critical", "major", "minor"]), summary: z.string() });
+
+const agent = new CoderAgent({
+  /* … */
+  instructions: "… Submit your final answer by calling the structured_output tool exactly once.",
+  tools: {
+    structured_output: tool({
+      description:
+        "Submit your final structured answer as JSON. Call this exactly once, when your work is complete.",
+      inputSchema: Answer, // your schema IS the tool's input schema
+      // Ack instead of stopping the turn: the model finishes naturally and can
+      // wind down anything it still has running (dev servers, watchers, …).
+      execute: async () =>
+        "Output received. Wind down and end your turn. Do not call structured_output again.",
+    }),
+  },
+  stopWhen: stepCountIs(6), // happy path is 2 steps: file + ack, wind down
+});
+
+const result = await agent.generate({ prompt: "…" });
+// toolCalls only holds the LAST step's calls — scan all steps, last call wins.
+const raw = result.steps
+  .flatMap((s) => s.toolCalls)
+  .findLast((c) => c.toolName === "structured_output")?.input;
+const answer = Answer.parse(raw); // typed: { severity: "critical" | "major" | "minor"; summary: string }
+```
+
+Rules that keep it robust — each guards against a failure mode observed live:
+
+1. **Don't force `toolChoice`, don't stop on the call.** `toolChoice` is
+   construction‑time and applies to _every_ segment, so after the ack it would
+   force the tool again and again up to the step ceiling (and it blocks any
+   other tools the step needs). A `hasToolCall` stop is worse: the server only
+   receives a client tool result as a side effect of the _next_ loop segment,
+   so ending the loop on the call strands the chat in `requires_action` —
+   follow‑up messages queue forever and `archive()` 409s. Instructions plus the
+   tool's own description are enough; models file unprompted most of the time.
+2. **Validate client‑side.** The schema is not enforced server‑side —
+   `schema.safeParse` on the tool input is the real gate. (Schema‑invalid calls
+   that the AI SDK catches in‑loop are automatically answered with a
+   `tool-error` result the model retries against.)
+3. **Nudge at most once, and only an idle chat.** If the turn ends in prose
+   (`finishReason: "stop"`) without a valid call, send one typed re‑prompt
+   ("Call the structured_output tool now …"), then fail into your normal error
+   handling. Never re‑prompt a chat that isn't idle — the message would queue
+   behind whatever the server is still doing.
+4. **Settle a turn that stopped on the call.** If the loop stops on the
+   tool‑call step — e.g. your `stopWhen` ceiling lands exactly on the
+   `structured_output` call (`finishReason: "tool-calls"`) — the ack ran
+   locally but never reached the server. Submit it directly —
+   `agent.client.submitToolResults(agent.chatId, { results: [{ tool_call_id, output: "…" }] })`
+   — before touching the chat again, or it strands as in rule 1. A settled
+   chat resumes its wind‑down server‑side for a few seconds, so retry a 409ing
+   `archive()` under a short deadline instead of giving up.
+
+[`examples/06-structured-output.ts`](./examples/06-structured-output.ts) packages
+all four rules into a small copyable helper — `structuredOutput(schema)` returns
+`agentOpts` to spread into the constructor plus a typed `ask(agent, prompt)`
+that runs the settle + one‑nudge ladder and returns a `z.infer<typeof schema>`.
 
 ## Workspaces & quota
 

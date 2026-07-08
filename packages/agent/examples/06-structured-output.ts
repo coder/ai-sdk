@@ -41,7 +41,9 @@ type StructuredAgent = {
         input: unknown;
         providerExecuted?: boolean;
       }>;
-      toolResults: Array<{ toolCallId: string; output: unknown }>;
+      // The step's content parts: tool-result (execute succeeded) and tool-error
+      // (execute threw) both carry the local outcome the settle must submit.
+      content: Array<{ type: string; toolCallId?: string; output?: unknown; error?: unknown }>;
     }>;
   }>;
   readonly chatId: string | undefined;
@@ -77,32 +79,43 @@ function structuredOutput<T>(schema: z.ZodType<T>, opts: { maxSteps?: number } =
         // stopWhen ceiling landed there → finishReason "tool-calls"), the results ran
         // locally but never reached the server: the chat is stuck in
         // `requires_action` — new messages queue behind it, archive() 409s. Submit
-        // the stranded step's locally-executed client results directly (for
+        // the stranded step's locally-executed client outcomes directly (for
         // structured_output that is the ack; any other client tool gets its real
-        // result). `steps.at(-1)` is exactly the stranded segment — earlier steps'
-        // calls were answered by their own resume segments. Note: this direct submit
-        // bypasses the SDK's own submitted-ids bookkeeping, so if you later continue
-        // the session by replaying `messages`, prefer a fresh chat/session instead.
+        // result, and a throwing execute is submitted as an ERROR — mirroring what
+        // the resume path would have sent). `steps.at(-1)` is exactly the stranded
+        // segment — earlier steps' calls were answered by their own resume segments.
+        // Note: this direct submit bypasses the SDK's own submitted-ids bookkeeping,
+        // so if you later continue the session by replaying `messages`, prefer a
+        // fresh chat/session instead.
         const last = turn.steps.at(-1);
         const pending =
           turn.finishReason === "tool-calls"
             ? (last?.toolCalls ?? []).filter((c) => !c.providerExecuted)
             : [];
-        const localResults = new Map(
-          (last?.toolResults ?? []).map((r) => [r.toolCallId, r.output]),
-        );
-        const answerable = pending.filter((c) => localResults.has(c.toolCallId));
+        const outcomes = new Map<string, { output: unknown; isError: boolean }>();
+        for (const part of last?.content ?? []) {
+          if (part.toolCallId === undefined) continue;
+          if (part.type === "tool-result") {
+            outcomes.set(part.toolCallId, { output: part.output ?? null, isError: false });
+          } else if (part.type === "tool-error") {
+            outcomes.set(part.toolCallId, { output: String(part.error), isError: true });
+          }
+        }
+        const answerable = pending.filter((c) => outcomes.has(c.toolCallId));
         let settled = true;
         if (answerable.length > 0 && agent.chatId) {
           settled = await agent.client
             .submitToolResults(
               agent.chatId,
               {
-                results: answerable.map((c) => ({
-                  tool_call_id: c.toolCallId,
-                  output: localResults.get(c.toolCallId) ?? null,
-                  is_error: false,
-                })),
+                results: answerable.map((c) => {
+                  const outcome = outcomes.get(c.toolCallId);
+                  return {
+                    tool_call_id: c.toolCallId,
+                    output: outcome?.output ?? null,
+                    is_error: outcome?.isError ?? false,
+                  };
+                }),
               },
               AbortSignal.timeout(8_000), // a stalled settle must not wedge the caller
             )
@@ -115,7 +128,7 @@ function structuredOutput<T>(schema: z.ZodType<T>, opts: { maxSteps?: number } =
               },
             );
         }
-        // A pending call with no local result (e.g. the SDK marked it invalid) cannot
+        // A pending call with no local outcome (e.g. an approval-gated call) cannot
         // be answered; same if the settle POST failed. Interrupt so the stranded turn
         // ends and the chat is safe to archive or reuse instead of wedged forever.
         if (pending.length > answerable.length) settled = false;

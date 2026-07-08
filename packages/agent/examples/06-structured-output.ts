@@ -10,7 +10,7 @@
 //   tsx examples/06-structured-output.ts   (or: pnpm example:structured)
 import { stepCountIs, tool } from "ai";
 import { z } from "zod";
-import { CoderAgent } from "../src/index.js";
+import { CoderAgent, CoderApiError, type CoderChatClient } from "../src/index.js";
 import { heading, loadEnv } from "./_shared.js";
 
 // ── The helper (copy this into your project) ─────────────────────────────────
@@ -28,21 +28,25 @@ const NUDGE =
   "You have not submitted a valid structured_output call for this request. Call the " +
   "structured_output tool now with your final answer as JSON matching the tool's input schema exactly.";
 
-/** The slice of `CoderAgent` the helper reads (structural, so tests can fake it). */
+/** The slice of `CoderAgent` the helper reads (structural, so tests can fake it).
+ * The turn shape is structural because the AI SDK types it per-ToolSet; the client
+ * reuses the package's own signature so it cannot drift. */
 type StructuredAgent = {
   generate(opts: { prompt: string }): Promise<{
     finishReason: string;
-    toolCalls: Array<{ toolCallId: string; toolName: string; input: unknown }>;
-    steps: Array<{ toolCalls: Array<{ toolCallId: string; toolName: string; input: unknown }> }>;
+    steps: Array<{
+      toolCalls: Array<{
+        toolCallId: string;
+        toolName: string;
+        input: unknown;
+        providerExecuted?: boolean;
+      }>;
+      toolResults: Array<{ toolCallId: string; output: unknown }>;
+    }>;
   }>;
   readonly chatId: string | undefined;
-  readonly client: {
-    submitToolResults(
-      chatId: string,
-      req: { results: Array<{ tool_call_id: string; output: unknown; is_error?: boolean }> },
-      signal?: AbortSignal,
-    ): Promise<void>;
-  };
+  readonly client: Pick<CoderChatClient, "submitToolResults">;
+  interrupt(): Promise<void>;
 };
 
 function structuredOutput<T>(schema: z.ZodType<T>, opts: { maxSteps?: number } = {}) {
@@ -69,26 +73,34 @@ function structuredOutput<T>(schema: z.ZodType<T>, opts: { maxSteps?: number } =
         const turn = await agent.generate({ prompt: p });
 
         // SETTLE. The server receives a client tool result only as a side effect of
-        // the NEXT loop segment. If the loop stopped ON the tool-call segment (the
-        // stopWhen ceiling landed there → finishReason "tool-calls"), the ack ran
+        // the NEXT loop segment. If the loop stopped ON a tool-call segment (the
+        // stopWhen ceiling landed there → finishReason "tool-calls"), the results ran
         // locally but never reached the server: the chat is stuck in
-        // `requires_action` — new messages queue behind it, archive() 409s. Ack the
-        // pending calls directly before touching the chat again. `turn.toolCalls` is
-        // the FINAL step's calls (ai v6) — exactly the stranded segment; calls from
-        // earlier steps were already answered by their own resume segments.
-        let settled = true;
+        // `requires_action` — new messages queue behind it, archive() 409s. Submit
+        // the stranded step's locally-executed client results directly (for
+        // structured_output that is the ack; any other client tool gets its real
+        // result). `steps.at(-1)` is exactly the stranded segment — earlier steps'
+        // calls were answered by their own resume segments. Note: this direct submit
+        // bypasses the SDK's own submitted-ids bookkeeping, so if you later continue
+        // the session by replaying `messages`, prefer a fresh chat/session instead.
+        const last = turn.steps.at(-1);
         const pending =
           turn.finishReason === "tool-calls"
-            ? turn.toolCalls.filter((c) => c.toolName === "structured_output")
+            ? (last?.toolCalls ?? []).filter((c) => !c.providerExecuted)
             : [];
-        if (pending.length > 0 && agent.chatId) {
+        const localResults = new Map(
+          (last?.toolResults ?? []).map((r) => [r.toolCallId, r.output]),
+        );
+        const answerable = pending.filter((c) => localResults.has(c.toolCallId));
+        let settled = true;
+        if (answerable.length > 0 && agent.chatId) {
           settled = await agent.client
             .submitToolResults(
               agent.chatId,
               {
-                results: pending.map((c) => ({
+                results: answerable.map((c) => ({
                   tool_call_id: c.toolCallId,
-                  output: ACK,
+                  output: localResults.get(c.toolCallId) ?? null,
                   is_error: false,
                 })),
               },
@@ -103,17 +115,23 @@ function structuredOutput<T>(schema: z.ZodType<T>, opts: { maxSteps?: number } =
               },
             );
         }
+        // A pending call with no local result (e.g. the SDK marked it invalid) cannot
+        // be answered; same if the settle POST failed. Interrupt so the stranded turn
+        // ends and the chat is safe to archive or reuse instead of wedged forever.
+        if (pending.length > answerable.length) settled = false;
+        if (!settled) await agent.interrupt().catch(() => {});
 
         console.log(
           `  [ask] turn finished "${turn.finishReason}" after ${turn.steps.length} step(s)` +
-            (pending.length > 0 ? ` — settled ${pending.length} pending call(s): ${settled}` : ""),
+            (pending.length > 0
+              ? ` — settled ${answerable.length}/${pending.length} pending call(s)${settled ? "" : ", interrupted"}`
+              : ""),
         );
 
-        // READ. The answer is the tool call's INPUT. `turn.toolCalls` holds only the
-        // LAST step's calls, so scan every step; the last call wins (a re-filed answer
-        // supersedes an earlier one). The server does NOT enforce the schema, so
-        // safeParse is the real gate — schema-invalid calls the AI SDK catches in-loop
-        // are already retried against a tool-error result automatically.
+        // READ. The answer is the tool call's INPUT. Scan every step, last call wins
+        // (a re-filed answer supersedes an earlier one). The server does NOT enforce
+        // the schema, so safeParse is the real gate — schema-invalid calls the AI SDK
+        // catches in-loop are already retried against a tool-error result automatically.
         const report = turn.steps
           .flatMap((s) => s.toolCalls)
           .findLast((c) => c.toolName === "structured_output")?.input;
@@ -125,7 +143,8 @@ function structuredOutput<T>(schema: z.ZodType<T>, opts: { maxSteps?: number } =
         // NUDGE — at most once, and only on an idle chat (the turn ended in prose,
         // finishReason "stop"). Never re-prompt a settled turn: its wind-down is still
         // running server-side, so the nudge would queue behind it — and contradict the
-        // ack the model just received. Fail into your normal error handling instead.
+        // ack the model just received. Fail into your normal error handling instead
+        // (an unsettled chat was interrupted above, so cleanup can archive it).
         if (turn.finishReason !== "stop" || !settled) {
           throw new Error(
             `no structured_output answer (turn finished: ${turn.finishReason}) — not re-prompting a busy chat`,
@@ -137,10 +156,34 @@ function structuredOutput<T>(schema: z.ZodType<T>, opts: { maxSteps?: number } =
   };
 }
 
+/** Sentinel rejection used by {@link bounded} so callers can tell "attempt timed
+ * out" (retryable — the server may just be busy) apart from a real API error. */
+const TIMED_OUT = new Error("attempt timed out");
+
+/** Race work against a per-attempt deadline. Both outcomes of `work` stay handled,
+ * so a late loser can never become an unhandled rejection. */
+function bounded<T>(work: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(TIMED_OUT), ms);
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
 /** Cleanup that tolerates a chat still winding down. A settled (or interrupted)
  * turn resumes server-side for a few seconds, and archive() 409s until the chat
  * parks — so interrupt and retry under a deadline instead of giving up on the
- * first attempt (a bare `archive()` or `await using` would leak the chat here). */
+ * first attempt (a bare `archive()` or `await using` would leak the chat here).
+ * Retries cover only the wind-down outcomes: a 409, or a timed-out attempt.
+ * Anything else (401/403/404, network down) will not heal — warn and stop. */
 async function archiveQuietly(agent: {
   interrupt(): Promise<void>;
   archive(): Promise<void>;
@@ -148,14 +191,16 @@ async function archiveQuietly(agent: {
   const deadline = Date.now() + 15_000;
   for (;;) {
     try {
-      await agent.archive();
+      await bounded(agent.archive(), 8_000);
       return;
     } catch (err) {
-      if (Date.now() > deadline) {
+      const stillWindingDown =
+        err === TIMED_OUT || (err instanceof CoderApiError && err.status === 409);
+      if (!stillWindingDown || Date.now() > deadline) {
         console.warn("could not archive the chat, leaving it:", err);
         return;
       }
-      await agent.interrupt().catch(() => {}); // stop whatever is still running, then retry
+      await bounded(agent.interrupt(), 8_000).catch(() => {}); // stop whatever is still running, then retry
       await new Promise((resolve) => setTimeout(resolve, 1_000));
     }
   }
@@ -179,7 +224,8 @@ page still work fine.
 
 const { baseUrl, token, organizationId } = await loadEnv();
 // Tool-calling is more reliable on a stronger model; override with CODER_TOOL_MODEL.
-const model = process.env.CODER_TOOL_MODEL ?? "sonnet";
+// (`||`, not `??`: a set-but-empty env var should fall back too.)
+const model = process.env.CODER_TOOL_MODEL || "sonnet";
 
 const so = structuredOutput(TriageSchema);
 const agent = new CoderAgent({
@@ -187,10 +233,12 @@ const agent = new CoderAgent({
   token,
   organizationId,
   model,
-  // Keep structured_output the agent's only CLIENT-executed tool — ask()'s settle
-  // covers just this tool's calls. Server-side tools (shell, MCP, …) are fine.
+  // Other client tools compose fine: ask()'s settle answers every pending client
+  // call from its locally-executed result. Server-side tools are unaffected.
   instructions:
     "You triage bug reports. Submit your final answer by calling the structured_output tool exactly once.",
+  // Bound each server segment so a wedged turn fails loudly instead of hanging.
+  requestTimeoutMs: 120_000,
   ...so.agentOpts,
 });
 

@@ -160,6 +160,31 @@ describe("TurnTranslator — server (provider-executed) tools", () => {
   });
 });
 
+describe("TurnTranslator — orphaned server tool results", () => {
+  it("drops a tool-result whose call streamed in a previous segment (would crash the AI SDK call-less)", () => {
+    const { parts } = run([
+      // Resume segment: chatd replays only messages after the cursor, so the tool
+      // result arrives without its originating assistant tool-call message.
+      msg(7, "tool", [
+        {
+          type: "tool-result",
+          tool_call_id: "s-prev",
+          tool_name: "web_search",
+          result: { hits: 3 },
+        },
+      ]),
+      msg(8, "assistant", [{ type: "text", text: "Done" }]),
+      status("waiting"),
+    ]);
+    expect(parts.some((p) => p.type === "tool-result")).toBe(false);
+    const text = parts
+      .filter((p) => p.type === "text-delta")
+      .map((p) => ("delta" in p ? p.delta : ""))
+      .join("");
+    expect(text).toBe("Done");
+  });
+});
+
 describe("TurnTranslator — errors", () => {
   it("emits an error part and finishes with error", () => {
     const { parts } = run([

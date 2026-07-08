@@ -329,6 +329,8 @@ const result = await agent.generate({ prompt: "…" });
 const raw = result.steps
   .flatMap((s) => s.toolCalls)
   .findLast((c) => c.toolName === "structured_output")?.input;
+if (raw === undefined)
+  throw new Error("model never called structured_output — nudge once on an idle chat (rule 3)");
 const answer = Answer.parse(raw); // typed: { severity: "critical" | "major" | "minor"; summary: string }
 ```
 
@@ -351,14 +353,17 @@ Rules that keep it robust — each guards against a failure mode observed live:
    ("Call the structured_output tool now …"), then fail into your normal error
    handling. Never re‑prompt a chat that isn't idle — the message would queue
    behind whatever the server is still doing.
-4. **Settle a turn that stopped on the call.** If the loop stops on the
+4. **Settle a turn that stopped on a tool call.** If the loop stops on a
    tool‑call step — e.g. your `stopWhen` ceiling lands exactly on the
-   `structured_output` call (`finishReason: "tool-calls"`) — the ack ran
-   locally but never reached the server. Submit it directly —
-   `agent.client.submitToolResults(agent.chatId, { results: [{ tool_call_id, output: "…" }] })`
-   — before touching the chat again, or it strands as in rule 1. A settled
-   chat resumes its wind‑down server‑side for a few seconds, so retry a 409ing
-   `archive()` under a short deadline instead of giving up.
+   `structured_output` call (`finishReason: "tool-calls"`) — the tool results
+   ran locally but never reached the server. Submit the stranded step's
+   (`result.steps.at(-1)`) locally‑executed client results directly via
+   `agent.client.submitToolResults(agent.chatId, { results: [{ tool_call_id, output }] })`
+   before touching the chat again, or it strands as in rule 1; if a pending
+   call has no local result (or the submit fails), `agent.interrupt()` ends
+   the stranded turn instead. A settled chat resumes its wind‑down server‑side
+   for a few seconds, so retry a 409ing `archive()` under a short deadline
+   instead of giving up.
 
 [`examples/06-structured-output.ts`](./examples/06-structured-output.ts) packages
 all four rules into a small copyable helper — `structuredOutput(schema)` returns

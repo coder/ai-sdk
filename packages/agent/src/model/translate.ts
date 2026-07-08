@@ -187,6 +187,12 @@ export class TurnTranslator {
     if (!id || !name) return;
     if (part.result === undefined) return;
     if (this.#serverToolResults.has(id)) return;
+    // Only pair with a call emitted in THIS segment. A result whose call streamed in
+    // an earlier segment (chatd paused for a client tool in between, and the resume
+    // segment starts past the assistant message) would reach the AI SDK call-less,
+    // and generateText throws "Tool call <id> not found." Drop the orphan — the
+    // server-side transcript still has it.
+    if (!this.#serverToolCalls.has(id)) return;
     this.#serverToolResults.add(id);
     out.push({
       type: "tool-result",

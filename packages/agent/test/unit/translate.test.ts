@@ -139,9 +139,44 @@ describe("TurnTranslator — server (provider-executed) tools", () => {
     ]);
     const call = parts.find((p) => p.type === "tool-call");
     expect(call && "providerExecuted" in call ? call.providerExecuted : false).toBe(true);
+    // `dynamic: true` is what lets the AI SDK accept a tool name that is not in the
+    // client ToolSet. Without it the call is marked `invalid`, which injects a phantom
+    // tool-error output and halts the tool loop on this step — stranding the turn when
+    // a client tool call is pending in the same segment.
+    expect(call && "dynamic" in call ? call.dynamic : false).toBe(true);
+    const inputStart = parts.find((p) => p.type === "tool-input-start");
+    expect(inputStart && "dynamic" in inputStart ? inputStart.dynamic : false).toBe(true);
     const result = parts.find((p) => p.type === "tool-result");
     expect(result).toBeDefined();
     expect(result && "toolCallId" in result ? result.toolCallId : "").toBe("s1");
+    // The result must mirror the call's dynamic flag, or call and result land in
+    // different buckets (dynamicToolCalls vs. static toolResults) and can't pair.
+    expect(result && "dynamic" in result ? result.dynamic : false).toBe(true);
+    const text = parts
+      .filter((p) => p.type === "text-delta")
+      .map((p) => ("delta" in p ? p.delta : ""))
+      .join("");
+    expect(text).toBe("Done");
+  });
+});
+
+describe("TurnTranslator — orphaned server tool results", () => {
+  it("drops a tool-result whose call streamed in a previous segment (would crash the AI SDK call-less)", () => {
+    const { parts } = run([
+      // Resume segment: chatd replays only messages after the cursor, so the tool
+      // result arrives without its originating assistant tool-call message.
+      msg(7, "tool", [
+        {
+          type: "tool-result",
+          tool_call_id: "s-prev",
+          tool_name: "web_search",
+          result: { hits: 3 },
+        },
+      ]),
+      msg(8, "assistant", [{ type: "text", text: "Done" }]),
+      status("waiting"),
+    ]);
+    expect(parts.some((p) => p.type === "tool-result")).toBe(false);
     const text = parts
       .filter((p) => p.type === "text-delta")
       .map((p) => ("delta" in p ? p.delta : ""))

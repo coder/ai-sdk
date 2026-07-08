@@ -52,7 +52,8 @@
     "example:stream": "tsx examples/02-stream.ts",
     "example:tool": "tsx examples/03-custom-tool.ts",
     "example:multi-turn": "tsx examples/04-multi-turn.ts",
-    "example:file": "tsx examples/05-file-upload.ts"
+    "example:file": "tsx examples/05-file-upload.ts",
+    "example:structured": "tsx examples/06-structured-output.ts"
   },
   "dependencies": {
     "ws": "^8.18.0"

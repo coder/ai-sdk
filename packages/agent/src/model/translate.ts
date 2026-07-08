@@ -158,7 +158,18 @@ export class TurnTranslator {
     if (part.args === undefined) return; // wait for complete args (snapshot)
     if (this.#serverToolCalls.has(id)) return;
     this.#serverToolCalls.add(id);
-    out.push({ type: "tool-input-start", id, toolName: name, providerExecuted: true });
+    // `dynamic: true` is load-bearing: server tools are not in the client ToolSet, and
+    // the AI SDK only tolerates unknown tool names on `providerExecuted && dynamic`
+    // calls. Without it every server tool call is marked `invalid`, which injects a
+    // phantom tool-error output and halts the tool loop on that step — stranding the
+    // turn whenever a client tool call is pending in the same segment.
+    out.push({
+      type: "tool-input-start",
+      id,
+      toolName: name,
+      providerExecuted: true,
+      dynamic: true,
+    });
     out.push({ type: "tool-input-end", id });
     out.push({
       type: "tool-call",
@@ -166,6 +177,7 @@ export class TurnTranslator {
       toolName: name,
       input: typeof part.args === "string" ? part.args : JSON.stringify(part.args),
       providerExecuted: true,
+      dynamic: true,
     });
   }
 

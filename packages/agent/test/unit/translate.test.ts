@@ -139,6 +139,13 @@ describe("TurnTranslator — server (provider-executed) tools", () => {
     ]);
     const call = parts.find((p) => p.type === "tool-call");
     expect(call && "providerExecuted" in call ? call.providerExecuted : false).toBe(true);
+    // `dynamic: true` is what lets the AI SDK accept a tool name that is not in the
+    // client ToolSet. Without it the call is marked `invalid`, which injects a phantom
+    // tool-error output and halts the tool loop on this step — stranding the turn when
+    // a client tool call is pending in the same segment.
+    expect(call && "dynamic" in call ? call.dynamic : false).toBe(true);
+    const inputStart = parts.find((p) => p.type === "tool-input-start");
+    expect(inputStart && "dynamic" in inputStart ? inputStart.dynamic : false).toBe(true);
     const result = parts.find((p) => p.type === "tool-result");
     expect(result).toBeDefined();
     expect(result && "toolCallId" in result ? result.toolCallId : "").toBe("s1");

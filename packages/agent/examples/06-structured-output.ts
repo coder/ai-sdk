@@ -73,7 +73,9 @@ function structuredOutput<T>(schema: z.ZodType<T>, opts: { maxSteps?: number } =
         // stopWhen ceiling landed there → finishReason "tool-calls"), the ack ran
         // locally but never reached the server: the chat is stuck in
         // `requires_action` — new messages queue behind it, archive() 409s. Ack the
-        // pending calls directly before touching the chat again.
+        // pending calls directly before touching the chat again. `turn.toolCalls` is
+        // the FINAL step's calls (ai v6) — exactly the stranded segment; calls from
+        // earlier steps were already answered by their own resume segments.
         let settled = true;
         const pending =
           turn.finishReason === "tool-calls"

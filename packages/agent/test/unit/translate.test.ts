@@ -149,6 +149,9 @@ describe("TurnTranslator — server (provider-executed) tools", () => {
     const result = parts.find((p) => p.type === "tool-result");
     expect(result).toBeDefined();
     expect(result && "toolCallId" in result ? result.toolCallId : "").toBe("s1");
+    // The result must mirror the call's dynamic flag, or call and result land in
+    // different buckets (dynamicToolCalls vs. static toolResults) and can't pair.
+    expect(result && "dynamic" in result ? result.dynamic : false).toBe(true);
     const text = parts
       .filter((p) => p.type === "text-delta")
       .map((p) => ("delta" in p ? p.delta : ""))

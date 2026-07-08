@@ -194,6 +194,9 @@ export class TurnTranslator {
       toolName: name,
       result: jsonResult(part.result),
       isError: part.is_error ?? false,
+      // Mirror the call's `dynamic: true` so call and result land in the same
+      // bucket (steps[*].dynamicToolCalls / dynamicToolResults, UI streams).
+      dynamic: true,
     });
   }
 

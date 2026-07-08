@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.1](https://github.com/coder/ai-sdk/compare/agent-v0.2.0...agent-v0.2.1) (2026-07-08)
+
+Fixes an issue where server tool calls were not marked as dynamic, causing the agent's tool loop to stop prematurely. The loop now correctly continues past server tool calls.
+
+### Highlights
+
+- Server tool calls are now marked as dynamic so the agent's tool loop continues past them instead of halting. ([#15](https://github.com/coder/ai-sdk/pull/15))
+
+### Bug Fixes
+
+* **agent:** mark server tool calls dynamic so the tool loop continues past them ([#15](https://github.com/coder/ai-sdk/issues/15)) ([7d31dd8](https://github.com/coder/ai-sdk/commit/7d31dd879bc4e2efd2bef01323b8e7b350e327bc))
+
 ## [0.2.0](https://github.com/coder/ai-sdk/compare/agent-v0.1.0...agent-v0.2.0) (2026-06-24)
 
 Adds cancellation, timeouts, typed errors, and lifecycle helpers for more robust agent control. Also introduces file upload support for chat attachments and workspace files.

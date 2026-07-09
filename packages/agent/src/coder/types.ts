@@ -201,6 +201,13 @@ export interface ChatMessageUsage {
   cache_creation_tokens?: number;
   cache_read_tokens?: number;
   context_limit?: number;
+  /**
+   * Cost in micro-USD, when the server prices usage. Optional: servers that
+   * don't price usage (or predate cost reporting) omit it.
+   */
+  total_cost_micros?: number;
+  /** Model runtime in milliseconds, when the server reports it. */
+  total_runtime_ms?: number;
 }
 
 export interface ChatMessage {

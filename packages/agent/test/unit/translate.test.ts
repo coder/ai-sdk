@@ -32,6 +32,21 @@ function run(events: ChatStreamEvent[], dynamicToolNames = new Set<string>()) {
   return { parts, t };
 }
 
+/** Reassembles the closed text blocks (start→deltas→end), in emission order. */
+function textBlocks(parts: ReturnType<TurnTranslator["ingest"]>): string[] {
+  const open = new Map<string, string>();
+  const blocks: string[] = [];
+  for (const p of parts) {
+    if (p.type === "text-start") open.set(p.id, "");
+    else if (p.type === "text-delta") open.set(p.id, (open.get(p.id) ?? "") + p.delta);
+    else if (p.type === "text-end") {
+      blocks.push(open.get(p.id) ?? "");
+      open.delete(p.id);
+    }
+  }
+  return blocks;
+}
+
 describe("TurnTranslator — snapshot (fast) mode", () => {
   it("emits a single text block from a full message snapshot", () => {
     const { parts } = run([
@@ -198,5 +213,190 @@ describe("TurnTranslator — errors", () => {
     expect(parts.some((p) => p.type === "error")).toBe(true);
     const finish = parts.at(-1)!;
     expect(finish.type === "finish" && finish.finishReason.unified).toBe("error");
+  });
+});
+
+describe("TurnTranslator — trailing snapshots after deltas", () => {
+  it("emits delta-streamed final text once when its snapshot follows an earlier assistant message", () => {
+    const { parts } = run([
+      msg(2, "assistant", [
+        { type: "tool-call", tool_call_id: "s1", tool_name: "web_search", args: { q: "x" } },
+      ]),
+      msg(3, "tool", [
+        { type: "tool-result", tool_call_id: "s1", tool_name: "web_search", result: { hits: 1 } },
+      ]),
+      part("assistant", { type: "text", text: "Done" }),
+      // Trailing snapshot of the SAME message the deltas streamed — must be a
+      // no-op for text, even though its id differs from the previous snapshot's.
+      msg(4, "assistant", [{ type: "text", text: "Done" }]),
+      status("waiting"),
+    ]);
+    expect(textBlocks(parts)).toEqual(["Done"]);
+  });
+
+  it("keeps per-message text blocks across a multi-round tool turn (no duplicates, no merged blocks)", () => {
+    const round = (id: number, text: string, callId: string): ChatStreamEvent[] => [
+      part("assistant", { type: "text", text }),
+      part("assistant", { type: "tool-call", tool_call_id: callId, tool_name: "run", args: {} }),
+      msg(id, "assistant", [
+        { type: "text", text },
+        { type: "tool-call", tool_call_id: callId, tool_name: "run", args: {} },
+      ]),
+      msg(id + 1, "tool", [
+        { type: "tool-result", tool_call_id: callId, tool_name: "run", result: {} },
+      ]),
+    ];
+    const { parts } = run([
+      ...round(2, "A", "s1"),
+      ...round(4, "B", "s2"),
+      part("assistant", { type: "text", text: "C" }),
+      msg(6, "assistant", [{ type: "text", text: "C" }]),
+      status("waiting"),
+    ]);
+    expect(textBlocks(parts)).toEqual(["A", "B", "C"]);
+  });
+
+  it("emits delta-streamed reasoning once when its snapshot follows an earlier assistant message", () => {
+    const { parts } = run([
+      msg(2, "assistant", [{ type: "tool-call", tool_call_id: "s1", tool_name: "run", args: {} }]),
+      msg(3, "tool", [{ type: "tool-result", tool_call_id: "s1", tool_name: "run", result: {} }]),
+      part("assistant", { type: "reasoning", text: "Think" }),
+      part("assistant", { type: "text", text: "Done" }),
+      msg(4, "assistant", [
+        { type: "reasoning", text: "Think" },
+        { type: "text", text: "Done" },
+      ]),
+      status("waiting"),
+    ]);
+    const reasoning = parts
+      .filter((p) => p.type === "reasoning-delta")
+      .map((p) => ("delta" in p ? p.delta : ""))
+      .join("");
+    expect(reasoning).toBe("Think");
+    expect(textBlocks(parts)).toEqual(["Done"]);
+  });
+
+  it("does not duplicate when an empty snapshot announces the message before its deltas", () => {
+    const { parts } = run([
+      msg(2, "assistant", []),
+      part("assistant", { type: "text", text: "Hel" }),
+      part("assistant", { type: "text", text: "lo" }),
+      msg(2, "assistant", [{ type: "text", text: "Hello" }]),
+      status("waiting"),
+    ]);
+    expect(textBlocks(parts)).toEqual(["Hello"]);
+  });
+
+  it("still emits a snapshot-only message that follows a delta-streamed one", () => {
+    // Mode is decided per message: A streamed via deltas, B arrives snapshot-only.
+    const { parts } = run([
+      part("assistant", { type: "text", text: "A" }),
+      msg(2, "assistant", [{ type: "text", text: "A" }]),
+      msg(4, "assistant", [{ type: "text", text: "B" }]),
+      status("waiting"),
+    ]);
+    expect(textBlocks(parts)).toEqual(["A", "B"]);
+  });
+});
+
+describe("TurnTranslator — source parts", () => {
+  it("emits a url source from a streamed message_part once, deduping the trailing snapshot", () => {
+    const src: ChatMessagePart = {
+      type: "source",
+      source_id: "src-1",
+      url: "https://example.com/a",
+      title: "A",
+    };
+    const { parts } = run([
+      part("assistant", src),
+      part("assistant", { type: "text", text: "Cited." }),
+      msg(2, "assistant", [src, { type: "text", text: "Cited." }]),
+      status("waiting"),
+    ]);
+    expect(parts.filter((p) => p.type === "source")).toEqual([
+      { type: "source", sourceType: "url", id: "src-1", url: "https://example.com/a", title: "A" },
+    ]);
+    expect(textBlocks(parts)).toEqual(["Cited."]);
+  });
+
+  it("emits sources from a snapshot-only turn, falling back to the url as id", () => {
+    const { parts } = run([
+      msg(2, "assistant", [
+        { type: "source", url: "https://example.com/b" },
+        { type: "text", text: "See source." },
+      ]),
+      status("waiting"),
+    ]);
+    expect(parts.filter((p) => p.type === "source")).toEqual([
+      {
+        type: "source",
+        sourceType: "url",
+        id: "https://example.com/b",
+        url: "https://example.com/b",
+      },
+    ]);
+  });
+
+  it("skips source parts without a url (the V3 part requires id + url)", () => {
+    const { parts } = run([
+      msg(2, "assistant", [
+        { type: "source", source_id: "src-broken" },
+        { type: "text", text: "ok" },
+      ]),
+      status("waiting"),
+    ]);
+    expect(parts.some((p) => p.type === "source")).toBe(false);
+    expect(textBlocks(parts)).toEqual(["ok"]);
+  });
+});
+
+describe("TurnTranslator — usage cost metadata", () => {
+  it("surfaces wire cost/runtime under providerMetadata.coder and the verbatim usage under usage.raw", () => {
+    const usage = {
+      input_tokens: 10,
+      output_tokens: 3,
+      total_cost_micros: 1234,
+      total_runtime_ms: 5678,
+    };
+    const { parts } = run([
+      msg(2, "assistant", [{ type: "text", text: "Hi" }], usage),
+      status("waiting"),
+    ]);
+    const finish = parts.at(-1)!;
+    expect(finish.type).toBe("finish");
+    if (finish.type !== "finish") return;
+    expect(finish.providerMetadata).toEqual({
+      coder: { total_cost_micros: 1234, total_runtime_ms: 5678 },
+    });
+    expect(finish.usage.raw).toEqual(usage);
+  });
+
+  it("includes only the cost keys the wire actually sent", () => {
+    const { parts } = run([
+      msg(2, "assistant", [{ type: "text", text: "Hi" }], { total_cost_micros: 42 }),
+      status("waiting"),
+    ]);
+    const finish = parts.at(-1)!;
+    if (finish.type !== "finish") return;
+    expect(finish.providerMetadata).toEqual({ coder: { total_cost_micros: 42 } });
+  });
+
+  it("omits providerMetadata when the server sends no cost fields (old servers)", () => {
+    const { parts } = run([
+      msg(2, "assistant", [{ type: "text", text: "Hi" }], { input_tokens: 10, output_tokens: 3 }),
+      status("waiting"),
+    ]);
+    const finish = parts.at(-1)!;
+    if (finish.type !== "finish") return;
+    expect(finish.providerMetadata).toBeUndefined();
+    expect(finish.usage.raw).toEqual({ input_tokens: 10, output_tokens: 3 });
+  });
+
+  it("leaves usage.raw unset when no usage arrived", () => {
+    const { parts } = run([msg(2, "assistant", [{ type: "text", text: "Hi" }]), status("waiting")]);
+    const finish = parts.at(-1)!;
+    if (finish.type !== "finish") return;
+    expect(finish.usage.raw).toBeUndefined();
+    expect(finish.providerMetadata).toBeUndefined();
   });
 });

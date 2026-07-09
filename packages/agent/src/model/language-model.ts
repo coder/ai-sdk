@@ -397,6 +397,7 @@ export class CoderLanguageModel implements LanguageModelV3 {
       unified: "stop",
       raw: undefined,
     };
+    let providerMetadata: LanguageModelV3GenerateResult["providerMetadata"];
     const warnings: LanguageModelV3GenerateResult["warnings"] = [];
 
     for await (const part of this.#runTurn(options)) {
@@ -437,6 +438,7 @@ export class CoderLanguageModel implements LanguageModelV3 {
         case "finish":
           usage = part.usage;
           finishReason = part.finishReason;
+          providerMetadata = part.providerMetadata;
           break;
         case "error":
           throw part.error instanceof Error
@@ -447,6 +449,12 @@ export class CoderLanguageModel implements LanguageModelV3 {
       }
     }
 
-    return { content, finishReason, usage, warnings };
+    return {
+      content,
+      finishReason,
+      usage,
+      warnings,
+      ...(providerMetadata ? { providerMetadata } : {}),
+    };
   }
 }

@@ -233,9 +233,10 @@ export function watchChatEvents(
     else external.addEventListener("abort", chain, { once: true });
   }
   const inner = watchChatEventsLoop({ ...options, signal: controller.signal });
+  const detach = (): void => external?.removeEventListener("abort", chain);
   const finish = async (): Promise<void> => {
     controller.abort();
-    external?.removeEventListener("abort", chain);
+    detach();
     try {
       await inner.return();
     } catch {
@@ -243,7 +244,20 @@ export function watchChatEvents(
     }
   };
   return {
-    next: () => inner.next(),
+    // Detach the signal chain once the loop settles for good (done, or the
+    // terminal 4xx rejection) — the iteration protocol never calls return()
+    // on a failed iterator, and the {once} listener would otherwise pile up
+    // on a long-lived signal across re-created watchers.
+    async next(): Promise<IteratorResult<ChatWatchEvent, void>> {
+      try {
+        const result = await inner.next();
+        if (result.done) detach();
+        return result;
+      } catch (err) {
+        detach();
+        throw err;
+      }
+    },
     async return(): Promise<IteratorResult<ChatWatchEvent, void>> {
       await finish();
       return { done: true, value: undefined };
@@ -254,6 +268,11 @@ export function watchChatEvents(
     },
     [Symbol.asyncIterator]() {
       return this;
+    },
+    // Native async generators are async-disposable; the wrapper must be too,
+    // so `await using events = client.watchChats(…)` keeps tearing down.
+    async [Symbol.asyncDispose](): Promise<void> {
+      await finish();
     },
   } as AsyncGenerator<ChatWatchEvent, void, void>;
 }

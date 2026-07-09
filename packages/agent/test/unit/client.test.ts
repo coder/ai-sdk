@@ -479,6 +479,35 @@ describe("CoderChatClient.watchChats", () => {
     expect(sockets).toHaveLength(1); // no reconnect after a terminal failure
   });
 
+  it("detaches from the caller's signal after a terminal failure", async () => {
+    // The iteration protocol never calls return() on a failed iterator, so the
+    // wrapper itself must drop its {once} abort listener — otherwise watchers
+    // re-created against one long-lived signal accumulate listeners.
+    const { getEventListeners } = await import("node:events");
+    const { c, sockets } = watchClient();
+    const ac = new AbortController();
+    const iter = c.watchChats({ signal: ac.signal });
+    const p = iter.next();
+    await tick();
+
+    sockets[0]?.emit("error", { message: "Unexpected server response: 401" });
+    await expect(p).rejects.toMatchObject({ status: 401 });
+    expect(getEventListeners(ac.signal, "abort")).toHaveLength(0);
+  });
+
+  it("supports `await using` disposal like the native generator it replaced", async () => {
+    const { c, sockets } = watchClient();
+    const iter = c.watchChats();
+    const pending = iter.next();
+    await tick();
+
+    const dispose = (iter as AsyncGenerator<unknown> & AsyncDisposable)[Symbol.asyncDispose];
+    expect(typeof dispose).toBe("function");
+    await dispose.call(iter);
+    expect((await pending).done).toBe(true);
+    expect(sockets[0]?.closedWith).toContain(1000);
+  });
+
   it("treats a 5xx upgrade rejection as transient and redials", async () => {
     vi.useFakeTimers();
     try {

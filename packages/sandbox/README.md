@@ -128,6 +128,44 @@ createCoderWorkspace({
 });
 ```
 
+## Provisioning a workspace without a session
+
+`ensureCoderWorkspace(settings)` runs the same get-or-create → start-if-stopped
+→ wait-until-ready pipeline as create mode, but without creating a harness
+sandbox session — use it to provision a workspace for **other tools** to bind
+to. It takes an explicit `workspace` name (`[owner/]workspace`; there is no
+`sessionId` to derive one from), an optional `create` block (same shape as
+above; `namePrefix`/`owner` are unused), plus `readyTimeoutMs`, `transport`, and
+`abortSignal`. A stopped workspace is always started. Without `create`, the
+workspace must already exist.
+
+It returns an `EnsuredCoderWorkspace`: the workspace's final (ready) status
+snapshot plus `created` (whether this call created it) and — when the transport
+reports one — `id`, the workspace UUID. That id is the handle other Coder
+packages bind to. `@coder/ai-sdk-agent` is intentionally **not** a dependency of
+this package; the two compose by a plain string handoff:
+
+```ts
+import { ensureCoderWorkspace } from "@coder/ai-sdk-sandbox";
+import { CoderAgent } from "@coder/ai-sdk-agent";
+
+const ws = await ensureCoderWorkspace({
+  workspace: "agent-ws",
+  create: { template: "docker" },
+});
+
+const agent = new CoderAgent({
+  baseUrl: process.env.CODER_URL!,
+  token: process.env.CODER_SESSION_TOKEN!,
+  organizationId: "<org-uuid>",
+  workspaceId: ws.id!, // binds the chat's workspace-scoped tools
+});
+```
+
+The non-null assertion is safe on `coder` CLIs that emit `id` in
+`coder list -o json`; old CLIs omit it, so guard
+(`if (ws.id === undefined) throw …`) when you can't pin the CLI version.
+
 ## Terminal UI
 
 For an interactive chat in your terminal instead of one-shot `generate()` calls,

@@ -10,6 +10,8 @@ export interface ExampleEnv {
   token: string;
   organizationId: string;
   model: string;
+  /** Model for tool-calling examples (03, 06) — stronger default, own override. */
+  toolModel: string;
 }
 
 export async function loadEnv(): Promise<ExampleEnv> {
@@ -28,6 +30,7 @@ export async function loadEnv(): Promise<ExampleEnv> {
         "Optional:",
         "  export CODER_ORG_ID=<org-uuid>   # otherwise auto-detected from your user",
         "  export CODER_MODEL=haiku         # model hint (display name, provider:model, or UUID)",
+        "  export CODER_TOOL_MODEL=sonnet   # model for the tool-calling examples (03, 06)",
         "",
       ].join("\n"),
     );
@@ -54,7 +57,14 @@ export async function loadEnv(): Promise<ExampleEnv> {
     organizationId = first;
   }
 
-  return { baseUrl, token, organizationId, model: process.env.CODER_MODEL ?? "haiku" };
+  return {
+    baseUrl,
+    token,
+    organizationId,
+    // `||`, not `??`: a set-but-empty env var should fall back too.
+    model: process.env.CODER_MODEL || "haiku",
+    toolModel: process.env.CODER_TOOL_MODEL || "sonnet",
+  };
 }
 
 /** Print a heading so example output is easy to read. */

@@ -92,6 +92,11 @@ export interface WorkspaceAgentInfo {
 }
 
 export interface WorkspaceStatus {
+  /**
+   * Workspace UUID (top-level `id` in the Coder API). Optional: old `coder`
+   * CLIs or non-CLI transports may not report it, so never require it.
+   */
+  id?: string;
   /** Workspace name (without owner/agent qualifiers). */
   name: string;
   /** Workspace-level build status (`latest_build.status`). */

@@ -1,4 +1,5 @@
 import type {
+  JSONObject,
   LanguageModelV3FinishReason,
   LanguageModelV3StreamPart,
   LanguageModelV3Usage,
@@ -27,6 +28,9 @@ function mapUsage(u: ChatMessageUsage | undefined): LanguageModelV3Usage {
       text: undefined,
       reasoning: u?.reasoning_tokens,
     },
+    // Preserve the verbatim wire usage (snake_case) so callers can reach fields
+    // the normalized shape has no slot for (context_limit, cost, runtime, …).
+    ...(u ? { raw: u as unknown as JSONObject } : {}),
   };
 }
 
@@ -40,9 +44,12 @@ function jsonResult(value: unknown): NonNullable<unknown> {
  * Translates one chatd turn's {@link ChatStreamEvent} stream into a sequence of
  * `LanguageModelV3StreamPart`s for the AI SDK.
  *
- * Two text/reasoning modes, decided per turn from the wire behavior:
+ * Two text/reasoning modes, decided per assistant message from the wire
+ * behavior:
  *  - **delta mode** — chatd streamed `message_part` deltas; we emit those and
- *    treat the trailing full `message` snapshot as a no-op for text/reasoning.
+ *    treat the message's trailing full `message` snapshot as a no-op for
+ *    text/reasoning. Deltas carry no message id, so "deltas arrived since the
+ *    last assistant snapshot" is what marks a snapshot as trailing.
  *  - **snapshot mode** — fast turns where only full `message` snapshots arrive;
  *    we diff each snapshot's full text against what we've already emitted.
  * Both paths track an emitted-length cursor, so neither double-counts.
@@ -58,11 +65,16 @@ export class TurnTranslator {
   #text = { id: undefined as string | undefined, len: 0, sawDelta: false };
   #reasoning = { id: undefined as string | undefined, len: 0, sawDelta: false };
   #currentAssistantId: number | undefined;
+  // Whether text/reasoning deltas arrived since the last assistant `message`
+  // snapshot — i.e. the next assistant snapshot is the trailing snapshot of the
+  // message those deltas streamed (deltas carry no message id of their own).
+  #deltasSinceSnapshot = false;
 
   #serverToolCalls = new Set<string>();
   #serverToolResults = new Set<string>();
   #clientToolCalls = new Set<string>();
   #clientToolCallSeen = false;
+  #sources = new Set<string>();
 
   #usage: ChatMessageUsage | undefined;
   #error: ChatErrorPayload | undefined;
@@ -206,6 +218,27 @@ export class TurnTranslator {
     });
   }
 
+  /**
+   * Emits a chatd `source` part as a standalone V3 url source (no text-block
+   * bracketing needed). Deduped by the emitted id so a part streamed as a
+   * `message_part` isn't re-emitted by its trailing `message` snapshot, while
+   * snapshot-only turns still emit theirs.
+   */
+  #emitSource(out: LanguageModelV3StreamPart[], part: ChatMessagePart): void {
+    const url = part.url;
+    if (!url) return; // the V3 source part requires both id and url
+    const id = part.source_id || url;
+    if (this.#sources.has(id)) return;
+    this.#sources.add(id);
+    out.push({
+      type: "source",
+      sourceType: "url",
+      id,
+      url,
+      ...(part.title !== undefined ? { title: part.title } : {}),
+    });
+  }
+
   // --- ingest ---------------------------------------------------------------
 
   ingest(ev: ChatStreamEvent): LanguageModelV3StreamPart[] {
@@ -258,6 +291,7 @@ export class TurnTranslator {
     switch (part.type) {
       case "text":
         this.#text.sawDelta = true;
+        this.#deltasSinceSnapshot = true;
         this.#openText(out);
         if (part.text) {
           out.push({ type: "text-delta", id: this.#text.id as string, delta: part.text });
@@ -266,6 +300,7 @@ export class TurnTranslator {
         break;
       case "reasoning":
         this.#reasoning.sawDelta = true;
+        this.#deltasSinceSnapshot = true;
         this.#openReasoning(out);
         if (part.text) {
           out.push({ type: "reasoning-delta", id: this.#reasoning.id as string, delta: part.text });
@@ -279,6 +314,9 @@ export class TurnTranslator {
         break;
       case "tool-result":
         if (!this.#isClientTool(part.tool_name)) this.#emitServerToolResult(out, part);
+        break;
+      case "source":
+        this.#emitSource(out, part);
         break;
       default:
         break;
@@ -294,7 +332,19 @@ export class TurnTranslator {
 
     if (message.role === "assistant") {
       // New assistant message boundary: close prior blocks and reset cursors.
-      if (this.#currentAssistantId !== undefined && this.#currentAssistantId !== message.id) {
+      // Skipped when deltas arrived since the previous assistant snapshot:
+      // deltas carry no message id, so they belong to the message THIS snapshot
+      // finalizes (its id differing from the previous snapshot's), and the
+      // snapshot must stay a no-op for text/reasoning. The reset is load-bearing
+      // for snapshot-only messages, which must still diff-and-emit below. Known
+      // tradeoff: a mid-message snapshot followed by more deltas of the SAME
+      // message would misclassify the next snapshot — that ordering is outside
+      // the trailing-snapshot protocol (see class doc).
+      if (
+        this.#currentAssistantId !== undefined &&
+        this.#currentAssistantId !== message.id &&
+        !this.#deltasSinceSnapshot
+      ) {
         this.#closeText(out);
         this.#closeReasoning(out);
         this.#text.sawDelta = false;
@@ -316,16 +366,21 @@ export class TurnTranslator {
           .join("");
         if (full.length > 0) this.#emitReasoningUpTo(out, full);
       }
+      // Tool calls/results and sources are id-deduped, so snapshots process them
+      // unconditionally (even when the snapshot is a text/reasoning no-op).
       for (const part of content) {
         if (part.type === "tool-call" && !this.#isClientTool(part.tool_name))
           this.#emitServerToolCall(out, part);
         else if (part.type === "tool-result" && !this.#isClientTool(part.tool_name))
           this.#emitServerToolResult(out, part);
+        else if (part.type === "source") this.#emitSource(out, part);
       }
+      this.#deltasSinceSnapshot = false;
     } else if (message.role === "tool") {
       for (const part of content) {
         if (part.type === "tool-result" && !this.#isClientTool(part.tool_name))
           this.#emitServerToolResult(out, part);
+        else if (part.type === "source") this.#emitSource(out, part);
       }
     }
   }
@@ -343,10 +398,20 @@ export class TurnTranslator {
       unified = "tool-calls";
     else unified = "stop";
 
+    // Surface server-side cost/runtime (sent by newer servers as extra usage
+    // fields) verbatim under `providerMetadata.coder`. Omitted entirely when
+    // the server sent neither, so old servers look unchanged to callers.
+    const coder: JSONObject = {};
+    if (this.#usage?.total_cost_micros !== undefined)
+      coder.total_cost_micros = this.#usage.total_cost_micros;
+    if (this.#usage?.total_runtime_ms !== undefined)
+      coder.total_runtime_ms = this.#usage.total_runtime_ms;
+
     out.push({
       type: "finish",
       usage: mapUsage(this.#usage),
       finishReason: { unified, raw: this.#terminalStatus },
+      ...(Object.keys(coder).length > 0 ? { providerMetadata: { coder } } : {}),
     });
     return out;
   }

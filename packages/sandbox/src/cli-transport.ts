@@ -219,6 +219,8 @@ export function parseWorkspaceStatus(workspace: unknown): WorkspaceStatus {
     }
   }
   return {
+    // The workspace UUID; omitted (not required) so old CLI output stays accepted.
+    ...(typeof ws.id === "string" && ws.id !== "" ? { id: ws.id } : {}),
     name: typeof ws.name === "string" ? ws.name : "",
     buildStatus: typeof build.status === "string" ? build.status : "pending",
     transition: typeof build.transition === "string" ? build.transition : "start",

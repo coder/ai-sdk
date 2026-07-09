@@ -8,6 +8,7 @@ import {
   ToolLoopAgent,
   type ToolSet,
 } from "ai";
+import { assertSupportedAiVersion } from "../ai-version.js";
 import {
   type ChatFileInput,
   CoderChatClient,
@@ -15,7 +16,13 @@ import {
   type UploadedChatFile,
 } from "../coder/client.js";
 import type { ChatModelConfig } from "../coder/types.js";
-import { CoderAgentError } from "../errors.js";
+import {
+  type PreviewShareLevel,
+  resolveWorkspacePreview,
+  shareWorkspacePreview,
+  type WorkspaceApiConnection,
+} from "../coder/workspaces.js";
+import { CoderAgentError, CoderApiError } from "../errors.js";
 import type { FileContent } from "../files.js";
 import { CoderLanguageModel } from "../model/language-model.js";
 import { CODER_PROVIDER_OPTIONS } from "../model/prompt.js";
@@ -55,9 +62,89 @@ function makeChatAttachment(file: UploadedChatFile): ChatAttachment {
  * its own server-side loop at 1200 steps independently. */
 const DEFAULT_STOP = stepCountIs(64);
 
+/**
+ * Bounded-cleanup defaults. An interrupted chat keeps winding down server-side
+ * for a few seconds, during which archiving 409s — {@link CoderAgent.archive}
+ * and `[Symbol.asyncDispose]` retry those 409s every ~`SETTLE_RETRY_DELAY_MS`
+ * for up to ~`SETTLE_DEADLINE_MS` overall before giving up.
+ */
+const SETTLE_DEADLINE_MS = 15_000;
+const SETTLE_RETRY_DELAY_MS = 1_000;
+
+/**
+ * Clamps a user-supplied delay to what `AbortSignal.timeout`/`setTimeout`
+ * accept: a non-negative integer no larger than the 32-bit timer cap.
+ * Anything else (negative, fractional beyond flooring, `NaN`, `Infinity`)
+ * falls back to the default rather than throwing at dispose time.
+ */
+function sanitizeDelayMs(value: number | undefined, fallback: number): number {
+  const MAX_TIMER_MS = 2 ** 31 - 1;
+  if (value === undefined || Number.isNaN(value)) return fallback;
+  if (value === Number.POSITIVE_INFINITY) return MAX_TIMER_MS;
+  if (!Number.isFinite(value) || value < 0) return fallback;
+  return Math.min(Math.floor(value), MAX_TIMER_MS);
+}
+
+/** Abort-aware sleep: resolves after `ms`, or rejects with the signal's reason. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/**
+ * Archive a chat, retrying while it is still settling. Interrupting a run does
+ * not stop it instantly — chatd winds it down for a few more seconds and 409s
+ * archive attempts in that window. Only those 409s are retried (other failures
+ * and caller aborts rethrow immediately); once `deadlineMs` has elapsed the
+ * last 409 is rethrown.
+ */
+async function archiveWhenSettled(
+  client: CoderChatClient,
+  chatId: string,
+  opts: { deadlineMs: number; retryDelayMs: number; signal?: AbortSignal },
+): Promise<void> {
+  // The deadline decides when to stop retrying; the timeout signal additionally
+  // unsticks an archive request that hangs (both track the same clock).
+  const timeout = AbortSignal.timeout(opts.deadlineMs);
+  const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
+  const deadline = Date.now() + opts.deadlineMs;
+  for (;;) {
+    try {
+      await client.archiveChat(chatId, signal);
+      return;
+    } catch (err) {
+      if (!(err instanceof CoderApiError) || err.status !== 409) throw err;
+      // Stop when there is no budget left for another pause + attempt, surfacing
+      // the 409 (the actionable error) rather than an opaque timeout.
+      if (Date.now() + opts.retryDelayMs > deadline) throw err;
+      // Pause on the caller's signal only — the deadline is enforced above.
+      await sleep(opts.retryDelayMs, opts.signal);
+    }
+  }
+}
+
 export interface CoderAgentSettings<TOOLS extends ToolSet = {}> {
   // --- connection (provide a client, or baseUrl + token) ---
-  /** A pre-built {@link CoderChatClient}. Mutually exclusive with baseUrl/token. */
+  /**
+   * A pre-built {@link CoderChatClient}, used instead of constructing one from
+   * `baseUrl`/`token`. The preview helpers ({@link CoderAgent.getPreview},
+   * {@link CoderAgent.sharePreview}) call non-chat endpoints and therefore
+   * still need credentials — pass `baseUrl` + `token` alongside `client` to
+   * enable them.
+   */
   client?: CoderChatClient;
   /** Coder deployment base URL, e.g. `https://dev.coder.com`. */
   baseUrl?: string;
@@ -113,6 +200,60 @@ export interface CoderAgentSettings<TOOLS extends ToolSet = {}> {
    * non-positive means no limit.
    */
   requestTimeoutMs?: number;
+  /**
+   * Overall deadline in milliseconds for bounded cleanup: how long
+   * {@link CoderAgent.archive} keeps retrying while a freshly interrupted chat
+   * settles server-side, and how long `[Symbol.asyncDispose]` may take in
+   * total. Default 15 000. Primarily a test/tuning knob.
+   */
+  settleDeadlineMs?: number;
+  /**
+   * Pause in milliseconds between {@link CoderAgent.archive} retries while the
+   * chat settles. Default 1000. Primarily a test/tuning knob.
+   */
+  settleRetryDelayMs?: number;
+}
+
+/** Options for {@link CoderAgent.getPreview}. */
+export interface WorkspacePreviewOptions {
+  /** Workspace port the app listens on (4–5 digit ports parse most reliably). */
+  port: number;
+  /**
+   * Agent that serves the port. Optional when the workspace has exactly one
+   * agent; required when it has several (the error lists the candidates).
+   */
+  agentName?: string;
+  /**
+   * Protocol the app speaks *inside the workspace* on that port — `https` adds
+   * the `s` suffix (`3000s--…`) so the proxy connects over TLS. This is not
+   * the browser scheme, which follows the deployment's access URL.
+   * Default `"http"`.
+   */
+  protocol?: "http" | "https";
+  signal?: AbortSignal;
+}
+
+/** A resolved workspace preview URL (see {@link CoderAgent.getPreview}). */
+export interface WorkspacePreview {
+  /** Browser-openable subdomain app URL, e.g. `https://3000--main--dev--alice.apps.example.com`. */
+  url: string;
+}
+
+/** Options for {@link CoderAgent.sharePreview}. */
+export interface SharePreviewOptions extends WorkspacePreviewOptions {
+  /**
+   * Who may open the preview: `authenticated` (any logged-in user; the
+   * default), `organization` (members of the workspace's organization;
+   * requires a newer Coder server), or `public` (no auth at all — mind what
+   * the port serves).
+   */
+  shareLevel?: PreviewShareLevel;
+}
+
+/** A shared workspace preview (see {@link CoderAgent.sharePreview}). */
+export interface SharedWorkspacePreview extends WorkspacePreview {
+  /** The share level now in effect for the port. */
+  shareLevel: PreviewShareLevel;
 }
 
 /**
@@ -135,8 +276,15 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
   readonly #inner: InnerAgent<TOOLS>;
   readonly #organizationId: string;
   readonly #workspaceFiles: WorkspaceFileStore | undefined;
+  readonly #workspaceId: string | undefined;
+  readonly #workspaceApi: WorkspaceApiConnection | undefined;
+  readonly #settleDeadlineMs: number;
+  readonly #settleRetryDelayMs: number;
 
   constructor(settings: CoderAgentSettings<TOOLS>) {
+    // Fail fast on an incompatible AI SDK major (see peer dependency `ai@^6`).
+    assertSupportedAiVersion();
+
     if (settings.client) {
       this.#client = settings.client;
     } else if (settings.baseUrl && settings.token) {
@@ -154,6 +302,17 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
 
     this.#organizationId = settings.organizationId;
     this.#workspaceFiles = settings.workspaceFiles;
+    this.#workspaceId = settings.workspaceId;
+    // The preview helpers call stable v2 endpoints that CoderChatClient (chat
+    // scoped) does not expose, so they need the raw credentials when given.
+    this.#workspaceApi =
+      settings.baseUrl && settings.token
+        ? { baseUrl: settings.baseUrl, token: settings.token, fetch: settings.fetch }
+        : undefined;
+    // Sanitized so `AbortSignal.timeout` (which rejects non-integer, negative,
+    // and non-finite delays with a RangeError) can never make disposal throw.
+    this.#settleDeadlineMs = sanitizeDelayMs(settings.settleDeadlineMs, SETTLE_DEADLINE_MS);
+    this.#settleRetryDelayMs = sanitizeDelayMs(settings.settleRetryDelayMs, SETTLE_RETRY_DELAY_MS);
 
     // A file written to one workspace isn't visible to a chat bound to another.
     if (
@@ -235,24 +394,43 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
     this.#model.resetSession();
   }
 
-  /** Interrupt the in-flight generation, if any. */
-  async interrupt(): Promise<void> {
+  /**
+   * Interrupt the in-flight generation, if any. Resolves as soon as the server
+   * acknowledges the interrupt — the run keeps winding down asynchronously for
+   * a few seconds afterwards (see {@link CoderAgent.archive}).
+   */
+  async interrupt(opts?: { signal?: AbortSignal }): Promise<void> {
     const id = this.#model.chatId;
-    if (id) await this.#client.interruptChat(id);
+    if (id) await this.#client.interruptChat(id, opts?.signal);
   }
 
-  /** Archive the underlying chat (safe cleanup; hides it from listings). */
-  async archive(): Promise<void> {
+  /**
+   * Archive the underlying chat (safe cleanup; hides it from listings).
+   *
+   * A freshly interrupted/settled chat can keep winding down server-side for a
+   * few seconds, during which the server rejects archiving with a 409. Those
+   * 409s are retried (~1s apart, ~15s overall — see `settleDeadlineMs` /
+   * `settleRetryDelayMs`) and the last one is rethrown if the chat never
+   * settles; any other failure, including a caller abort, rethrows immediately.
+   */
+  async archive(opts?: { signal?: AbortSignal }): Promise<void> {
     const id = this.#model.chatId;
-    if (id) await this.#client.archiveChat(id);
+    if (!id) return;
+    await archiveWhenSettled(this.#client, id, {
+      deadlineMs: this.#settleDeadlineMs,
+      retryDelayMs: this.#settleRetryDelayMs,
+      signal: opts?.signal,
+    });
   }
 
   /**
    * Clean up the chat when the agent leaves an `await using` scope, so cleanup
    * rides scope exit instead of a separate call you have to remember in a
-   * `finally`. Interrupts any in-flight server run, then archives the chat.
-   * Best-effort: disposal errors are swallowed so they can't mask the scope's
-   * own error.
+   * `finally`. Interrupts any in-flight server run, then archives the chat
+   * (retrying while the interrupted run settles). Best-effort and bounded
+   * (~15s overall): disposal errors are swallowed after the bounded attempts
+   * so they can't mask the scope's own error — call {@link CoderAgent.archive}
+   * directly when you need guaranteed cleanup.
    *
    * @example
    * ```ts
@@ -265,13 +443,15 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
     // archive() only soft-hides the chat; it does not stop a generation. If the
     // scope exits mid-turn (e.g. generate() threw, or an early return), interrupt
     // first so chatd stops generating and releases the workspace, then archive.
+    // One shared timeout bounds both calls so scope exit can never hang.
+    const deadline = AbortSignal.timeout(this.#settleDeadlineMs);
     try {
-      await this.interrupt();
+      await this.interrupt({ signal: deadline });
     } catch {
       /* best-effort cleanup */
     }
     try {
-      await this.archive();
+      await this.archive({ signal: deadline });
     } catch {
       /* best-effort cleanup */
     }
@@ -324,5 +504,67 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
       signal: file.signal,
     });
     return { workspaceId: this.#workspaceFiles.workspaceId, path };
+  }
+
+  // --- previews ---------------------------------------------------------------
+
+  /** The v2 connection + workspace id the preview helpers need, or a clear error. */
+  #previewContext(method: string): { conn: WorkspaceApiConnection; workspaceId: string } {
+    if (!this.#workspaceId) {
+      throw new CoderAgentError(
+        `${method}() requires the agent to be bound to a workspace — construct the CoderAgent ` +
+          `with the \`workspaceId\` setting.`,
+      );
+    }
+    if (!this.#workspaceApi) {
+      throw new CoderAgentError(
+        `${method}() needs the deployment's REST credentials — construct the CoderAgent with ` +
+          `\`baseUrl\` and \`token\` (they can accompany \`client\`).`,
+      );
+    }
+    return { conn: this.#workspaceApi, workspaceId: this.#workspaceId };
+  }
+
+  /**
+   * Resolve the browser URL where a port on the bound workspace can be
+   * previewed, e.g. `https://3000--main--dev--alice.apps.example.com`.
+   * Composed from stable v2 endpoints (workspace lookup + wildcard app host),
+   * so it works against old Coder servers. Requires the `workspaceId` setting,
+   * `baseUrl`/`token` credentials, and a deployment with a wildcard access URL
+   * configured.
+   *
+   * The URL honors the port's current share level — private to the workspace
+   * owner unless shared (see {@link CoderAgent.sharePreview}).
+   */
+  async getPreview(opts: WorkspacePreviewOptions): Promise<WorkspacePreview> {
+    const { conn, workspaceId } = this.#previewContext("getPreview");
+    const { url } = await resolveWorkspacePreview(
+      conn,
+      { workspaceId, port: opts.port, agentName: opts.agentName, protocol: opts.protocol },
+      opts.signal,
+    );
+    return { url };
+  }
+
+  /**
+   * Share a port on the bound workspace and return its preview URL. Upserts
+   * the port's share level — `authenticated` by default — so teammates (or,
+   * with `public`, anyone) can open what the agent is serving; re-invoking
+   * updates the level in place. On Coder servers that predate port sharing
+   * (< v2.9) this fails with a 404 {@link CoderApiError} saying so.
+   */
+  async sharePreview(opts: SharePreviewOptions): Promise<SharedWorkspacePreview> {
+    const { conn, workspaceId } = this.#previewContext("sharePreview");
+    return shareWorkspacePreview(
+      conn,
+      {
+        workspaceId,
+        port: opts.port,
+        agentName: opts.agentName,
+        protocol: opts.protocol,
+        shareLevel: opts.shareLevel,
+      },
+      opts.signal,
+    );
   }
 }

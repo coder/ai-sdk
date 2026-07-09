@@ -43,10 +43,12 @@ pure text/JSON steps and the Agent only for the steps that touch tools.
 ## Install
 
 ```bash
-pnpm add @coder/ai-sdk-agent ai zod
+pnpm add @coder/ai-sdk-agent ai@^6 zod
 ```
 
-Requires Node ≥ 20 and `ai` v6.
+Requires Node ≥ 20 and `ai` v6 — the constructors throw an actionable error when
+another `ai` major is detected (the guard fails open when the installed version
+can't be resolved), instead of failing cryptically mid‑generation.
 
 ## Quick start
 
@@ -113,6 +115,12 @@ AI SDK tool loop — your `execute` runs in your process.
 - Coder's own server‑side tools (file editing, shell, MCP, …) still run on the server and
   appear in the transcript as `providerExecuted` tool calls/results — you observe them, you
   don't execute them.
+
+Migration note: since v0.2.1 server‑executed tools stream with `dynamic: true`
+(they aren't in your `ToolSet`, and the AI SDK only accepts unknown tool names on
+dynamic calls). In UI message streams they therefore surface as `dynamic-tool`
+parts rather than `tool-{name}` parts — key off `toolName`, not `part.type`, when
+rendering them.
 
 ## Files
 
@@ -203,12 +211,80 @@ created on the first turn and reused for subsequent `generate()`/`stream()` call
 conversation with server‑side history). `agent.chatId` is the current chat id.
 
 - `agent.resetSession()` — start a fresh chat on the next turn (reuse one instance for sequential turns; you don't need a new agent per turn).
-- `agent.interrupt()` — interrupt an in‑flight generation.
-- `agent.archive()` — archive the underlying chat (cleanup; see [Cleanup](#cleanup)).
+- `agent.interrupt({ signal? })` — interrupt an in‑flight generation.
+- `agent.archive({ signal? })` — archive the underlying chat (cleanup; see [Cleanup](#cleanup)).
 - `agent.listModels()` — list the deployment's model configs, so you don't have to guess the `model` hint.
 - Resume a prior chat: `new CoderAgent({ …, chatId: "…" })`.
 
+Interrupting is asynchronous on the server: `interrupt()` resolves as soon as the
+interrupt is acknowledged, and the run keeps winding down for a few seconds
+afterwards. The client‑level `client.interruptChat(chatId, { wait: true })` sends
+`?wait=true` to ask the server to hold the response until the run has stopped —
+current Coder servers ignore the unknown parameter and still return immediately,
+so confirm completion via the event stream (e.g. [`watchChats`](#watching-chats))
+rather than relying on it.
+
 A single instance is **single‑flight** — don't run concurrent generations against it. For concurrency, use one instance per session (and see [Workspaces & quota](#workspaces--quota)).
+
+## Rehydrating chat history
+
+Chat history lives on the server. To render an existing chat in a UI (e.g. after
+a reload), fetch its messages with the `CoderChatClient` (`agent.client`, or one
+you construct — see [Auth](#auth)) and convert them with
+`chatMessagesToUIMessages` — the mapping mirrors what a live‑streamed transcript
+of the same turn looks like:
+
+```ts
+import { chatMessagesToUIMessages } from "@coder/ai-sdk-agent";
+
+const { messages } = await client.getMessages(chatId);
+const uiMessages = chatMessagesToUIMessages(messages);
+// e.g. in React: useChat({ messages: uiMessages })
+```
+
+The converter sorts by message id, so the endpoint's newest‑first default page
+order (and any pagination order) is safe to pass straight in — `useChat` always
+receives a chronological transcript.
+
+Tool calls become `dynamic-tool` parts with their results folded in, `source`
+parts become `source-url` parts, and unknown part kinds are skipped silently, so
+history written by newer Coder servers degrades gracefully. One caveat: history
+does not record which tool names were client (`ToolSet`) tools, so _every_ tool
+call rehydrates as `dynamic-tool` — live, client tools stream as statically
+typed `tool-{name}` parts. Render tools by name (ai's
+`isToolOrDynamicToolUIPart` and `getToolOrDynamicToolName`) rather than by
+exact `part.type` and the difference disappears. Persisted `file`
+parts carry only a `file_id` (no bytes, usually no URL), so pass a `fileUrl`
+resolver to keep attachments visible — download the bytes with
+`client.getChatFile(fileId)` and return a data:/object/proxy URL; parts that end
+up without a URL are skipped:
+
+```ts
+chatMessagesToUIMessages(messages, {
+  fileUrl: (part) => (part.file_id ? `/api/files/${part.file_id}` : undefined),
+});
+```
+
+## Watching chats
+
+`client.watchChats({ signal })` yields lifecycle events (status/title changes,
+creation, deletion, …) for **every chat visible to the authenticated user** as an
+async iterable, backed by the `/api/experimental/chats/watch` WebSocket:
+
+```ts
+for await (const event of client.watchChats({ signal })) {
+  if (event.kind === "status_change") console.log(event.chat.id, event.chat.status);
+}
+```
+
+Unlike the per‑chat event stream, this is a long‑lived subscription: dropped
+connections are redialed automatically with exponential backoff (1s doubling to
+a 30s cap, reset once an event arrives). Iteration ends only when the signal
+aborts, or with a terminal `CoderApiError` when the server rejects the upgrade
+with a 4xx — bad/expired token, or an older Coder server without the endpoint
+(404). For custom plumbing (own client, browser sockets), the standalone
+`watchChatEvents({ baseUrl, token, signal, webSocketFactory })` export provides
+the same stream without a `CoderChatClient`.
 
 ## Timeouts & cancellation
 
@@ -242,16 +318,27 @@ truncated result as if the turn had finished.
 ## Cleanup
 
 `archive()` soft‑hides the chat (it stays in listings as `archived: true`; there
-is no hard delete yet). To make cleanup ride scope exit instead of a `finally` you
-have to remember, the agent is an **async disposable**:
+is no hard delete yet). A freshly interrupted chat keeps winding down server‑side
+for a few seconds, during which archiving 409s — `archive()` retries those 409s
+(~1s apart, up to ~15s overall; tune with `settleDeadlineMs` /
+`settleRetryDelayMs`) and rethrows the last one if the chat never settles. Any
+other failure, including your own abort, rethrows immediately.
+
+To make cleanup ride scope exit instead of a `finally` you have to remember, the
+agent is an **async disposable**:
 
 ```ts
 await using agent = new CoderAgent({
   /* … */
 });
 const { text } = await agent.generate({ prompt: "…" });
-// agent.archive() runs automatically when the scope exits (best‑effort).
+// agent.interrupt() + agent.archive() run automatically when the scope exits.
 ```
+
+Disposal interrupts any in‑flight run, then archives. It is **bounded and never
+throws** (~15s overall, best‑effort): disposal errors are swallowed so they can't
+mask the scope's own error. Call `archive()` directly when you need guaranteed
+cleanup.
 
 In a request handler that returns before a fire‑and‑forget `archive()` settles, the
 archive can be abandoned — `await using` (or an awaited `archive()` in `finally`)
@@ -283,6 +370,36 @@ try {
 `maxRetries` defaults to `0`: this agent owns server‑side chat state, so an
 SDK‑level retry could duplicate a turn. Prefer catching `retryable` errors and
 retrying the whole step deliberately.
+
+## Usage & cost
+
+Results carry normalized token usage in `usage`, plus the verbatim snake_case
+wire usage in `usage.raw` for fields the normalized shape has no slot for
+(`context_limit`, cost, runtime, …). When the server reports them,
+`total_cost_micros` (micro‑USD) and `total_runtime_ms` are also mirrored under
+`providerMetadata.coder` on finish. Both are **absence‑tolerant mirrors**:
+today's Coder servers only expose cost on the aggregate cost endpoints
+(`/api/experimental/chats/cost/*`), so expect these fields to be absent —
+nothing is emitted when the server sends neither.
+
+Forward usage to a UI via message metadata:
+
+```ts
+const result = await agent.stream({ prompt: "…" });
+return result.toUIMessageStream({
+  messageMetadata: ({ part }) =>
+    part.type === "finish-step"
+      ? { usage: part.usage, coder: part.providerMetadata?.coder }
+      : undefined,
+});
+```
+
+## Sources
+
+Model configs with web search enabled emit `source` parts. These flow through to
+`result.sources` and, in UI message streams, `source-url` parts (pass
+`sendSources: true` to `toUIMessageStream` — the AI SDK omits them by default).
+Earlier releases dropped them.
 
 ## Structured output
 
@@ -391,6 +508,47 @@ Compose additional client tools through the helper —
 rather than passing `tools:` to the constructor next to the spread, where the
 later key silently clobbers the other map.
 
+## Workspace previews
+
+When the agent is bound to a workspace (the `workspaceId` setting), you can
+resolve — and share — the browser URL where a port on that workspace is served,
+e.g. the dev server the agent just started:
+
+```ts
+const { url } = await agent.getPreview({ port: 3000 });
+// → https://3000--main--dev--alice.apps.example.com (private to the workspace owner)
+
+const shared = await agent.sharePreview({ port: 3000, shareLevel: "authenticated" });
+// shared.url is now reachable by any logged-in user; shared.shareLevel is the level in effect
+```
+
+Both are built on the stable v2 workspace APIs (workspace lookup + the wildcard
+apps host; `sharePreview` adds a port‑share upsert), so they work against old
+Coder servers — no experimental endpoints.
+
+- `getPreview({ port, agentName?, protocol?, signal? })` composes the subdomain
+  URL. The URL honors the port's current share level — private to the workspace
+  owner unless shared. `agentName` is optional when the workspace has exactly one
+  agent (with several, the error lists the candidates); `protocol: "https"` means
+  the app speaks TLS _inside the workspace_ (it adds the `s` label suffix,
+  `3000s--…`) and does not affect the browser scheme.
+- `sharePreview({ port, shareLevel?, … })` additionally upserts the port's share
+  level (re‑invoking updates it in place) and returns the level in effect.
+  `shareLevel` is `"authenticated"` (any logged‑in user; the default),
+  `"organization"` (members of the workspace's organization; requires a newer
+  Coder server), or `"public"` (no auth at all — mind what the port serves).
+  Reverting to owner‑only means deleting the share; `"owner"` is not accepted on
+  upsert.
+- Clear failures instead of broken URLs: a deployment without a wildcard access
+  URL (`--wildcard-access-url`) yields an explanatory error, and a server that
+  predates port sharing (< Coder v2.9) yields a 404 `CoderApiError` saying so.
+  Ports below 1000 are rejected up front for the same reason — Coder subdomain
+  URLs only encode 4–5 digit ports, so `80--agent--…` would be parsed as an app
+  named "80" and never resolve; serve the preview on a higher port.
+
+The preview helpers call non‑chat endpoints, so they need `baseUrl` + `token`
+credentials — pass them alongside `client` if you construct one yourself.
+
 ## Workspaces & quota
 
 A `CoderAgent` is one server‑side chat, and — depending on its configuration and
@@ -423,7 +581,17 @@ running many agents at once:
 | `stopWhen`                        | AI SDK stop condition(s); default `stepCountIs(64)`                                              |
 | `maxRetries`                      | default `0` — SDK retries can duplicate server‑side turns; override with care                    |
 | `requestTimeoutMs`                | per‑turn time budget (ms); interrupts the run and rejects (`kind: "timeout"`) instead of hanging |
+| `settleDeadlineMs`                | overall deadline for bounded cleanup (`archive()` 409 retries, disposal); default 15 000         |
+| `settleRetryDelayMs`              | pause between `archive()` retries while the chat settles; default 1000                           |
 | `chatId`                          | resume an existing chat                                                                          |
+
+The `model` hint resolves against the deployment's model configs in order: a
+config UUID is used as‑is, then an exact `provider:model` match, an exact model
+id, a display‑name substring (case‑insensitive), and finally a model‑id
+substring. Partial payloads from older/newer servers are tolerated (entries
+match on the fields they carry), and an unresolvable hint falls back to the
+server's default model instead of failing. Use `agent.listModels()` to see
+what's available.
 
 ## How it works
 

@@ -8,6 +8,7 @@ import type {
   LanguageModelV3Usage,
   SharedV3Warning,
 } from "@ai-sdk/provider";
+import { assertSupportedAiVersion } from "../ai-version.js";
 import { CoderAgentError, CoderApiError, CoderChatError } from "../errors.js";
 import { CoderChatClient } from "../coder/client.js";
 import type { ChatInputPart, CreateChatRequest } from "../coder/types.js";
@@ -89,6 +90,8 @@ export class CoderLanguageModel implements LanguageModelV3 {
   #inFlight = false;
 
   constructor(config: CoderLanguageModelConfig) {
+    // Fail fast on an incompatible AI SDK major (see peer dependency `ai@^6`).
+    assertSupportedAiVersion();
     this.#config = config;
     this.modelId = config.model ?? "chatd";
     this.#chatId = config.chatId;
@@ -397,6 +400,7 @@ export class CoderLanguageModel implements LanguageModelV3 {
       unified: "stop",
       raw: undefined,
     };
+    let providerMetadata: LanguageModelV3GenerateResult["providerMetadata"];
     const warnings: LanguageModelV3GenerateResult["warnings"] = [];
 
     for await (const part of this.#runTurn(options)) {
@@ -437,6 +441,7 @@ export class CoderLanguageModel implements LanguageModelV3 {
         case "finish":
           usage = part.usage;
           finishReason = part.finishReason;
+          providerMetadata = part.providerMetadata;
           break;
         case "error":
           throw part.error instanceof Error
@@ -447,6 +452,12 @@ export class CoderLanguageModel implements LanguageModelV3 {
       }
     }
 
-    return { content, finishReason, usage, warnings };
+    return {
+      content,
+      finishReason,
+      usage,
+      warnings,
+      ...(providerMetadata ? { providerMetadata } : {}),
+    };
   }
 }

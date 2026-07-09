@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { createCoderWorkspace } from "../src/coder-workspace-provider.js";
+import { createCoderWorkspace, ensureCoderWorkspace } from "../src/coder-workspace-provider.js";
+import * as sandbox from "../src/index.js";
 import type {
   CoderTransport,
   CreateWorkspaceOptions,
@@ -43,8 +44,9 @@ class MockTransport implements CoderTransport {
   }
 }
 
-function readyStatus(name = "ws"): WorkspaceStatus {
+function readyStatus(name = "ws", id?: string): WorkspaceStatus {
   return {
+    ...(id !== undefined ? { id } : {}),
     name,
     buildStatus: "running",
     transition: "start",
@@ -433,5 +435,145 @@ describe("createCoderWorkspace — create mode", () => {
       },
     });
     expect(attachedHookRan).toBe(false);
+  });
+});
+
+describe("ensureCoderWorkspace", () => {
+  const WS_ID = "b0e4c1f8-1234-4abc-9def-000000000001";
+
+  it("returns the ready status (with UUID) for an existing running workspace", async () => {
+    const transport = new CreateMockTransport();
+    transport.statusScript = [readyStatus("ws", WS_ID)];
+    const ws = await ensureCoderWorkspace({ workspace: "ws", transport });
+    expect(ws.id).toBe(WS_ID);
+    expect(ws.name).toBe("ws");
+    expect(ws.created).toBe(false);
+    expect(ws.buildStatus).toBe("running");
+    expect(ws.agents[0]).toMatchObject({ status: "connected", lifecycleState: "ready" });
+    expect(transport.createCalls).toHaveLength(0);
+    expect(transport.startCalls).toBe(0);
+  });
+
+  it("tolerates an old CLI that reports no workspace id", async () => {
+    const transport = new CreateMockTransport();
+    transport.statusScript = [readyStatus()];
+    const ws = await ensureCoderWorkspace({ workspace: "ws", transport });
+    expect(ws.id).toBeUndefined();
+    expect(ws.name).toBe("ws");
+  });
+
+  it("creates a missing workspace from the template and reports created: true", async () => {
+    const transport = new CreateMockTransport();
+    transport.statusScript = [null, readyStatus("ws", WS_ID)];
+    const ws = await ensureCoderWorkspace({
+      workspace: "ws",
+      create: { template: "docker" },
+      transport,
+    });
+    expect(transport.createCalls).toHaveLength(1);
+    expect(transport.createCalls[0]!.workspace).toBe("ws");
+    expect(transport.createCalls[0]!.template).toBe("docker");
+    expect(ws.created).toBe(true);
+    expect(ws.id).toBe(WS_ID);
+  });
+
+  it("throws when the workspace is missing and no create block is set", async () => {
+    const transport = new CreateMockTransport();
+    transport.statusScript = [null];
+    await expect(ensureCoderWorkspace({ workspace: "ws", transport })).rejects.toThrow(
+      /ensureCoderWorkspace: workspace "ws" does not exist/,
+    );
+    expect(transport.createCalls).toHaveLength(0);
+  });
+
+  it("starts a stopped workspace before waiting for readiness", async () => {
+    const transport = new CreateMockTransport();
+    transport.statusScript = [stoppedStatus(), readyStatus("ws", WS_ID)];
+    const ws = await ensureCoderWorkspace({ workspace: "ws", transport });
+    expect(transport.startCalls).toBe(1);
+    expect(transport.createCalls).toHaveLength(0);
+    expect(ws.created).toBe(false);
+    expect(ws.id).toBe(WS_ID);
+  });
+
+  it("keeps polling until the agent becomes ready", async () => {
+    const transport = new CreateMockTransport();
+    const starting: WorkspaceStatus = {
+      name: "ws",
+      buildStatus: "running",
+      transition: "start",
+      agents: [{ name: "main", status: "connecting", lifecycleState: "starting" }],
+    };
+    transport.statusScript = [starting, starting, readyStatus("ws", WS_ID)];
+    const ws = await ensureCoderWorkspace({ workspace: "ws", transport });
+    // existence pre-check + a not-ready poll + the ready poll
+    expect(transport.statusCalls).toBe(3);
+    expect(ws.id).toBe(WS_ID);
+  });
+
+  it("validates a requested preset like createCoderWorkspace does", async () => {
+    const transport = new CreateMockTransport();
+    transport.presets = [{ name: "Standard", default: true }];
+    transport.statusScript = [null];
+    await expect(
+      ensureCoderWorkspace({
+        workspace: "ws",
+        create: { template: "docker", preset: "Nope" },
+        transport,
+      }),
+    ).rejects.toThrow(/ensureCoderWorkspace: preset "Nope" not found.*Standard/s);
+    expect(transport.createCalls).toHaveLength(0);
+  });
+
+  it("honors create.ifExists: 'error'", async () => {
+    const transport = new CreateMockTransport();
+    transport.statusScript = [readyStatus()];
+    await expect(
+      ensureCoderWorkspace({
+        workspace: "ws",
+        create: { template: "docker", ifExists: "error" },
+        transport,
+      }),
+    ).rejects.toThrow(/ensureCoderWorkspace: workspace "ws" already exists/);
+  });
+
+  it("times out with the last observed status in the error", async () => {
+    const transport = new CreateMockTransport();
+    transport.statusScript = [stoppedStatus()];
+    await expect(
+      ensureCoderWorkspace({ workspace: "ws", transport, readyTimeoutMs: 0 }),
+    ).rejects.toThrow(/ensureCoderWorkspace: timed out after 0ms.*"ws"/s);
+  });
+
+  it("rejects immediately for an already-aborted signal", async () => {
+    const transport = new CreateMockTransport();
+    transport.statusScript = [readyStatus()];
+    const reason = new Error("caller aborted");
+    await expect(
+      ensureCoderWorkspace({ workspace: "ws", transport, abortSignal: AbortSignal.abort(reason) }),
+    ).rejects.toBe(reason);
+    expect(transport.statusCalls).toBe(1); // the existence pre-check only
+  });
+});
+
+describe("package export surface", () => {
+  it("exports ensureCoderWorkspace from the package index", () => {
+    expect(sandbox.ensureCoderWorkspace).toBe(ensureCoderWorkspace);
+    expect(typeof sandbox.createCoderWorkspace).toBe("function");
+  });
+
+  it("exposes the ensure settings and result types", () => {
+    // Type-level check: these annotations fail typecheck if the exports drift.
+    const settings: sandbox.EnsureCoderWorkspaceSettings = { workspace: "ws" };
+    const result: sandbox.EnsuredCoderWorkspace = {
+      id: "b0e4c1f8-1234-4abc-9def-000000000001",
+      name: "ws",
+      buildStatus: "running",
+      transition: "start",
+      agents: [],
+      created: true,
+    };
+    expect(settings.workspace).toBe("ws");
+    expect(result.created).toBe(true);
   });
 });

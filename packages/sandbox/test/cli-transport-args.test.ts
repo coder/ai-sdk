@@ -221,6 +221,21 @@ describe("parseWorkspaceStatus", () => {
     expect(status.transition).toBe("start");
     expect(status.agents).toEqual([]);
   });
+
+  it("surfaces the workspace UUID when the CLI reports one", () => {
+    const status = parseWorkspaceStatus({
+      id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      name: "ws",
+      latest_build: { status: "running", transition: "start", resources: [] },
+    });
+    expect(status.id).toBe("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
+  });
+
+  it("omits id for old CLIs that don't report one (or report a non-string)", () => {
+    expect("id" in parseWorkspaceStatus({ name: "ws" })).toBe(false);
+    expect(parseWorkspaceStatus({ id: 42, name: "ws" }).id).toBeUndefined();
+    expect(parseWorkspaceStatus({ id: "", name: "ws" }).id).toBeUndefined();
+  });
 });
 
 describe("parsePresetList", () => {

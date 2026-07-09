@@ -6,6 +6,7 @@ import {
   type ChatMessagesResponse,
   type ChatModelConfig,
   type ChatStreamEvent,
+  type ChatWatchEvent,
   type CreateChatMessageRequest,
   type CreateChatMessageResponse,
   type CreateChatRequest,
@@ -14,7 +15,7 @@ import {
   type UpdateChatRequest,
   type UploadChatFileResponse,
 } from "./types.js";
-import { streamChatEvents, type WebSocketFactory } from "./ws.js";
+import { streamChatEvents, watchChatEvents, type WebSocketFactory } from "./ws.js";
 
 /** A file to upload as a chat attachment. */
 export interface ChatFileInput {
@@ -184,8 +185,31 @@ export class CoderChatClient {
     return this.#request<void>("POST", `${API_PREFIX}/${chatId}/tool-results`, req, signal);
   }
 
-  interruptChat(chatId: string, signal?: AbortSignal): Promise<Chat> {
-    return this.#request<Chat>("POST", `${API_PREFIX}/${chatId}/interrupt`, undefined, signal);
+  /**
+   * Interrupt the chat's in-flight run (`POST /interrupt`). The server flips
+   * an active run to `interrupting` and responds immediately with the updated
+   * chat — it does not wait for the run to actually stop.
+   *
+   * Pass `{ wait: true }` to send `?wait=true`, asking the server to hold the
+   * response until the run has stopped. Coder servers without that param
+   * ignore the unknown query harmlessly and still return immediately, so
+   * callers should be prepared to confirm completion via the event stream.
+   *
+   * The second parameter also accepts a bare `AbortSignal` (the historical
+   * signature).
+   */
+  interruptChat(
+    chatId: string,
+    optsOrSignal?: AbortSignal | { wait?: boolean; signal?: AbortSignal },
+  ): Promise<Chat> {
+    const opts = optsOrSignal instanceof AbortSignal ? { signal: optsOrSignal } : optsOrSignal;
+    const query = opts?.wait ? "?wait=true" : "";
+    return this.#request<Chat>(
+      "POST",
+      `${API_PREFIX}/${chatId}/interrupt${query}`,
+      undefined,
+      opts?.signal,
+    );
   }
 
   updateChat(chatId: string, req: UpdateChatRequest, signal?: AbortSignal): Promise<void> {
@@ -293,6 +317,23 @@ export class CoderChatClient {
     });
   }
 
+  /**
+   * Watch lifecycle events (status/title changes, creation, deletion, …) for
+   * every chat visible to the authenticated user via the `/chats/watch`
+   * WebSocket. Dropped connections are redialed with exponential backoff; the
+   * iteration ends only when `opts.signal` aborts, or with a terminal
+   * {@link CoderApiError} when the server rejects the upgrade with a 4xx
+   * (bad/expired token, or an older Coder server without the endpoint → 404).
+   */
+  watchChats(opts?: { signal?: AbortSignal }): AsyncGenerator<ChatWatchEvent, void, void> {
+    return watchChatEvents({
+      baseUrl: this.baseUrl,
+      token: this.#token,
+      signal: opts?.signal,
+      webSocketFactory: this.#webSocketFactory,
+    });
+  }
+
   // --- Helpers --------------------------------------------------------------
 
   /**
@@ -302,12 +343,21 @@ export class CoderChatClient {
    * (e.g. `anthropic:claude-haiku-4-5-20251001`), a bare model id, or a
    * display-name substring (case-insensitive). Returns `undefined` if no
    * match is found, in which case the caller should let chatd pick the default.
+   *
+   * Tolerates partial payloads from older/newer servers: a malformed listing
+   * (empty body, non-array JSON, null entries) resolves as no match, and
+   * entries missing `provider`, `model`, or `display_name` are matched on the
+   * fields they do carry — an entry without `provider` still matches by its
+   * model id, one without `model` only by display name.
    */
   async resolveModelConfigId(hint: string, signal?: AbortSignal): Promise<string | undefined> {
     const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     if (UUID_RE.test(hint)) return hint;
 
-    const configs = await this.listModelConfigs(signal);
+    const raw: unknown = await this.listModelConfigs(signal);
+    const configs = (Array.isArray(raw) ? raw : []).filter(
+      (c): c is ChatModelConfig => typeof c === "object" && c !== null,
+    );
     const lower = hint.toLowerCase();
     // `provider:model` form.
     const colon = hint.indexOf(":");
@@ -317,20 +367,26 @@ export class CoderChatClient {
     const candidates = configs.filter((c) => c.enabled !== false);
     const pool = candidates.length > 0 ? candidates : configs;
 
+    // Guarded accessors: treat a missing/non-string field as absent.
+    const modelOf = (c: ChatModelConfig) =>
+      typeof c.model === "string" ? c.model.toLowerCase() : undefined;
+    const providerOf = (c: ChatModelConfig) =>
+      typeof c.provider === "string" ? c.provider.toLowerCase() : undefined;
+    const displayNameOf = (c: ChatModelConfig) =>
+      typeof c.display_name === "string" ? c.display_name.toLowerCase() : undefined;
+
     const exact = pool.find(
-      (c) =>
-        c.model.toLowerCase() === model &&
-        (provider === undefined || c.provider.toLowerCase() === provider),
+      (c) => modelOf(c) === model && (provider === undefined || providerOf(c) === provider),
     );
     if (exact) return exact.id;
 
-    const byModel = pool.find((c) => c.model.toLowerCase() === model);
+    const byModel = pool.find((c) => modelOf(c) === model);
     if (byModel) return byModel.id;
 
-    const byDisplay = pool.find((c) => c.display_name.toLowerCase().includes(lower));
+    const byDisplay = pool.find((c) => displayNameOf(c)?.includes(lower));
     if (byDisplay) return byDisplay.id;
 
-    const byModelSubstring = pool.find((c) => c.model.toLowerCase().includes(model));
+    const byModelSubstring = pool.find((c) => modelOf(c)?.includes(model));
     return byModelSubstring?.id;
   }
 }

@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.0](https://github.com/coder/ai-sdk/compare/agent-v0.2.1...agent-v0.3.0) (2026-07-09)
+
+This release improves streaming correctness and overall robustness of the agent, adds previously missing helper functions, and refines lifecycle handling. It also bounds recovery requests and hardens the structured-output example.
+
+### Highlights
+
+- Streaming correctness and lifecycle handling were improved, along with additional hardening and previously missing helper functions. ([#19](https://github.com/coder/ai-sdk/pull/19))
+- Recovery requests are now bounded and the structured-output example has been hardened. ([#17](https://github.com/coder/ai-sdk/pull/17))
+
+### Features
+
+* **agent:** stream correctness, hardening, lifecycle, and missing helpers from the bug-report sweep ([#19](https://github.com/coder/ai-sdk/issues/19)) ([fb0f858](https://github.com/coder/ai-sdk/commit/fb0f858be24bef0ddd2b1bdaec52b003ac4b665c))
+
+
+### Bug Fixes
+
+* **agent:** bound recovery requests and harden the structured-output example ([#17](https://github.com/coder/ai-sdk/issues/17)) ([5577db9](https://github.com/coder/ai-sdk/commit/5577db94149f684e28fa1779afce25d08acab73b))
+
 ## [0.2.1](https://github.com/coder/ai-sdk/compare/agent-v0.2.0...agent-v0.2.1) (2026-07-08)
 
 Fixes an issue where server tool calls were not marked as dynamic, causing the agent's tool loop to stop prematurely. The loop now correctly continues past server tool calls.

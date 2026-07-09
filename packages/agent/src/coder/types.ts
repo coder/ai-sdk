@@ -276,12 +276,18 @@ export interface UploadChatFileResponse {
   id: string;
 }
 
+/**
+ * A configured model (`GET /api/experimental/chats/model-configs`). Depending
+ * on the server version and how a config was created, `provider`, `model`, and
+ * `display_name` may be absent on individual entries, so treat them as
+ * optional and guard reads.
+ */
 export interface ChatModelConfig {
   id: string;
-  provider: string;
+  provider?: string;
   ai_provider_id?: string;
-  model: string;
-  display_name: string;
+  model?: string;
+  display_name?: string;
   enabled?: boolean;
   is_default?: boolean;
   context_limit?: number;
@@ -355,3 +361,30 @@ export const TERMINAL_STATUSES: ReadonlySet<ChatStatus> = new Set<ChatStatus>([
   "error",
   "requires_action",
 ]);
+
+// ---------------------------------------------------------------------------
+// Watch events (WebSocket `/watch`)
+// ---------------------------------------------------------------------------
+
+/** Kinds of chat lifecycle events emitted on the per-user watch socket. */
+export type ChatWatchEventKind =
+  | "status_change"
+  | "summary_change"
+  | "title_change"
+  | "created"
+  | "deleted"
+  | "diff_status_change"
+  | "action_required"
+  | "context_dirty";
+
+/**
+ * An event from `GET /api/experimental/chats/watch`, which covers every chat
+ * visible to the authenticated user (not a single chat). Mirrors
+ * `codersdk.ChatWatchEvent`.
+ */
+export interface ChatWatchEvent {
+  kind: ChatWatchEventKind;
+  chat: Chat;
+  /** Pending client-executed tool calls; sent with `action_required` events. */
+  tool_calls?: ChatStreamToolCall[];
+}

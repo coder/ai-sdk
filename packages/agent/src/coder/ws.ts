@@ -1,6 +1,6 @@
 import NodeWebSocket from "ws";
-import { CoderAgentError } from "../errors.js";
-import type { ChatStreamEvent } from "./types.js";
+import { CoderAgentError, CoderApiError } from "../errors.js";
+import type { ChatStreamEvent, ChatWatchEvent } from "./types.js";
 
 /**
  * A minimal WebSocket factory abstraction so the stream reader can run on
@@ -157,5 +157,181 @@ export async function* streamChatEvents(
     } catch {
       /* ignore */
     }
+  }
+}
+
+const WATCH_PATH = "/api/experimental/chats/watch";
+const WATCH_BACKOFF_INITIAL_MS = 1_000;
+const WATCH_BACKOFF_CAP_MS = 30_000;
+
+/** Abort-aware sleep; resolves early (without throwing) when the signal aborts. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    // A pending reconnect delay must not hold the Node process open.
+    (timer as unknown as { unref?: () => void }).unref?.();
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/**
+ * Extract the HTTP status from a rejected WebSocket upgrade. The `ws` package
+ * reports handshake failures as an error event whose message is
+ * `Unexpected server response: <status>`; other factories that follow the
+ * same convention are recognized too.
+ */
+function upgradeStatus(message: string): number | undefined {
+  const match = /unexpected server response: (\d{3})$/i.exec(message.trim());
+  return match ? Number(match[1]) : undefined;
+}
+
+export interface WatchChatEventsOptions {
+  baseUrl: string;
+  token: string;
+  signal?: AbortSignal;
+  webSocketFactory?: WebSocketFactory;
+}
+
+/**
+ * Opens the chatd `/watch` WebSocket — lifecycle events for every chat visible
+ * to the authenticated user — and yields decoded {@link ChatWatchEvent}s as an
+ * async iterable.
+ *
+ * Unlike the per-chat `/stream`, this is a long-lived subscription, so dropped
+ * connections are redialed automatically with exponential backoff (1s doubling
+ * to a 30s cap, reset once an event arrives). It ends in exactly two ways:
+ * `signal` aborting (the generator returns) or the server rejecting the
+ * upgrade with a 4xx — bad/expired token, or an older Coder server without the
+ * endpoint (404) — which throws a terminal {@link CoderApiError} instead of
+ * retrying forever.
+ */
+export async function* watchChatEvents(
+  options: WatchChatEventsOptions,
+): AsyncGenerator<ChatWatchEvent, void, void> {
+  const { baseUrl, token, signal } = options;
+  const factory = options.webSocketFactory ?? defaultFactory;
+  const url = `${httpToWs(baseUrl)}${WATCH_PATH}`;
+
+  let backoffMs = WATCH_BACKOFF_INITIAL_MS;
+  while (!signal?.aborted) {
+    // One connection attempt per iteration; the queue/wake plumbing mirrors
+    // streamChatEvents above.
+    const queue: ChatWatchEvent[] = [];
+    let resolveNext: (() => void) | undefined;
+    let finished = false;
+    let failure: Error | undefined;
+
+    const wake = () => {
+      resolveNext?.();
+      resolveNext = undefined;
+    };
+
+    const ws = factory(url, { headers: { "Coder-Session-Token": token } });
+
+    const onAbort = () => {
+      finished = true;
+      try {
+        ws.close(1000);
+      } catch {
+        /* ignore */
+      }
+      wake();
+    };
+    let abortListenerAdded = false;
+    if (signal) {
+      if (signal.aborted) onAbort();
+      else {
+        signal.addEventListener("abort", onAbort, { once: true });
+        abortListenerAdded = true;
+      }
+    }
+
+    const onMessage = (ev: { data: unknown }): void => {
+      if (finished) return;
+      let payload: unknown;
+      try {
+        const data = typeof ev.data === "string" ? ev.data : String(ev.data);
+        payload = JSON.parse(data);
+      } catch (err) {
+        // A malformed frame means this connection is unusable; redial it.
+        failure = new CoderAgentError("failed to parse chat watch frame", { cause: err });
+        finished = true;
+        wake();
+        return;
+      }
+      // chatd sends one event object per frame (wsjson); tolerate batches too.
+      if (Array.isArray(payload)) {
+        for (const e of payload) queue.push(e as ChatWatchEvent);
+      } else if (payload && typeof payload === "object") {
+        queue.push(payload as ChatWatchEvent);
+      }
+      wake();
+    };
+    const onError = (ev: unknown): void => {
+      if (finished) return;
+      const message =
+        ev && typeof ev === "object" && "message" in ev
+          ? String((ev as { message: unknown }).message)
+          : "chat watch socket error";
+      const status = upgradeStatus(message);
+      failure =
+        status !== undefined && status >= 400 && status < 500
+          ? new CoderApiError({ status, method: "GET", path: WATCH_PATH, message })
+          : new CoderAgentError(message);
+      finished = true;
+      wake();
+    };
+    const onClose = (): void => {
+      finished = true;
+      wake();
+    };
+    ws.addEventListener("message", onMessage);
+    ws.addEventListener("error", onError);
+    ws.addEventListener("close", onClose);
+
+    try {
+      while (true) {
+        while (queue.length > 0) {
+          const next = queue.shift() as ChatWatchEvent;
+          // Receiving an event proves the connection works — reset the backoff.
+          backoffMs = WATCH_BACKOFF_INITIAL_MS;
+          yield next;
+        }
+        if (finished) break;
+        await new Promise<void>((resolve) => {
+          resolveNext = resolve;
+        });
+      }
+    } finally {
+      finished = true;
+      if (signal && abortListenerAdded) signal.removeEventListener("abort", onAbort);
+      ws.removeEventListener("message", onMessage);
+      ws.removeEventListener("error", onError);
+      ws.removeEventListener("close", onClose);
+      try {
+        ws.close(1000);
+      } catch {
+        /* ignore */
+      }
+    }
+
+    if (signal?.aborted) return;
+    // A rejected upgrade (4xx) is terminal: retrying with the same credentials
+    // against the same server cannot succeed.
+    if (failure instanceof CoderApiError) throw failure;
+    await sleep(backoffMs, signal);
+    if (signal?.aborted) return;
+    backoffMs = Math.min(backoffMs * 2, WATCH_BACKOFF_CAP_MS);
   }
 }

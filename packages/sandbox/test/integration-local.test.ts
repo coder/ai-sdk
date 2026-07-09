@@ -4,9 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CoderCliTransport } from "../src/cli-transport.js";
-import { createCoderWorkspace } from "../src/coder-workspace-provider.js";
+import { createCoderWorkspace, ensureCoderWorkspace } from "../src/coder-workspace-provider.js";
 import * as fileIo from "../src/file-io.js";
-import { createFakeCoder, createFakeSsh, type FakeCoder } from "./fake-coder.js";
+import { createFakeCoder, createFakeSsh, FAKE_WORKSPACE_ID, type FakeCoder } from "./fake-coder.js";
 
 let fakeCoder: FakeCoder;
 let fakeSsh: FakeCoder;
@@ -153,6 +153,7 @@ describe("CoderCliTransport create/status/presets (via fake coder)", () => {
     await transport.create({ workspace: name, template: "docker", preset: "Standard" });
     const status = await transport.status(name);
     expect(status).not.toBeNull();
+    expect(status!.id).toBe(FAKE_WORKSPACE_ID);
     expect(status!.name).toBe(name);
     expect(status!.buildStatus).toBe("running");
     expect(status!.agents[0]).toMatchObject({ status: "connected", lifecycleState: "ready" });
@@ -164,6 +165,30 @@ describe("CoderCliTransport create/status/presets (via fake coder)", () => {
   it("listPresets parses the wrapped PascalCase JSON", async () => {
     const presets = await transport.listPresets({ template: "docker" });
     expect(presets).toEqual([{ name: "Standard", default: true }]);
+  });
+});
+
+describe("ensureCoderWorkspace (via fake coder)", () => {
+  it("get-or-creates the workspace and reports its UUID", async () => {
+    const name = `it-ensure-${Date.now()}`;
+    const ws = await ensureCoderWorkspace({
+      workspace: name,
+      create: { template: "docker", preset: "Standard" },
+      transport,
+    });
+    expect(ws.created).toBe(true);
+    expect(ws.id).toBe(FAKE_WORKSPACE_ID);
+    expect(ws.name).toBe(name);
+    expect(ws.agents.some((a) => a.status === "connected" && a.lifecycleState === "ready")).toBe(
+      true,
+    );
+
+    // A second ensure attaches to the existing workspace instead of creating.
+    const again = await ensureCoderWorkspace({ workspace: name, transport });
+    expect(again.created).toBe(false);
+    expect(again.id).toBe(FAKE_WORKSPACE_ID);
+
+    await transport.destroy(name);
   });
 });
 

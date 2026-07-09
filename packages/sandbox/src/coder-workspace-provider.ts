@@ -266,9 +266,87 @@ export function createCoderWorkspace(settings: CoderWorkspaceSettings): HarnessV
 }
 
 /**
+ * Settings for {@link ensureCoderWorkspace} — the provisioning subset of
+ * {@link createCoderWorkspace}'s settings. There is no harness session here, so
+ * the workspace name must be explicit (no `sessionId` to derive one from) and a
+ * stopped workspace is always started.
+ */
+export interface EnsureCoderWorkspaceSettings extends Pick<
+  CoderWorkspaceBaseSettings,
+  "readyTimeoutMs" | "transport"
+> {
+  /** The workspace to ensure, as `[owner/]workspace`. Required. */
+  workspace: string;
+  /**
+   * Create the workspace from a template when it doesn't exist; without it an
+   * existing workspace is required. `create.namePrefix` and `create.owner` are
+   * unused here (they only shape provider-derived names).
+   */
+  create?: CoderCreateSettings;
+  /** Aborts pending create/start/status calls and the readiness polling. */
+  abortSignal?: AbortSignal;
+}
+
+/**
+ * Result of {@link ensureCoderWorkspace}: the workspace's final (ready) status
+ * snapshot plus whether this call created it.
+ */
+export interface EnsuredCoderWorkspace extends WorkspaceStatus {
+  /** `true` when this call created the workspace (vs. reusing an existing one). */
+  created: boolean;
+}
+
+/**
+ * Ensure a Coder workspace exists, is started, and has a ready agent — without
+ * creating a harness sandbox session. Get-or-creates (when `create` is set),
+ * runs `coder start` if stopped, then polls until an agent is connected and its
+ * startup script has finished. Shares its internals with
+ * {@link createCoderWorkspace}'s create mode.
+ *
+ * The result includes the workspace UUID (`id`) when the transport reports one
+ * (a new-enough `coder` CLI; older CLIs may omit it) — the handle that other
+ * Coder packages bind to. `@coder/ai-sdk-agent` is intentionally *not* a
+ * dependency of this package; compose the two by passing the id:
+ *
+ * @example Provision a workspace, then bind a `CoderAgent` chat to it
+ * ```ts
+ * import { ensureCoderWorkspace } from '@coder/ai-sdk-sandbox';
+ * import { CoderAgent } from '@coder/ai-sdk-agent';
+ *
+ * const ws = await ensureCoderWorkspace({
+ *   workspace: 'agent-ws',
+ *   create: { template: 'docker' },
+ * });
+ * if (ws.id === undefined) {
+ *   throw new Error('this coder CLI does not report workspace ids; upgrade it');
+ * }
+ * const agent = new CoderAgent({
+ *   baseUrl: 'https://coder.example.com',
+ *   token: process.env.CODER_SESSION_TOKEN!,
+ *   organizationId: '<org-uuid>',
+ *   workspaceId: ws.id, // binds the chat's workspace-scoped tools
+ * });
+ * ```
+ */
+export async function ensureCoderWorkspace(
+  settings: EnsureCoderWorkspaceSettings,
+): Promise<EnsuredCoderWorkspace> {
+  const transport: CoderTransport = settings.transport ?? new CoderCliTransport();
+  const { created, status } = await ensureWorkspaceReady(
+    transport,
+    settings.workspace,
+    settings.create,
+    settings.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
+    "ensureCoderWorkspace",
+    settings.abortSignal,
+  );
+  return { ...status, created };
+}
+
+/**
  * Get-or-create the workspace and (in create mode) wait for its agent to be
  * ready. In wrap mode this preserves the original behavior (optionally
- * `coder start`).
+ * `coder start`, no readiness wait).
  */
 async function ensureWorkspace(
   transport: CoderTransport,
@@ -277,27 +355,55 @@ async function ensureWorkspace(
   readyTimeoutMs: number,
   abortSignal?: AbortSignal,
 ): Promise<{ createdByProvider: boolean }> {
-  const create = settings.create;
-  if (create === undefined) {
+  if (settings.create === undefined) {
     if (settings.ensureStarted) {
       await transport.start(workspace, { abortSignal });
     }
     return { createdByProvider: false };
   }
+  const { created } = await ensureWorkspaceReady(
+    transport,
+    workspace,
+    settings.create,
+    readyTimeoutMs,
+    "createCoderWorkspace",
+    abortSignal,
+  );
+  return { createdByProvider: created };
+}
 
+/**
+ * Shared get-or-create + start-if-stopped + wait-until-ready core behind both
+ * {@link createCoderWorkspace}'s create mode and {@link ensureCoderWorkspace}.
+ * `caller` names the public entry point in error messages.
+ */
+async function ensureWorkspaceReady(
+  transport: CoderTransport,
+  workspace: string,
+  create: CoderCreateSettings | undefined,
+  readyTimeoutMs: number,
+  caller: string,
+  abortSignal?: AbortSignal,
+): Promise<{ created: boolean; status: WorkspaceStatus }> {
   const existing = await transport.status(workspace, { abortSignal });
-  let createdByProvider = false;
+  let created = false;
 
   if (existing === null) {
+    if (create === undefined) {
+      throw new Error(
+        `${caller}: workspace "${workspace}" does not exist; set \`create\` to ` +
+          `create it from a template.`,
+      );
+    }
     if (create.validate ?? true) {
-      await validatePreset(transport, create, abortSignal);
+      await validatePreset(transport, create, caller, abortSignal);
     }
     await transport.create(toCreateOptions(workspace, create, abortSignal));
-    createdByProvider = true;
+    created = true;
   } else {
-    if (create.ifExists === "error") {
+    if (create?.ifExists === "error") {
       throw new Error(
-        `createCoderWorkspace: workspace "${workspace}" already exists (create.ifExists: 'error').`,
+        `${caller}: workspace "${workspace}" already exists (create.ifExists: 'error').`,
       );
     }
     if (isStopped(existing)) {
@@ -305,8 +411,8 @@ async function ensureWorkspace(
     }
   }
 
-  await waitForReady(transport, workspace, readyTimeoutMs, abortSignal);
-  return { createdByProvider };
+  const status = await waitForReady(transport, workspace, readyTimeoutMs, caller, abortSignal);
+  return { created, status };
 }
 
 function isStopped(status: WorkspaceStatus): boolean {
@@ -353,6 +459,7 @@ function stringifyParams(
 async function validatePreset(
   transport: CoderTransport,
   create: CoderCreateSettings,
+  caller: string,
   abortSignal?: AbortSignal,
 ): Promise<void> {
   if (create.preset === undefined || create.preset.toLowerCase() === "none") return;
@@ -374,7 +481,7 @@ async function validatePreset(
   if (!presets.some((preset) => preset.name === create.preset)) {
     const available = presets.map((preset) => `"${preset.name}"`).join(", ");
     throw new Error(
-      `createCoderWorkspace: preset "${create.preset}" not found for template ` +
+      `${caller}: preset "${create.preset}" not found for template ` +
         `"${create.template}". Available presets: ${available || "(none)"}.`,
     );
   }
@@ -384,13 +491,15 @@ async function validatePreset(
  * Poll the workspace until its agent is connected and its startup script has
  * finished (`lifecycle_state: ready`), failing fast on build or startup errors.
  * A successful build is *not* sufficient — the agent connects afterwards.
+ * Resolves with the final (ready) status snapshot.
  */
 async function waitForReady(
   transport: CoderTransport,
   workspace: string,
   timeoutMs: number,
+  caller: string,
   abortSignal?: AbortSignal,
-): Promise<void> {
+): Promise<WorkspaceStatus> {
   const deadline = Date.now() + timeoutMs;
   let last = "unknown";
   for (;;) {
@@ -402,19 +511,17 @@ async function waitForReady(
         status.agents.map((a) => `${a.name || "?"}:${a.status}/${a.lifecycleState}`).join(", ") +
         "]";
       if (status.buildStatus === "failed") {
-        throw new Error(`createCoderWorkspace: workspace "${workspace}" build failed (${last}).`);
+        throw new Error(`${caller}: workspace "${workspace}" build failed (${last}).`);
       }
       if (status.buildStatus === "canceled" || status.buildStatus === "deleted") {
-        throw new Error(
-          `createCoderWorkspace: workspace "${workspace}" is ${status.buildStatus} (${last}).`,
-        );
+        throw new Error(`${caller}: workspace "${workspace}" is ${status.buildStatus} (${last}).`);
       }
       const errored = status.agents.find(
         (a) => a.lifecycleState === "start_error" || a.lifecycleState === "start_timeout",
       );
       if (errored) {
         throw new Error(
-          `createCoderWorkspace: workspace "${workspace}" agent "${errored.name || "?"}" ` +
+          `${caller}: workspace "${workspace}" agent "${errored.name || "?"}" ` +
             `failed to start (lifecycle: ${errored.lifecycleState}).`,
         );
       }
@@ -422,12 +529,12 @@ async function waitForReady(
         status.buildStatus === "running" &&
         status.agents.some((a) => a.status === "connected" && a.lifecycleState === "ready")
       ) {
-        return;
+        return status;
       }
     }
     if (Date.now() >= deadline) {
       throw new Error(
-        `createCoderWorkspace: timed out after ${timeoutMs}ms waiting for workspace ` +
+        `${caller}: timed out after ${timeoutMs}ms waiting for workspace ` +
           `"${workspace}" to become ready (last status: ${last}).`,
       );
     }

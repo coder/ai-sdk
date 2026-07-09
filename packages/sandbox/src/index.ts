@@ -6,6 +6,9 @@ export {
   type CoderWorkspaceRef,
   type CoderWorkspaceSettings,
   createCoderWorkspace,
+  ensureCoderWorkspace,
+  type EnsureCoderWorkspaceSettings,
+  type EnsuredCoderWorkspace,
 } from "./coder-workspace-provider.js";
 export {
   CoderWorkspaceSession,

@@ -2,6 +2,9 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+/** Fixed workspace UUID the fake `coder list` reports for every workspace. */
+export const FAKE_WORKSPACE_ID = "3f9fc0a2-0000-4000-8000-000000000000";
+
 /**
  * A stand-in for the `coder` CLI used by the integration tests. It runs
  * commands on the local machine instead of a workspace:
@@ -60,7 +63,7 @@ case "$sub" in
     done
     name="\${search##*name:}"; name="\${name%% *}"; base="\${name##*/}"
     if [ -n "$base" ] && [ -f "$STATE_DIR/$base" ]; then
-      printf '[{"name":"%s","latest_build":{"status":"running","transition":"start","resources":[{"agents":[{"name":"main","status":"connected","lifecycle_state":"ready"}]}]}}]' "$base"
+      printf '[{"id":"${FAKE_WORKSPACE_ID}","name":"%s","latest_build":{"status":"running","transition":"start","resources":[{"agents":[{"name":"main","status":"connected","lifecycle_state":"ready"}]}]}}]' "$base"
     else
       printf '[]'
     fi

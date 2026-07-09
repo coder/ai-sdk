@@ -7,7 +7,7 @@ import {
   type UploadedChatFile,
 } from "../../src/coder/client.js";
 import { CoderAgent } from "../../src/agent/coder-agent.js";
-import { CoderAgentError, CoderChatError } from "../../src/errors.js";
+import { CoderAgentError, CoderApiError, CoderChatError } from "../../src/errors.js";
 import { CoderLanguageModel } from "../../src/model/language-model.js";
 import type {
   Chat,
@@ -69,8 +69,8 @@ class FakeClient {
     }
   }
 
-  async archiveChat(): Promise<void> {}
-  async interruptChat(): Promise<Chat> {
+  async archiveChat(_chatId: string, _signal?: AbortSignal): Promise<void> {}
+  async interruptChat(_chatId: string, _signal?: AbortSignal): Promise<Chat> {
     throw new Error("not used");
   }
 }
@@ -606,4 +606,264 @@ describe("CoderLanguageModel guards", () => {
     release(); // let turn 1 unblock so cleanup completes
     await r1.cancel();
   }, 10_000);
+});
+
+/** One complete assistant turn (used to establish a chatId before cleanup tests). */
+function okTurn(): ChatStreamEvent[] {
+  return [
+    status("running"),
+    msg(2, "assistant", [{ type: "text", text: "hi" }]),
+    status("waiting"),
+  ];
+}
+
+function err409(): CoderApiError {
+  return new CoderApiError({
+    status: 409,
+    method: "PATCH",
+    path: "/api/experimental/chats/chat-1",
+    message: "Chat is not in an archivable state.",
+  });
+}
+
+/** A FakeClient with scripted archive behavior and interrupt/archive call recording. */
+class ScriptedArchiveClient extends FakeClient {
+  archiveCalls = 0;
+  archiveSignals: (AbortSignal | undefined)[] = [];
+  interrupted: { chatId: string; signal: AbortSignal | undefined }[] = [];
+  interruptError: Error | undefined;
+  readonly #archiveImpl: (attempt: number) => void;
+
+  constructor(turns: ChatStreamEvent[][], archiveImpl: (attempt: number) => void) {
+    super(turns);
+    this.#archiveImpl = archiveImpl;
+  }
+
+  override async archiveChat(_chatId: string, signal?: AbortSignal): Promise<void> {
+    this.archiveCalls += 1;
+    this.archiveSignals.push(signal);
+    this.#archiveImpl(this.archiveCalls);
+  }
+
+  override async interruptChat(chatId: string, signal?: AbortSignal): Promise<Chat> {
+    this.interrupted.push({ chatId, signal });
+    if (this.interruptError) throw this.interruptError;
+    return chatStub(chatId);
+  }
+}
+
+function settlingAgent(
+  archiveImpl: (attempt: number) => void,
+  timings?: { deadlineMs?: number; retryDelayMs?: number },
+) {
+  const fake = new ScriptedArchiveClient([okTurn()], archiveImpl);
+  const agent = new CoderAgent({
+    client: fake as unknown as CoderChatClient,
+    organizationId: "org-1",
+    settleDeadlineMs: timings?.deadlineMs ?? 5_000,
+    settleRetryDelayMs: timings?.retryDelayMs ?? 10,
+  });
+  return { fake, agent };
+}
+
+describe("CoderAgent bounded cleanup (interrupt/archive/dispose)", () => {
+  it("archive() retries a settling 409 and then succeeds", async () => {
+    const { fake, agent } = settlingAgent((n) => {
+      if (n <= 2) throw err409();
+    });
+    await agent.generate({ prompt: "hi" });
+    await agent.archive();
+    expect(fake.archiveCalls).toBe(3);
+  });
+
+  it("archive() is a no-op before any turn (no chat to archive)", async () => {
+    const { fake, agent } = settlingAgent(() => {
+      throw err409();
+    });
+    await agent.archive();
+    expect(fake.archiveCalls).toBe(0);
+  });
+
+  it("archive() gives up with the last 409 once the deadline passes", async () => {
+    const { fake, agent } = settlingAgent(
+      () => {
+        throw err409();
+      },
+      { deadlineMs: 80, retryDelayMs: 20 },
+    );
+    await agent.generate({ prompt: "hi" });
+    await expect(agent.archive()).rejects.toMatchObject({ name: "CoderApiError", status: 409 });
+    // Bounded: retried at least once, but capped by the deadline/backoff budget.
+    expect(fake.archiveCalls).toBeGreaterThan(1);
+    expect(fake.archiveCalls).toBeLessThanOrEqual(5);
+  });
+
+  it("archive() rethrows non-409 API errors immediately", async () => {
+    const { fake, agent } = settlingAgent(() => {
+      throw new CoderApiError({ status: 500, method: "PATCH", path: "/x", message: "boom" });
+    });
+    await agent.generate({ prompt: "hi" });
+    await expect(agent.archive()).rejects.toMatchObject({ status: 500 });
+    expect(fake.archiveCalls).toBe(1);
+  });
+
+  it("archive() rethrows non-API errors immediately", async () => {
+    const { fake, agent } = settlingAgent(() => {
+      throw new TypeError("fetch failed");
+    });
+    await agent.generate({ prompt: "hi" });
+    await expect(agent.archive()).rejects.toThrow(TypeError);
+    expect(fake.archiveCalls).toBe(1);
+  });
+
+  it("archive() forwards a signal to the client and stops retrying on caller abort", async () => {
+    const { fake, agent } = settlingAgent(
+      () => {
+        throw err409();
+      },
+      { deadlineMs: 10_000, retryDelayMs: 5_000 },
+    );
+    await agent.generate({ prompt: "hi" });
+
+    const ac = new AbortController();
+    const outcome = agent.archive({ signal: ac.signal }).then(
+      () => "resolved",
+      (e: { name?: string }) => e?.name,
+    );
+    setTimeout(() => ac.abort(), 20); // abort during the first backoff pause
+    expect(await outcome).toBe("AbortError");
+    expect(fake.archiveCalls).toBe(1);
+    // The client saw a real signal (the caller's, combined with the deadline).
+    expect(fake.archiveSignals[0]).toBeInstanceOf(AbortSignal);
+  });
+
+  it("interrupt() forwards the caller's signal to the client verbatim", async () => {
+    const { fake, agent } = settlingAgent(() => {});
+    await agent.generate({ prompt: "hi" });
+    const ac = new AbortController();
+    await agent.interrupt({ signal: ac.signal });
+    expect(fake.interrupted).toEqual([{ chatId: "chat-1", signal: ac.signal }]);
+  });
+
+  it("[Symbol.asyncDispose] interrupts, then archives, under a shared deadline signal", async () => {
+    const { fake, agent } = settlingAgent(() => {});
+    await agent.generate({ prompt: "hi" });
+    await agent[Symbol.asyncDispose]();
+    expect(fake.interrupted).toHaveLength(1);
+    expect(fake.archiveCalls).toBe(1);
+    expect(fake.interrupted[0]?.signal).toBeInstanceOf(AbortSignal);
+    expect(fake.archiveSignals[0]).toBeInstanceOf(AbortSignal);
+  });
+
+  it("[Symbol.asyncDispose] never throws: interrupt failure + chat that never settles", async () => {
+    const { fake, agent } = settlingAgent(
+      () => {
+        throw err409();
+      },
+      { deadlineMs: 60, retryDelayMs: 10 },
+    );
+    fake.interruptError = new Error("interrupt exploded");
+    await agent.generate({ prompt: "hi" });
+    await expect(agent[Symbol.asyncDispose]()).resolves.toBeUndefined();
+    expect(fake.archiveCalls).toBeGreaterThan(1); // retried before giving up quietly
+  });
+
+  it("[Symbol.asyncDispose] swallows immediate archive failures too", async () => {
+    const { fake, agent } = settlingAgent(() => {
+      throw new CoderApiError({ status: 500, method: "PATCH", path: "/x", message: "boom" });
+    });
+    await agent.generate({ prompt: "hi" });
+    await expect(agent[Symbol.asyncDispose]()).resolves.toBeUndefined();
+    expect(fake.archiveCalls).toBe(1);
+  });
+});
+
+describe("CoderAgent previews", () => {
+  /** A fetch fake serving the v2 endpoints the preview helpers compose. */
+  function previewFetch() {
+    const routes: Record<string, () => Response> = {
+      "/api/v2/workspaces/ws-1": () =>
+        new Response(
+          JSON.stringify({
+            id: "ws-1",
+            owner_name: "alice",
+            name: "dev",
+            latest_build: { resources: [{ agents: [{ name: "main" }] }] },
+          }),
+          { status: 200 },
+        ),
+      "/api/v2/applications/host": () =>
+        new Response(JSON.stringify({ host: "*.apps.example.com" }), { status: 200 }),
+      "/api/v2/workspaces/ws-1/port-share": () =>
+        new Response(
+          JSON.stringify({
+            workspace_id: "ws-1",
+            agent_name: "main",
+            port: 3000,
+            share_level: "public",
+            protocol: "http",
+          }),
+          { status: 200 },
+        ),
+    };
+    const calls: { url: string; init: RequestInit }[] = [];
+    const fn = ((url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      const route = routes[new URL(url).pathname];
+      return Promise.resolve(route ? route() : new Response("{}", { status: 599 }));
+    }) as unknown as typeof globalThis.fetch;
+    return { fn, calls };
+  }
+
+  function previewAgent(fetchFn: typeof globalThis.fetch) {
+    return new CoderAgent({
+      baseUrl: "https://coder.example.com",
+      token: "t",
+      organizationId: "org-1",
+      workspaceId: "ws-1",
+      fetch: fetchFn,
+    });
+  }
+
+  it("getPreview() requires the workspaceId setting", async () => {
+    const agent = new CoderAgent({
+      baseUrl: "https://coder.example.com",
+      token: "t",
+      organizationId: "org-1",
+    });
+    await expect(agent.getPreview({ port: 3000 })).rejects.toThrow(/workspaceId/);
+  });
+
+  it("getPreview() requires REST credentials when built from a bare client", async () => {
+    const agent = new CoderAgent({
+      client: new FakeClient([]) as unknown as CoderChatClient,
+      organizationId: "org-1",
+      workspaceId: "ws-1",
+    });
+    await expect(agent.getPreview({ port: 3000 })).rejects.toThrow(/baseUrl/);
+  });
+
+  it("getPreview() composes the subdomain URL from the v2 API", async () => {
+    const { fn } = previewFetch();
+    await expect(previewAgent(fn).getPreview({ port: 3000 })).resolves.toEqual({
+      url: "https://3000--main--dev--alice.apps.example.com",
+    });
+  });
+
+  it("sharePreview() upserts the port share and returns the URL + level", async () => {
+    const { fn, calls } = previewFetch();
+    const result = await previewAgent(fn).sharePreview({ port: 3000, shareLevel: "public" });
+
+    expect(result).toEqual({
+      url: "https://3000--main--dev--alice.apps.example.com",
+      shareLevel: "public",
+    });
+    const post = calls.find((c) => c.init.method === "POST" && c.url.includes("port-share"));
+    expect(JSON.parse(String(post?.init.body))).toEqual({
+      agent_name: "main",
+      port: 3000,
+      share_level: "public",
+      protocol: "http",
+    });
+  });
 });

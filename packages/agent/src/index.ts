@@ -58,3 +58,10 @@ export { CoderAgentError, CoderApiError, CoderChatError } from "./errors.js";
 // Runtime constants (the `export type *` below only re-exports types).
 export { CHAT_ATTACHMENT_MEDIA_TYPES, MAX_CHAT_FILE_SIZE_BYTES } from "./coder/types.js";
 export type * from "./coder/types.js";
+export type {
+  SharedWorkspacePreview,
+  SharePreviewOptions,
+  WorkspacePreview,
+  WorkspacePreviewOptions,
+} from "./agent/coder-agent.js";
+export type { PreviewShareLevel } from "./coder/workspaces.js";

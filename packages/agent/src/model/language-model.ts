@@ -8,6 +8,7 @@ import type {
   LanguageModelV3Usage,
   SharedV3Warning,
 } from "@ai-sdk/provider";
+import { assertSupportedAiVersion } from "../ai-version.js";
 import { CoderAgentError, CoderApiError, CoderChatError } from "../errors.js";
 import { CoderChatClient } from "../coder/client.js";
 import type { ChatInputPart, CreateChatRequest } from "../coder/types.js";
@@ -89,6 +90,8 @@ export class CoderLanguageModel implements LanguageModelV3 {
   #inFlight = false;
 
   constructor(config: CoderLanguageModelConfig) {
+    // Fail fast on an incompatible AI SDK major (see peer dependency `ai@^6`).
+    assertSupportedAiVersion();
     this.#config = config;
     this.modelId = config.model ?? "chatd";
     this.#chatId = config.chatId;

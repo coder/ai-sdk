@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.0](https://github.com/coder/ai-sdk/compare/sandbox-v0.1.0...sandbox-v0.2.0) (2026-07-09)
+
+Adds streaming correctness improvements, lifecycle handling, and additional helper methods to the agent, along with general hardening based on a bug-report sweep.
+
+### Highlights
+
+- Improved streaming correctness and reliability in the agent, plus hardening and new helper methods. ([#19](https://github.com/coder/ai-sdk/pull/19))
+
+### Features
+
+* **agent:** stream correctness, hardening, lifecycle, and missing helpers from the bug-report sweep ([#19](https://github.com/coder/ai-sdk/issues/19)) ([fb0f858](https://github.com/coder/ai-sdk/commit/fb0f858be24bef0ddd2b1bdaec52b003ac4b665c))
+
 ## [0.1.0](https://github.com/coder/ai-sdk/compare/sandbox-v0.1.0...sandbox-v0.1.0) (2026-06-18)
 
 Initial release of the sandbox package, migrated from @coder/ai-sdk-sandbox into the monorepo.

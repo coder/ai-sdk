@@ -1,6 +1,6 @@
 {
   "name": "@coder/ai-sdk-sandbox",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Coder workspace sandbox provider for the Vercel AI SDK v7 HarnessAgent",
   "keywords": [
     "ai-sdk",

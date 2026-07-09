@@ -44,7 +44,11 @@ function isAborted(err: unknown): boolean {
 function errorText(err: unknown): string {
   if (err == null) return "unknown error";
   if (typeof err === "string") return err;
-  if (err instanceof Error) return err.message;
+  try {
+    if (err instanceof Error && typeof err.message === "string") return err.message;
+  } catch {
+    // pathological `message` getter — fall through
+  }
   try {
     const json = JSON.stringify(err); // undefined for symbols/functions
     if (typeof json === "string") return json;

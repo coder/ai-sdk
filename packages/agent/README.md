@@ -364,15 +364,17 @@ Rules that keep it robust — each guards against a failure mode observed live:
 4. **Settle a turn that stopped on a tool call.** If the loop stops on a
    tool‑call step — e.g. your `stopWhen` ceiling lands exactly on the
    `structured_output` call (`finishReason: "tool-calls"`) — the tool results
-   ran locally but never reached the server. Submit the stranded step's
-   (`result.steps.at(-1)`) locally‑executed client outcomes directly via
-   `agent.client.submitToolResults(agent.chatId, { results: [{ tool_call_id, output, is_error }] })`
+   ran locally but never reached the server. Guard on `agent.chatId` (it is
+   `undefined` until the first turn creates the chat), then submit the
+   stranded step's (`result.steps.at(-1)`) locally‑executed client outcomes
+   directly via
+   `agent.client.submitToolResults(chatId, { results: [{ tool_call_id, output, is_error }] }, AbortSignal.timeout(8_000))`
    before touching the chat again, or it strands as in rule 1. Read the
    outcomes off the step's **content parts**: a `tool-result` part is a
    success, a `tool-error` part (the tool's `execute` threw) must be submitted
    with `is_error: true` — mirroring what the resume path would have sent. If
    a pending call has no local outcome (or the submit fails), end the stranded
-   turn with `agent.client.interruptChat(agent.chatId, AbortSignal.timeout(8_000))`
+   turn with `agent.client.interruptChat(chatId, AbortSignal.timeout(8_000))`
    instead. **Bound every one of these recovery requests with an
    `AbortSignal`** — they target a server that may already be stalled, and the
    bare `agent.interrupt()` / `agent.archive()` helpers carry no timeout. A

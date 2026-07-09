@@ -357,13 +357,16 @@ Rules that keep it robust — each guards against a failure mode observed live:
    tool‑call step — e.g. your `stopWhen` ceiling lands exactly on the
    `structured_output` call (`finishReason: "tool-calls"`) — the tool results
    ran locally but never reached the server. Submit the stranded step's
-   (`result.steps.at(-1)`) locally‑executed client results directly via
-   `agent.client.submitToolResults(agent.chatId, { results: [{ tool_call_id, output }] })`
-   before touching the chat again, or it strands as in rule 1; if a pending
-   call has no local result (or the submit fails), `agent.interrupt()` ends
-   the stranded turn instead. A settled chat resumes its wind‑down server‑side
-   for a few seconds, so retry a 409ing `archive()` under a short deadline
-   instead of giving up.
+   (`result.steps.at(-1)`) locally‑executed client outcomes directly via
+   `agent.client.submitToolResults(agent.chatId, { results: [{ tool_call_id, output, is_error }] })`
+   before touching the chat again, or it strands as in rule 1. Read the
+   outcomes off the step's **content parts**: a `tool-result` part is a
+   success, a `tool-error` part (the tool's `execute` threw) must be submitted
+   with `is_error: true` — mirroring what the resume path would have sent. If
+   a pending call has no local outcome (or the submit fails),
+   `agent.interrupt()` ends the stranded turn instead. A settled chat resumes
+   its wind‑down server‑side for a few seconds, so retry a 409ing `archive()`
+   under a short deadline instead of giving up.
 
 [`examples/06-structured-output.ts`](./examples/06-structured-output.ts) packages
 all four rules into a small copyable helper — `structuredOutput(schema)` returns

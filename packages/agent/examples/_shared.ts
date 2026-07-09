@@ -10,6 +10,8 @@ export interface ExampleEnv {
   token: string;
   organizationId: string;
   model: string;
+  /** Model for tool-calling examples (03, 06) — stronger default, own override. */
+  toolModel: string;
 }
 
 export async function loadEnv(): Promise<ExampleEnv> {
@@ -54,7 +56,14 @@ export async function loadEnv(): Promise<ExampleEnv> {
     organizationId = first;
   }
 
-  return { baseUrl, token, organizationId, model: process.env.CODER_MODEL ?? "haiku" };
+  return {
+    baseUrl,
+    token,
+    organizationId,
+    // `||`, not `??`: a set-but-empty env var should fall back too.
+    model: process.env.CODER_MODEL || "haiku",
+    toolModel: process.env.CODER_TOOL_MODEL || "sonnet",
+  };
 }
 
 /** Print a heading so example output is easy to read. */

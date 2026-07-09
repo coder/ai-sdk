@@ -7,9 +7,7 @@ import { z } from "zod";
 import { CoderAgent } from "../src/index.js";
 import { heading, loadEnv } from "./_shared.js";
 
-const { baseUrl, token, organizationId } = await loadEnv();
-// Tool-calling is more reliable on a stronger model; override with CODER_TOOL_MODEL.
-const model = process.env.CODER_TOOL_MODEL ?? "sonnet";
+const { baseUrl, token, organizationId, toolModel: model } = await loadEnv();
 
 const agent = new CoderAgent({
   baseUrl,

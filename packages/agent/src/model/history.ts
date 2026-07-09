@@ -111,8 +111,10 @@ function toUIParts(
  *
  * The mapping mirrors what a live-streamed transcript of the same turn looks
  * like, with one caveat around client-tool typing (below):
- * - One `ChatMessage` becomes one `UIMessage` (ids stringified, order
- *   preserved), except `role: "tool"` messages: their `tool-result` parts are
+ * - One `ChatMessage` becomes one `UIMessage` (ids stringified), sorted
+ *   chronologically by id regardless of input order — the messages endpoint
+ *   pages newest-first by default, while `useChat` needs oldest-first. The
+ *   exception is `role: "tool"` messages: their `tool-result` parts are
  *   folded into the originating assistant `dynamic-tool` part and the message
  *   itself is dropped.
  * - `text`/`reasoning` parts map to their UI counterparts with
@@ -140,21 +142,27 @@ export function chatMessagesToUIMessages(
   messages: ChatMessage[],
   opts?: ChatMessagesToUIMessagesOptions,
 ): UIMessage[] {
+  // Normalize to chronological order (ids are per-chat sequential). The
+  // messages endpoint pages newest-first by default (only `after_id` queries
+  // return ascending), and `useChat` expects oldest-first — accepting any
+  // input order makes both pagination shapes safe to pass straight in.
+  const ordered = [...messages].sort((a, b) => a.id - b.id);
+
   // Pass 1: index tool results by call id. chatd persists results as separate
   // role:"tool" messages; scan every message so results inlined on assistant
   // snapshots fold identically.
   const resultsByCallId = new Map<string, ChatMessagePart>();
-  for (const message of messages) {
+  for (const message of ordered) {
     for (const part of message.content ?? []) {
       if (part.type !== "tool-result" || !part.tool_call_id) continue;
       if (!resultsByCallId.has(part.tool_call_id)) resultsByCallId.set(part.tool_call_id, part);
     }
   }
 
-  // Pass 2: one UIMessage per ChatMessage, in order. role:"tool" messages were
-  // folded above and produce none.
+  // Pass 2: one UIMessage per ChatMessage, chronological. role:"tool" messages
+  // were folded above and produce none.
   const out: UIMessage[] = [];
-  for (const message of messages) {
+  for (const message of ordered) {
     if (message.role === "tool") continue;
     out.push({
       id: String(message.id),

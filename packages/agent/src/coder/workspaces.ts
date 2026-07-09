@@ -197,10 +197,22 @@ function defaultAgentName(workspace: WorkspaceSummary): string {
   );
 }
 
-/** Ports must be integral and in TCP range (the share endpoint additionally floors at 9). */
+/**
+ * Ports must be integral, in TCP range, and — stricter than TCP — at least
+ * 1000: Coder's subdomain app parser (`appurl.PortRegex`, `^\d{4,5}s?$`) only
+ * treats 4–5 digit labels as ports, so a URL for port 80 would be parsed as an
+ * app named "80" and never resolve. Reject those up front instead of returning
+ * a dead URL.
+ */
 function assertValidPort(port: number): void {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new CoderAgentError(`Invalid port ${port}: expected an integer between 1 and 65535.`);
+  }
+  if (port < 1000) {
+    throw new CoderAgentError(
+      `Port ${port} cannot be previewed: Coder subdomain app URLs only encode 4-5 digit ports ` +
+        `(1000-65535). Serve the preview on a higher port instead.`,
+    );
   }
 }
 

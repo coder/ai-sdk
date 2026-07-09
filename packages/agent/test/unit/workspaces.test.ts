@@ -144,6 +144,20 @@ describe("resolveWorkspacePreview", () => {
     expect(agentName).toBe("main");
   });
 
+  it("rejects ports below 1000 that subdomain URLs cannot encode", async () => {
+    const { fn } = previewFetch();
+    // appurl.PortRegex is `^\d{4,5}s?$`: `80--agent--…` would be parsed as an
+    // app named "80", so the helper must refuse instead of minting a dead URL.
+    for (const port of [80, 443, 999]) {
+      await expect(
+        resolveWorkspacePreview(conn(fn), { workspaceId: "ws-1", port }),
+      ).rejects.toThrow(/cannot be previewed.*4-5 digit/);
+    }
+    // 1000 is the smallest encodable port and must still work.
+    const { url } = await resolveWorkspacePreview(conn(fn), { workspaceId: "ws-1", port: 1000 });
+    expect(url).toBe("https://1000--main--dev--alice.apps.example.com");
+  });
+
   it("adds the `s` suffix for an in-workspace https port", async () => {
     const { fn } = previewFetch();
     const { url } = await resolveWorkspacePreview(conn(fn), {

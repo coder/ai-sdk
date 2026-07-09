@@ -242,6 +242,10 @@ const uiMessages = chatMessagesToUIMessages(messages);
 // e.g. in React: useChat({ messages: uiMessages })
 ```
 
+The converter sorts by message id, so the endpoint's newest‑first default page
+order (and any pagination order) is safe to pass straight in — `useChat` always
+receives a chronological transcript.
+
 Tool calls become `dynamic-tool` parts with their results folded in, `source`
 parts become `source-url` parts, and unknown part kinds are skipped silently, so
 history written by newer Coder servers degrades gracefully. One caveat: history
@@ -538,6 +542,9 @@ Coder servers — no experimental endpoints.
 - Clear failures instead of broken URLs: a deployment without a wildcard access
   URL (`--wildcard-access-url`) yields an explanatory error, and a server that
   predates port sharing (< Coder v2.9) yields a 404 `CoderApiError` saying so.
+  Ports below 1000 are rejected up front for the same reason — Coder subdomain
+  URLs only encode 4–5 digit ports, so `80--agent--…` would be parsed as an app
+  named "80" and never resolve; serve the preview on a higher port.
 
 The preview helpers call non‑chat endpoints, so they need `baseUrl` + `token`
 credentials — pass them alongside `client` if you construct one yourself.

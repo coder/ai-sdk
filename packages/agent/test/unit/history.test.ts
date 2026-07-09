@@ -72,6 +72,38 @@ describe("chatMessagesToUIMessages — mixed turn", () => {
     expect(messages.map((m) => m.parts.length)).toEqual([1, 1]);
   });
 
+  it("normalizes the endpoint's newest-first page order to chronological", () => {
+    // GET /messages pages newest-first by default; passing that response
+    // straight in must still yield an oldest-first transcript, with the
+    // role:tool result (also out of order) folded into its assistant call.
+    const messages = chatMessagesToUIMessages([
+      msg(4, "assistant", [{ type: "text", text: "21°C and sunny." }]),
+      msg(3, "tool", [
+        {
+          type: "tool-result",
+          tool_call_id: "tc1",
+          tool_name: "getWeather",
+          result: { tempC: 21 },
+        },
+      ]),
+      msg(2, "assistant", [
+        {
+          type: "tool-call",
+          tool_call_id: "tc1",
+          tool_name: "getWeather",
+          args: { city: "Paris" },
+        },
+      ]),
+      msg(1, "user", [{ type: "text", text: "What's the weather in Paris?" }]),
+    ]);
+    expect(messages.map((m) => m.id)).toEqual(["1", "2", "4"]);
+    expect(messages[1]?.parts[0]).toMatchObject({
+      type: "dynamic-tool",
+      state: "output-available",
+      output: { tempC: 21 },
+    });
+  });
+
   it("maps system messages to role system with text parts", () => {
     const messages = chatMessagesToUIMessages([
       msg(1, "system", [{ type: "text", text: "You are helpful." }]),

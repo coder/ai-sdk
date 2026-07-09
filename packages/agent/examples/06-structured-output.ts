@@ -224,12 +224,14 @@ function structuredOutput<T>(
 }
 
 /** Cleanup that tolerates a chat still winding down. A settled (or interrupted)
- * turn resumes server-side for a few seconds, and archive() 409s until the chat
- * parks — so interrupt and retry under a deadline instead of giving up on the
- * first attempt (a bare `archive()` or `await using` would leak the chat here).
- * Every attempt carries an AbortSignal so a stalled request is truly cancelled
- * (not abandoned mid-flight), and the deadline is checked BEFORE each attempt so
- * the documented bound holds. Retries cover only the wind-down outcomes — a 409
+ * turn resumes server-side for a few seconds, and archiving 409s until the chat
+ * parks. `CoderAgent.archive()` / `await using` now retry that wind-down window
+ * themselves (bounded, 409-only) — but they rethrow/swallow at the end, while
+ * this example wants warn-and-continue against the raw client. Kept for that,
+ * and as a reference for driving the retry by hand: every attempt carries an
+ * AbortSignal so a stalled request is truly cancelled (not abandoned
+ * mid-flight), and the deadline is checked BEFORE each attempt so the
+ * documented bound holds. Retries cover only the wind-down outcomes — a 409
  * or an aborted attempt; anything else (401/403/404) will not heal: warn, stop. */
 async function archiveQuietly(agent: {
   readonly chatId: string | undefined;

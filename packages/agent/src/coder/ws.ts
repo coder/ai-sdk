@@ -179,8 +179,8 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
       signal?.removeEventListener("abort", onAbort);
       resolve();
     }, ms);
-    // A pending reconnect delay must not hold the Node process open.
-    (timer as unknown as { unref?: () => void }).unref?.();
+    // The timer stays ref'd on purpose: an actively consumed watch loop must
+    // keep the process alive through a reconnect delay (abort clears it).
     signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
@@ -210,13 +210,55 @@ export interface WatchChatEventsOptions {
  *
  * Unlike the per-chat `/stream`, this is a long-lived subscription, so dropped
  * connections are redialed automatically with exponential backoff (1s doubling
- * to a 30s cap, reset once an event arrives). It ends in exactly two ways:
- * `signal` aborting (the generator returns) or the server rejecting the
- * upgrade with a 4xx — bad/expired token, or an older Coder server without the
- * endpoint (404) — which throws a terminal {@link CoderApiError} instead of
- * retrying forever.
+ * to a 30s cap, reset once an event arrives). It ends in exactly three ways:
+ * `signal` aborting, the consumer ending iteration (`break` from `for await`,
+ * `iterator.return()`) — both tear the socket down promptly even while a read
+ * is pending — or the server rejecting the upgrade with a 4xx — bad/expired
+ * token, or an older Coder server without the endpoint (404) — which throws a
+ * terminal {@link CoderApiError} instead of retrying forever.
  */
-export async function* watchChatEvents(
+export function watchChatEvents(
+  options: WatchChatEventsOptions,
+): AsyncGenerator<ChatWatchEvent, void, void> {
+  // Cancellation plumbing: async-generator `return()`/`throw()` queue behind a
+  // pending `next()`, and on this rarely-eventing stream a pending read is the
+  // steady state — a bare `return()` would otherwise hang (socket open) until
+  // the next server event. The wrapper aborts an internal controller first,
+  // which wakes the pending read, then delegates.
+  const controller = new AbortController();
+  const external = options.signal;
+  const chain = (): void => controller.abort(external?.reason);
+  if (external) {
+    if (external.aborted) chain();
+    else external.addEventListener("abort", chain, { once: true });
+  }
+  const inner = watchChatEventsLoop({ ...options, signal: controller.signal });
+  const finish = async (): Promise<void> => {
+    controller.abort();
+    external?.removeEventListener("abort", chain);
+    try {
+      await inner.return();
+    } catch {
+      /* the loop's own teardown errors are not the caller's problem */
+    }
+  };
+  return {
+    next: () => inner.next(),
+    async return(): Promise<IteratorResult<ChatWatchEvent, void>> {
+      await finish();
+      return { done: true, value: undefined };
+    },
+    async throw(err: unknown): Promise<IteratorResult<ChatWatchEvent, void>> {
+      await finish();
+      throw err;
+    },
+    [Symbol.asyncIterator]() {
+      return this;
+    },
+  } as AsyncGenerator<ChatWatchEvent, void, void>;
+}
+
+async function* watchChatEventsLoop(
   options: WatchChatEventsOptions,
 ): AsyncGenerator<ChatWatchEvent, void, void> {
   const { baseUrl, token, signal } = options;

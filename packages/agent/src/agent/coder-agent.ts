@@ -71,6 +71,20 @@ const DEFAULT_STOP = stepCountIs(64);
 const SETTLE_DEADLINE_MS = 15_000;
 const SETTLE_RETRY_DELAY_MS = 1_000;
 
+/**
+ * Clamps a user-supplied delay to what `AbortSignal.timeout`/`setTimeout`
+ * accept: a non-negative integer no larger than the 32-bit timer cap.
+ * Anything else (negative, fractional beyond flooring, `NaN`, `Infinity`)
+ * falls back to the default rather than throwing at dispose time.
+ */
+function sanitizeDelayMs(value: number | undefined, fallback: number): number {
+  const MAX_TIMER_MS = 2 ** 31 - 1;
+  if (value === undefined || Number.isNaN(value)) return fallback;
+  if (value === Number.POSITIVE_INFINITY) return MAX_TIMER_MS;
+  if (!Number.isFinite(value) || value < 0) return fallback;
+  return Math.min(Math.floor(value), MAX_TIMER_MS);
+}
+
 /** Abort-aware sleep: resolves after `ms`, or rejects with the signal's reason. */
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -295,8 +309,10 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
       settings.baseUrl && settings.token
         ? { baseUrl: settings.baseUrl, token: settings.token, fetch: settings.fetch }
         : undefined;
-    this.#settleDeadlineMs = settings.settleDeadlineMs ?? SETTLE_DEADLINE_MS;
-    this.#settleRetryDelayMs = settings.settleRetryDelayMs ?? SETTLE_RETRY_DELAY_MS;
+    // Sanitized so `AbortSignal.timeout` (which rejects non-integer, negative,
+    // and non-finite delays with a RangeError) can never make disposal throw.
+    this.#settleDeadlineMs = sanitizeDelayMs(settings.settleDeadlineMs, SETTLE_DEADLINE_MS);
+    this.#settleRetryDelayMs = sanitizeDelayMs(settings.settleRetryDelayMs, SETTLE_RETRY_DELAY_MS);
 
     // A file written to one workspace isn't visible to a chat bound to another.
     if (

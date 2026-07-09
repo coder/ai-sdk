@@ -776,6 +776,23 @@ describe("CoderAgent bounded cleanup (interrupt/archive/dispose)", () => {
     await expect(agent[Symbol.asyncDispose]()).resolves.toBeUndefined();
     expect(fake.archiveCalls).toBe(1);
   });
+
+  it("hostile settle knobs are sanitized so dispose still never throws", async () => {
+    // AbortSignal.timeout rejects non-integer, negative, and non-finite delays
+    // with a RangeError; the knobs must never let that reach dispose.
+    for (const bad of [Number.POSITIVE_INFINITY, Number.NaN, -5, 1.5]) {
+      const fake = new ScriptedArchiveClient([okTurn()], () => {});
+      const agent = new CoderAgent({
+        client: fake as unknown as CoderChatClient,
+        organizationId: "org-1",
+        settleDeadlineMs: bad,
+        settleRetryDelayMs: bad,
+      });
+      await agent.generate({ prompt: "hi" });
+      await expect(agent[Symbol.asyncDispose]()).resolves.toBeUndefined();
+      expect(fake.archiveCalls).toBe(1);
+    }
+  });
 });
 
 describe("CoderAgent previews", () => {

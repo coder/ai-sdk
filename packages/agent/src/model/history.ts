@@ -110,17 +110,23 @@ function toUIParts(
  * chat. Pure and side-effect free.
  *
  * The mapping mirrors what a live-streamed transcript of the same turn looks
- * like, so rehydrated and live messages type identically:
+ * like, with one caveat around client-tool typing (below):
  * - One `ChatMessage` becomes one `UIMessage` (ids stringified, order
  *   preserved), except `role: "tool"` messages: their `tool-result` parts are
  *   folded into the originating assistant `dynamic-tool` part and the message
  *   itself is dropped.
  * - `text`/`reasoning` parts map to their UI counterparts with
  *   `state: "done"` (history is complete, never streaming).
- * - `tool-call` parts become `dynamic-tool` parts — matching how server tools
- *   stream live (`dynamic: true`) — in state `"output-available"` once a
- *   result exists (`"output-error"` when it is marked `is_error`), or
- *   `"input-available"` while no result has been persisted yet.
+ * - Every `tool-call` part becomes a `dynamic-tool` part, in state
+ *   `"output-available"` once a result exists (`"output-error"` when it is
+ *   marked `is_error`), or `"input-available"` while no result has been
+ *   persisted yet. For server-executed tools this matches the live stream
+ *   (they stream with `dynamic: true`); client (`ToolSet`) tools stream live
+ *   as statically-typed `tool-{name}` parts, but persisted history does not
+ *   record which names were client tools, so they rehydrate as `dynamic-tool`
+ *   too. Render tools by name — ai's `isToolOrDynamicToolUIPart` +
+ *   `getToolOrDynamicToolName` — rather than exact `part.type` matches and
+ *   both shapes look identical.
  * - `source` parts become `source-url` parts; skipped when the wire part has
  *   no `url`.
  * - `file` parts become `file` UI parts only when a URL is available (see

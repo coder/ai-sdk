@@ -232,7 +232,7 @@ Chat history lives on the server. To render an existing chat in a UI (e.g. after
 a reload), fetch its messages with the `CoderChatClient` (`agent.client`, or one
 you construct — see [Auth](#auth)) and convert them with
 `chatMessagesToUIMessages` — the mapping mirrors what a live‑streamed transcript
-of the same turn looks like, so rehydrated and live messages type identically:
+of the same turn looks like:
 
 ```ts
 import { chatMessagesToUIMessages } from "@coder/ai-sdk-agent";
@@ -244,7 +244,12 @@ const uiMessages = chatMessagesToUIMessages(messages);
 
 Tool calls become `dynamic-tool` parts with their results folded in, `source`
 parts become `source-url` parts, and unknown part kinds are skipped silently, so
-history written by newer Coder servers degrades gracefully. Persisted `file`
+history written by newer Coder servers degrades gracefully. One caveat: history
+does not record which tool names were client (`ToolSet`) tools, so _every_ tool
+call rehydrates as `dynamic-tool` — live, client tools stream as statically
+typed `tool-{name}` parts. Render tools by name (ai's
+`isToolOrDynamicToolUIPart` and `getToolOrDynamicToolName`) rather than by
+exact `part.type` and the difference disappears. Persisted `file`
 parts carry only a `file_id` (no bytes, usually no URL), so pass a `fileUrl`
 resolver to keep attachments visible — download the bytes with
 `client.getChatFile(fileId)` and return a data:/object/proxy URL; parts that end

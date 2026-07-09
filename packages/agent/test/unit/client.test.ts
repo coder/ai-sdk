@@ -352,6 +352,34 @@ describe("CoderChatClient.watchChats", () => {
     expect(sockets[0]?.closedWith).toContain(1000);
   });
 
+  it("iterator return() tears down promptly while a read is pending", async () => {
+    const { c, sockets } = watchClient();
+    const iter = c.watchChats();
+    const pending = iter.next(); // nothing queued: suspends waiting on the socket
+    await tick();
+    expect(sockets).toHaveLength(1);
+
+    // A bare return() (e.g. `break`, or Readable.from(...).destroy()) must not
+    // wait for the next server event on this rarely-eventing stream: it has to
+    // wake the pending read, close the socket, and settle immediately.
+    const ret = await iter.return(undefined);
+    expect(ret.done).toBe(true);
+    expect((await pending).done).toBe(true);
+    expect(sockets[0]?.closedWith).toContain(1000);
+  });
+
+  it("iterator throw() tears down while a read is pending and rethrows", async () => {
+    const { c, sockets } = watchClient();
+    const iter = c.watchChats();
+    const pending = iter.next();
+    await tick();
+
+    const boom = new Error("boom");
+    await expect(iter.throw(boom)).rejects.toBe(boom);
+    expect((await pending).done).toBe(true);
+    expect(sockets[0]?.closedWith).toContain(1000);
+  });
+
   it("reconnects after drops with exponential backoff, reset once an event arrives", async () => {
     vi.useFakeTimers();
     try {

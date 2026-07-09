@@ -30,6 +30,7 @@ export async function loadEnv(): Promise<ExampleEnv> {
         "Optional:",
         "  export CODER_ORG_ID=<org-uuid>   # otherwise auto-detected from your user",
         "  export CODER_MODEL=haiku         # model hint (display name, provider:model, or UUID)",
+        "  export CODER_TOOL_MODEL=sonnet   # model for the tool-calling examples (03, 06)",
         "",
       ].join("\n"),
     );

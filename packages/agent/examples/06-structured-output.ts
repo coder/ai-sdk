@@ -37,16 +37,24 @@ function isAborted(err: unknown): boolean {
   return err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
 }
 
-/** Mirror the AI SDK's error-message mapping: strings pass through, Errors give
- * their message, anything else JSON-stringifies — never "[object Object]". */
+/** Best-effort error → text in the AI SDK's spirit: strings pass through, Errors
+ * give their message, other values JSON-stringify, with literal fallbacks for
+ * values that resist serialization (circular objects, symbols, functions).
+ * Total: always returns a string, never throws. */
 function errorText(err: unknown): string {
   if (err == null) return "unknown error";
   if (typeof err === "string") return err;
   if (err instanceof Error) return err.message;
   try {
-    return JSON.stringify(err);
+    const json = JSON.stringify(err); // undefined for symbols/functions
+    if (typeof json === "string") return json;
   } catch {
+    // circular — fall through to String()
+  }
+  try {
     return String(err);
+  } catch {
+    return "unserializable thrown value";
   }
 }
 
@@ -76,6 +84,12 @@ function structuredOutput<T>(
   schema: z.ZodType<T>,
   opts: { maxSteps?: number; tools?: ToolSet } = {},
 ) {
+  if (opts.tools && "structured_output" in opts.tools) {
+    // Fail loudly instead of silently replacing the caller's tool with the ack tool.
+    throw new Error(
+      'structuredOutput: opts.tools must not define "structured_output" — the helper owns that name',
+    );
+  }
   return {
     // Spread into `new CoderAgent({ … })`. Compose additional client tools via
     // `opts.tools` (merged here) — do NOT also pass `tools:` to the constructor
@@ -177,12 +191,14 @@ function structuredOutput<T>(
 
         // READ. The answer is the tool call's INPUT. Scan every step, LAST VALID call
         // wins: a re-filed answer supersedes an earlier one, but a schema-invalid
-        // re-file must not shadow a valid answer already in hand. The server does NOT
-        // enforce the schema, so safeParse is the real gate.
+        // re-file must not shadow a valid answer already in hand (deliberate tradeoff:
+        // an invalid "correction" after a valid answer returns the earlier valid one
+        // instead of burning the nudge). The server does NOT enforce the schema, so
+        // safeParse is the real gate.
         const filed = turn.steps
           .flatMap((s) => s.toolCalls)
           .filter((c) => c.toolName === "structured_output");
-        for (const call of [...filed].reverse()) {
+        for (const call of filed.reverse()) {
           const parsed = schema.safeParse(call.input);
           if (parsed.success) return parsed.data;
         }
@@ -217,10 +233,11 @@ async function archiveQuietly(agent: {
 }): Promise<void> {
   if (!agent.chatId) return; // no chat was ever created
   const deadline = Date.now() + 15_000;
+  let lastErr: unknown;
   for (;;) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
-      console.warn("could not archive the chat before the deadline, leaving it");
+      console.warn("could not archive the chat before the deadline, leaving it:", lastErr);
       return;
     }
     try {
@@ -230,12 +247,15 @@ async function archiveQuietly(agent: {
       );
       return;
     } catch (err) {
+      lastErr = err;
       const stillWindingDown =
         isAborted(err) || (err instanceof CoderApiError && err.status === 409);
       if (!stillWindingDown) {
         console.warn("could not archive the chat, leaving it:", err);
         return;
       }
+      // Out of budget: skip the doomed interrupt + sleep; the loop top reports.
+      if (deadline - Date.now() <= 0) continue;
       await agent.client
         .interruptChat(
           agent.chatId,

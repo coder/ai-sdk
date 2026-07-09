@@ -325,13 +325,21 @@ const agent = new CoderAgent({
 });
 
 const result = await agent.generate({ prompt: "…" });
-// toolCalls only holds the LAST step's calls — scan all steps, last call wins.
-const raw = result.steps
+// toolCalls only holds the LAST step's calls — scan all steps. Take the last call
+// that VALIDATES: a schema-invalid re-file must not shadow a valid answer (rule 2).
+const filed = result.steps
   .flatMap((s) => s.toolCalls)
-  .findLast((c) => c.toolName === "structured_output")?.input;
-if (raw === undefined)
-  throw new Error("model never called structured_output — nudge once on an idle chat (rule 3)");
-const answer = Answer.parse(raw); // typed: { severity: "critical" | "major" | "minor"; summary: string }
+  .filter((c) => c.toolName === "structured_output");
+let answer: z.infer<typeof Answer> | undefined;
+for (const call of filed.reverse()) {
+  const parsed = Answer.safeParse(call.input);
+  if (parsed.success) {
+    answer = parsed.data; // typed: { severity: "critical" | "major" | "minor"; summary: string }
+    break;
+  }
+}
+if (answer === undefined)
+  throw new Error("no valid structured_output call — nudge once on an idle chat (rule 3)");
 ```
 
 Rules that keep it robust — each guards against a failure mode observed live:
@@ -363,15 +371,23 @@ Rules that keep it robust — each guards against a failure mode observed live:
    outcomes off the step's **content parts**: a `tool-result` part is a
    success, a `tool-error` part (the tool's `execute` threw) must be submitted
    with `is_error: true` — mirroring what the resume path would have sent. If
-   a pending call has no local outcome (or the submit fails),
-   `agent.interrupt()` ends the stranded turn instead. A settled chat resumes
-   its wind‑down server‑side for a few seconds, so retry a 409ing `archive()`
-   under a short deadline instead of giving up.
+   a pending call has no local outcome (or the submit fails), end the stranded
+   turn with `agent.client.interruptChat(agent.chatId, AbortSignal.timeout(8_000))`
+   instead. **Bound every one of these recovery requests with an
+   `AbortSignal`** — they target a server that may already be stalled, and the
+   bare `agent.interrupt()` / `agent.archive()` helpers carry no timeout. A
+   settled chat resumes its wind‑down server‑side for a few seconds, so retry
+   a 409ing archive (`agent.client.archiveChat(chatId, signal)`, per‑attempt
+   bound) under a short deadline instead of giving up.
 
 [`examples/06-structured-output.ts`](./examples/06-structured-output.ts) packages
 all four rules into a small copyable helper — `structuredOutput(schema)` returns
 `agentOpts` to spread into the constructor plus a typed `ask(agent, prompt)`
 that runs the settle + one‑nudge ladder and returns a `z.infer<typeof schema>`.
+Compose additional client tools through the helper —
+`structuredOutput(schema, { tools: { myTool } })` merges them into one ToolSet —
+rather than passing `tools:` to the constructor next to the spread, where the
+later key silently clobbers the other map.
 
 ## Workspaces & quota
 

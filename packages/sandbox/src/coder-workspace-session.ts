@@ -9,7 +9,7 @@ import type {
   TransportExecOptions,
 } from "./transport.js";
 
-// Derived from the moving canary contract so the run/spawn option bag can never
+// Derived from the upstream contract so the run/spawn option bag can never
 // silently drift from the AI SDK's sandbox-session shape.
 type SandboxProcessOptions = Parameters<Experimental_SandboxSession["run"]>[0];
 

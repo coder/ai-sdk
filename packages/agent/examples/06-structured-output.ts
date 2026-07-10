@@ -8,7 +8,7 @@
 // with no server-side tools, prefer @coder/ai-sdk-provider + generateObject.)
 //
 //   tsx examples/06-structured-output.ts   (or: pnpm example:structured)
-import { stepCountIs, tool, type ToolSet } from "ai";
+import { isStepCount, tool, type ToolSet } from "ai";
 import { z } from "zod";
 import { CoderAgent, CoderApiError, type CoderChatClient } from "../src/index.js";
 import { heading, loadEnv } from "./_shared.js";
@@ -112,7 +112,7 @@ function structuredOutput<T>(
           execute: async () => ACK,
         }),
       },
-      stopWhen: stepCountIs(opts.maxSteps ?? 6),
+      stopWhen: isStepCount(opts.maxSteps ?? 6),
     },
 
     /** Run one prompt and return the schema-validated answer. */

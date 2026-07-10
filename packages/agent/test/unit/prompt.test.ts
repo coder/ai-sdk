@@ -1,4 +1,4 @@
-import type { LanguageModelV3CallOptions, LanguageModelV3Prompt } from "@ai-sdk/provider";
+import type { LanguageModelV4CallOptions, LanguageModelV4Prompt } from "@ai-sdk/provider";
 import { describe, expect, it, vi } from "vitest";
 import {
   classifyTurnAction,
@@ -11,7 +11,7 @@ import {
 
 describe("classifyTurnAction", () => {
   it("treats a trailing user message as a new turn", () => {
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       { role: "user", content: [{ type: "text", text: "hi there" }] },
     ];
     const action = classifyTurnAction(prompt);
@@ -21,7 +21,7 @@ describe("classifyTurnAction", () => {
   });
 
   it("treats a trailing tool message as a resume with mapped tool results", () => {
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       { role: "user", content: [{ type: "text", text: "q" }] },
       {
         role: "assistant",
@@ -49,7 +49,7 @@ describe("classifyTurnAction", () => {
   });
 
   it("maps error tool outputs to is_error", () => {
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       {
         role: "tool",
         content: [
@@ -73,7 +73,7 @@ describe("classifyTurnAction", () => {
 
 describe("extractSystemPrompt", () => {
   it("joins system messages", () => {
-    const prompt: LanguageModelV3Prompt = [
+    const prompt: LanguageModelV4Prompt = [
       { role: "system", content: "be terse" },
       { role: "user", content: [{ type: "text", text: "q" }] },
     ];
@@ -102,7 +102,7 @@ describe("userContentToInputParts", () => {
       { type: "text", text: "summarize" },
       {
         type: "file",
-        data: new Uint8Array([1, 2]),
+        data: { type: "data", data: new Uint8Array([1, 2]) },
         mediaType: "application/pdf",
         filename: "r.pdf",
       },
@@ -114,7 +114,7 @@ describe("userContentToInputParts", () => {
       { type: "file", file_id: "file-123" },
     ]);
     expect(upload).toHaveBeenCalledWith({
-      data: new Uint8Array([1, 2]),
+      data: { type: "data", data: new Uint8Array([1, 2]) },
       mediaType: "application/pdf",
       filename: "r.pdf",
     });
@@ -125,7 +125,7 @@ describe("userContentToInputParts", () => {
     const content: UserContent = [
       {
         type: "file",
-        data: "",
+        data: { type: "data", data: "" },
         mediaType: "application/pdf",
         providerOptions: { coder: { fileId: "pre-789" } },
       },
@@ -138,7 +138,7 @@ describe("userContentToInputParts", () => {
 });
 
 describe("toolsToDynamicTools / dynamicToolNames", () => {
-  const tools: LanguageModelV3CallOptions["tools"] = [
+  const tools: LanguageModelV4CallOptions["tools"] = [
     {
       type: "function",
       name: "getWeather",

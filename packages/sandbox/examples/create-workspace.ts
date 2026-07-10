@@ -27,7 +27,7 @@ async function main(): Promise<void> {
   }
 
   const agent = new HarnessAgent({
-    harness: createClaudeCode({ thinking: "adaptive" }),
+    harness: createClaudeCode({ thinking: { type: "adaptive" } }),
     sandbox: createCoderWorkspace({
       // No `workspace`: the name is derived per-session from the harness
       // sessionId, the workspace is created from the template, and it is deleted

@@ -1,8 +1,8 @@
 import type {
   JSONObject,
-  LanguageModelV3FinishReason,
-  LanguageModelV3StreamPart,
-  LanguageModelV3Usage,
+  LanguageModelV4FinishReason,
+  LanguageModelV4StreamPart,
+  LanguageModelV4Usage,
 } from "@ai-sdk/provider";
 import { CoderChatError } from "../errors.js";
 import {
@@ -15,7 +15,7 @@ import {
   TERMINAL_STATUSES,
 } from "../coder/types.js";
 
-function mapUsage(u: ChatMessageUsage | undefined): LanguageModelV3Usage {
+function mapUsage(u: ChatMessageUsage | undefined): LanguageModelV4Usage {
   return {
     inputTokens: {
       total: u?.input_tokens,
@@ -35,14 +35,14 @@ function mapUsage(u: ChatMessageUsage | undefined): LanguageModelV3Usage {
 }
 
 function jsonResult(value: unknown): NonNullable<unknown> {
-  // chatd tool results are arbitrary JSON; the V3 tool-result `result` must be
+  // chatd tool results are arbitrary JSON; the V4 tool-result `result` must be
   // a non-null JSON value.
   return (value ?? {}) as NonNullable<unknown>;
 }
 
 /**
  * Translates one chatd turn's {@link ChatStreamEvent} stream into a sequence of
- * `LanguageModelV3StreamPart`s for the AI SDK.
+ * `LanguageModelV4StreamPart`s for the AI SDK.
  *
  * Two text/reasoning modes, decided per assistant message from the wire
  * behavior:
@@ -101,7 +101,7 @@ export class TurnTranslator {
 
   // --- block helpers --------------------------------------------------------
 
-  #openText(out: LanguageModelV3StreamPart[]): void {
+  #openText(out: LanguageModelV4StreamPart[]): void {
     if (this.#reasoning.id) this.#closeReasoning(out);
     if (!this.#text.id) {
       this.#text.id = `text-${++this.#seq}`;
@@ -109,14 +109,14 @@ export class TurnTranslator {
       out.push({ type: "text-start", id: this.#text.id });
     }
   }
-  #closeText(out: LanguageModelV3StreamPart[]): void {
+  #closeText(out: LanguageModelV4StreamPart[]): void {
     if (this.#text.id) {
       out.push({ type: "text-end", id: this.#text.id });
       this.#text.id = undefined;
       this.#text.len = 0;
     }
   }
-  #openReasoning(out: LanguageModelV3StreamPart[]): void {
+  #openReasoning(out: LanguageModelV4StreamPart[]): void {
     if (this.#text.id) this.#closeText(out);
     if (!this.#reasoning.id) {
       this.#reasoning.id = `reasoning-${++this.#seq}`;
@@ -124,7 +124,7 @@ export class TurnTranslator {
       out.push({ type: "reasoning-start", id: this.#reasoning.id });
     }
   }
-  #closeReasoning(out: LanguageModelV3StreamPart[]): void {
+  #closeReasoning(out: LanguageModelV4StreamPart[]): void {
     if (this.#reasoning.id) {
       out.push({ type: "reasoning-end", id: this.#reasoning.id });
       this.#reasoning.id = undefined;
@@ -132,7 +132,7 @@ export class TurnTranslator {
     }
   }
 
-  #emitTextUpTo(out: LanguageModelV3StreamPart[], full: string): void {
+  #emitTextUpTo(out: LanguageModelV4StreamPart[], full: string): void {
     if (full.length <= this.#text.len && this.#text.id) return;
     this.#openText(out);
     if (full.length > this.#text.len) {
@@ -144,7 +144,7 @@ export class TurnTranslator {
       this.#text.len = full.length;
     }
   }
-  #emitReasoningUpTo(out: LanguageModelV3StreamPart[], full: string): void {
+  #emitReasoningUpTo(out: LanguageModelV4StreamPart[], full: string): void {
     if (full.length <= this.#reasoning.len && this.#reasoning.id) return;
     this.#openReasoning(out);
     if (full.length > this.#reasoning.len) {
@@ -163,7 +163,7 @@ export class TurnTranslator {
     return name !== undefined && this.#dynamicToolNames.has(name);
   }
 
-  #emitServerToolCall(out: LanguageModelV3StreamPart[], part: ChatMessagePart): void {
+  #emitServerToolCall(out: LanguageModelV4StreamPart[], part: ChatMessagePart): void {
     const id = part.tool_call_id;
     const name = part.tool_name;
     if (!id || !name) return;
@@ -193,7 +193,7 @@ export class TurnTranslator {
     });
   }
 
-  #emitServerToolResult(out: LanguageModelV3StreamPart[], part: ChatMessagePart): void {
+  #emitServerToolResult(out: LanguageModelV4StreamPart[], part: ChatMessagePart): void {
     const id = part.tool_call_id;
     const name = part.tool_name;
     if (!id || !name) return;
@@ -219,14 +219,14 @@ export class TurnTranslator {
   }
 
   /**
-   * Emits a chatd `source` part as a standalone V3 url source (no text-block
+   * Emits a chatd `source` part as a standalone V4 url source (no text-block
    * bracketing needed). Deduped by the emitted id so a part streamed as a
    * `message_part` isn't re-emitted by its trailing `message` snapshot, while
    * snapshot-only turns still emit theirs.
    */
-  #emitSource(out: LanguageModelV3StreamPart[], part: ChatMessagePart): void {
+  #emitSource(out: LanguageModelV4StreamPart[], part: ChatMessagePart): void {
     const url = part.url;
-    if (!url) return; // the V3 source part requires both id and url
+    if (!url) return; // the V4 source part requires both id and url
     const id = part.source_id || url;
     if (this.#sources.has(id)) return;
     this.#sources.add(id);
@@ -241,8 +241,8 @@ export class TurnTranslator {
 
   // --- ingest ---------------------------------------------------------------
 
-  ingest(ev: ChatStreamEvent): LanguageModelV3StreamPart[] {
-    const out: LanguageModelV3StreamPart[] = [];
+  ingest(ev: ChatStreamEvent): LanguageModelV4StreamPart[] {
+    const out: LanguageModelV4StreamPart[] = [];
     switch (ev.type) {
       case "message_part":
         this.#ingestMessagePart(out, ev);
@@ -284,7 +284,7 @@ export class TurnTranslator {
     return out;
   }
 
-  #ingestMessagePart(out: LanguageModelV3StreamPart[], ev: ChatStreamEvent): void {
+  #ingestMessagePart(out: LanguageModelV4StreamPart[], ev: ChatStreamEvent): void {
     const mp = ev.message_part;
     if (!mp || (mp.role !== "assistant" && mp.role !== "tool")) return;
     const part = mp.part;
@@ -323,7 +323,7 @@ export class TurnTranslator {
     }
   }
 
-  #ingestMessage(out: LanguageModelV3StreamPart[], message: ChatMessage): void {
+  #ingestMessage(out: LanguageModelV4StreamPart[], message: ChatMessage): void {
     if (message.id > this.#maxMessageId) this.#maxMessageId = message.id;
     if (message.usage && (message.role === "assistant" || message.role === "tool")) {
       this.#usage = message.usage;
@@ -387,12 +387,12 @@ export class TurnTranslator {
 
   // --- finish ---------------------------------------------------------------
 
-  finish(): LanguageModelV3StreamPart[] {
-    const out: LanguageModelV3StreamPart[] = [];
+  finish(): LanguageModelV4StreamPart[] {
+    const out: LanguageModelV4StreamPart[] = [];
     this.#closeText(out);
     this.#closeReasoning(out);
 
-    let unified: LanguageModelV3FinishReason["unified"];
+    let unified: LanguageModelV4FinishReason["unified"];
     if (this.#error || this.#terminalStatus === "error") unified = "error";
     else if (this.#clientToolCallSeen || this.#terminalStatus === "requires_action")
       unified = "tool-calls";

@@ -1,11 +1,12 @@
 import {
   type Agent,
   type FilePart,
+  isStepCount,
   type StopCondition,
-  stepCountIs,
   type SystemModelMessage,
   type ToolChoice,
   ToolLoopAgent,
+  type ToolLoopAgentSettings,
   type ToolSet,
 } from "ai";
 import { assertSupportedAiVersion } from "../ai-version.js";
@@ -28,7 +29,7 @@ import { CoderLanguageModel } from "../model/language-model.js";
 import { CODER_PROVIDER_OPTIONS } from "../model/prompt.js";
 import type { WorkspaceFileStore, WorkspacePlacement } from "../workspace-files.js";
 
-type InnerAgent<TOOLS extends ToolSet> = ToolLoopAgent<never, TOOLS, never>;
+type InnerAgent<TOOLS extends ToolSet> = ToolLoopAgent<never, TOOLS>;
 
 /** A handle to a file uploaded as a chat attachment (see {@link CoderAgent.attach}). */
 export interface ChatAttachment extends UploadedChatFile {
@@ -60,7 +61,7 @@ function makeChatAttachment(file: UploadedChatFile): ChatAttachment {
 
 /** Default step ceiling. Each "step" is one client-tool round-trip; chatd caps
  * its own server-side loop at 1200 steps independently. */
-const DEFAULT_STOP = stepCountIs(64);
+const DEFAULT_STOP = isStepCount(64);
 
 /**
  * Bounded-cleanup defaults. An interrupted chat keeps winding down server-side
@@ -180,8 +181,14 @@ export interface CoderAgentSettings<TOOLS extends ToolSet = {}> {
   instructions?: string | SystemModelMessage | Array<SystemModelMessage>;
   /** Custom (client-executed) tools. Each should have an `execute` for scripting. */
   tools?: TOOLS;
+  /**
+   * Per-tool context values for tools that declare a `contextSchema`, keyed by
+   * tool name (forwarded to the AI SDK loop). Required by the SDK at runtime
+   * whenever a supplied tool declares contextual data.
+   */
+  toolsContext?: ToolLoopAgentSettings<never, TOOLS>["toolsContext"];
   toolChoice?: ToolChoice<NoInfer<TOOLS>>;
-  /** Stop condition(s) for the AI SDK loop. Default `stepCountIs(64)`. */
+  /** Stop condition(s) for the AI SDK loop. Default `isStepCount(64)`. */
   stopWhen?: StopCondition<NoInfer<TOOLS>> | Array<StopCondition<NoInfer<TOOLS>>>;
   /**
    * SDK-level retries. Default `0`: this agent owns server-side chat state, so
@@ -268,7 +275,7 @@ export interface SharedWorkspacePreview extends WorkspacePreview {
  * is created on the first `generate()`/`stream()` and reused for subsequent
  * turns. Use {@link CoderAgent.resetSession} to start a fresh chat.
  */
-export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOLS, never> {
+export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOLS> {
   readonly version = "agent-v1" as const;
 
   readonly #client: CoderChatClient;
@@ -282,7 +289,7 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
   readonly #settleRetryDelayMs: number;
 
   constructor(settings: CoderAgentSettings<TOOLS>) {
-    // Fail fast on an incompatible AI SDK major (see peer dependency `ai@^6`).
+    // Fail fast on an incompatible AI SDK major (see peer dependency `ai@^7`).
     assertSupportedAiVersion();
 
     if (settings.client) {
@@ -337,15 +344,20 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
       requestTimeoutMs: settings.requestTimeoutMs,
     });
 
-    this.#inner = new ToolLoopAgent<never, TOOLS, never>({
+    // Whether `toolsContext` is required depends on the concrete TOOLS the
+    // caller supplies (tools with a `contextSchema`), a conditional TypeScript
+    // cannot resolve for a generic TOOLS — hence the cast. The field itself is
+    // typed on CoderAgentSettings, so callers still get the checked shape.
+    this.#inner = new ToolLoopAgent<never, TOOLS>({
       model: this.#model,
       id: settings.id,
       instructions: settings.instructions,
       tools: settings.tools,
+      toolsContext: settings.toolsContext,
       toolChoice: settings.toolChoice,
       stopWhen: settings.stopWhen ?? DEFAULT_STOP,
       maxRetries: settings.maxRetries ?? 0,
-    });
+    } as ToolLoopAgentSettings<never, TOOLS>);
   }
 
   get id(): string | undefined {

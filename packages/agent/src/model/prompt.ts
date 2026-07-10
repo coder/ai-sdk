@@ -1,9 +1,9 @@
 import type {
-  LanguageModelV3CallOptions,
-  LanguageModelV3DataContent,
-  LanguageModelV3Message,
-  LanguageModelV3Prompt,
-  LanguageModelV3ToolResultOutput,
+  LanguageModelV4CallOptions,
+  LanguageModelV4Message,
+  LanguageModelV4Prompt,
+  LanguageModelV4ToolResultOutput,
+  SharedV4FileData,
 } from "@ai-sdk/provider";
 import type { ChatInputPart, DynamicTool, ToolResult } from "../coder/types.js";
 
@@ -17,9 +17,9 @@ export interface CoderFileProviderOptions {
 }
 
 /** Concatenated system messages, mapped to chatd's `system_prompt`. */
-export function extractSystemPrompt(prompt: LanguageModelV3Prompt): string | undefined {
+export function extractSystemPrompt(prompt: LanguageModelV4Prompt): string | undefined {
   const parts = prompt.filter(
-    (m): m is Extract<LanguageModelV3Message, { role: "system" }> => m.role === "system",
+    (m): m is Extract<LanguageModelV4Message, { role: "system" }> => m.role === "system",
   );
   if (parts.length === 0) return undefined;
   const joined = parts
@@ -30,7 +30,7 @@ export function extractSystemPrompt(prompt: LanguageModelV3Prompt): string | und
 }
 
 /** The content array of a user message (text and file parts). */
-export type UserContent = Extract<LanguageModelV3Message, { role: "user" }>["content"];
+export type UserContent = Extract<LanguageModelV4Message, { role: "user" }>["content"];
 
 /**
  * Uploads a file part's bytes and resolves to its chatd file id. Supplied by
@@ -38,7 +38,7 @@ export type UserContent = Extract<LanguageModelV3Message, { role: "user" }>["con
  * here so {@link userContentToInputParts} stays pure and testable.
  */
 export type FilePartUploader = (file: {
-  data: LanguageModelV3DataContent;
+  data: SharedV4FileData;
   mediaType: string;
   filename?: string;
 }) => Promise<string>;
@@ -85,7 +85,7 @@ export async function userContentToInputParts(
   return parts.filter((p): p is ChatInputPart => p !== null);
 }
 
-function toolResultOutputToChatd(output: LanguageModelV3ToolResultOutput): {
+function toolResultOutputToChatd(output: LanguageModelV4ToolResultOutput): {
   value: unknown;
   isError: boolean;
 } {
@@ -118,7 +118,7 @@ export type TurnAction =
  *    those tool results (the AI SDK executed a client tool between steps);
  *  - otherwise the trailing `user` message → a new turn.
  */
-export function classifyTurnAction(prompt: LanguageModelV3Prompt): TurnAction {
+export function classifyTurnAction(prompt: LanguageModelV4Prompt): TurnAction {
   if (prompt.length === 0) return { kind: "noop" };
   const last = prompt[prompt.length - 1];
   if (!last) return { kind: "noop" };
@@ -146,7 +146,7 @@ export function classifyTurnAction(prompt: LanguageModelV3Prompt): TurnAction {
 }
 
 /** Maps AI SDK function tools to chatd client-executed ("dynamic") tools. */
-export function toolsToDynamicTools(tools: LanguageModelV3CallOptions["tools"]): DynamicTool[] {
+export function toolsToDynamicTools(tools: LanguageModelV4CallOptions["tools"]): DynamicTool[] {
   if (!tools) return [];
   const out: DynamicTool[] = [];
   for (const tool of tools) {
@@ -161,7 +161,7 @@ export function toolsToDynamicTools(tools: LanguageModelV3CallOptions["tools"]):
 }
 
 /** The set of tool names the AI SDK side owns (i.e. client-executed). */
-export function dynamicToolNames(tools: LanguageModelV3CallOptions["tools"]): Set<string> {
+export function dynamicToolNames(tools: LanguageModelV4CallOptions["tools"]): Set<string> {
   const names = new Set<string>();
   for (const tool of tools ?? []) {
     if (tool.type === "function") names.add(tool.name);

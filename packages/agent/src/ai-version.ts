@@ -1,7 +1,7 @@
 import { CoderAgentError } from "./errors.js";
 
-/** The `ai` peer-dependency major this package is built against (`ai@^6`). */
-const SUPPORTED_AI_MAJOR = 6;
+/** The `ai` peer-dependency major this package is built against (`ai@^7`). */
+const SUPPORTED_AI_MAJOR = 7;
 
 /**
  * Decides whether a resolved `ai` package version is supported. Returns the
@@ -51,7 +51,7 @@ let cachedMessage: string | null | undefined;
 
 /**
  * Asserts that the installed `ai` major matches this package's peer range
- * (`ai@^6`). Called from the `CoderAgent`/`CoderLanguageModel` constructors so
+ * (`ai@^7`). Called from the `CoderAgent`/`CoderLanguageModel` constructors so
  * an incompatible AI SDK fails fast with an actionable error instead of the
  * cryptic failures it produces mid-generation. Fails open when the installed
  * version cannot be resolved. The verdict is memoized across calls.

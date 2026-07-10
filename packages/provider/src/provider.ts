@@ -1,6 +1,6 @@
 import { type AnthropicProvider, createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAICompatible, type OpenAICompatibleProvider } from "@ai-sdk/openai-compatible";
-import type { EmbeddingModelV3, LanguageModelV3 } from "@ai-sdk/provider";
+import type { EmbeddingModelV4, LanguageModelV4 } from "@ai-sdk/provider";
 
 /** Default mount path of AI Gateway on a Coder deployment. */
 const DEFAULT_AI_GATEWAY_PATH = "/api/v2/aibridge";
@@ -54,9 +54,9 @@ export interface CoderProviderSettings {
 
 export interface CoderProvider {
   /** Route a model id to a surface by heuristic (Claude ids → Anthropic surface). */
-  (modelId: string): LanguageModelV3;
+  (modelId: string): LanguageModelV4;
   /** Route a model id to a surface by heuristic (Claude ids → Anthropic surface). */
-  languageModel(modelId: string): LanguageModelV3;
+  languageModel(modelId: string): LanguageModelV4;
   /**
    * AI Gateway's OpenAI-compatible surface (`/aibridge/openai/v1`). Reaches the
    * OpenAI / Azure / Google / OpenRouter / Vercel / openai-compat and Copilot
@@ -69,11 +69,11 @@ export interface CoderProvider {
    */
   anthropic: AnthropicProvider;
   /** Shorthand for an {@link CoderProvider.openai} chat model. */
-  chat(modelId: string): LanguageModelV3;
+  chat(modelId: string): LanguageModelV4;
   /** Shorthand for an {@link CoderProvider.anthropic} messages model. */
-  messages(modelId: string): LanguageModelV3;
+  messages(modelId: string): LanguageModelV4;
   /** Text-embedding model via the OpenAI-compatible surface. */
-  textEmbeddingModel(modelId: string): EmbeddingModelV3;
+  textEmbeddingModel(modelId: string): EmbeddingModelV4;
 }
 
 /**
@@ -158,16 +158,16 @@ export function createCoder(settings: CoderProviderSettings): CoderProvider {
     fetch: settings.fetch,
   });
 
-  const languageModel = (modelId: string): LanguageModelV3 =>
+  const languageModel = (modelId: string): LanguageModelV4 =>
     isAnthropicModelId(modelId) ? anthropic(modelId) : openai(modelId);
 
   return Object.assign(languageModel, {
     languageModel,
     openai,
     anthropic,
-    chat: (modelId: string): LanguageModelV3 => openai(modelId),
-    messages: (modelId: string): LanguageModelV3 => anthropic(modelId),
-    textEmbeddingModel: (modelId: string): EmbeddingModelV3 => openai.textEmbeddingModel(modelId),
+    chat: (modelId: string): LanguageModelV4 => openai(modelId),
+    messages: (modelId: string): LanguageModelV4 => anthropic(modelId),
+    textEmbeddingModel: (modelId: string): EmbeddingModelV4 => openai.textEmbeddingModel(modelId),
   });
 }
 

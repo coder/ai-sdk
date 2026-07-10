@@ -14,8 +14,8 @@
     "release": "tsx src/cli.ts"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^3.0.0",
-    "ai": "^6.0.206",
+    "@ai-sdk/anthropic": "^4.0.0",
+    "ai": "^7.0.19",
     "release-please": "~17.9.0",
     "zod": "4.4.3"
   },

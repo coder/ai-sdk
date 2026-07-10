@@ -1,12 +1,12 @@
 import type {
-  LanguageModelV3,
-  LanguageModelV3CallOptions,
-  LanguageModelV3Content,
-  LanguageModelV3GenerateResult,
-  LanguageModelV3StreamPart,
-  LanguageModelV3StreamResult,
-  LanguageModelV3Usage,
-  SharedV3Warning,
+  LanguageModelV4,
+  LanguageModelV4CallOptions,
+  LanguageModelV4Content,
+  LanguageModelV4GenerateResult,
+  LanguageModelV4StreamPart,
+  LanguageModelV4StreamResult,
+  LanguageModelV4Usage,
+  SharedV4Warning,
 } from "@ai-sdk/provider";
 import { assertSupportedAiVersion } from "../ai-version.js";
 import { CoderAgentError, CoderApiError, CoderChatError } from "../errors.js";
@@ -24,7 +24,7 @@ import {
 } from "./prompt.js";
 import { TurnTranslator } from "./translate.js";
 
-const EMPTY_USAGE: LanguageModelV3Usage = {
+const EMPTY_USAGE: LanguageModelV4Usage = {
   inputTokens: {
     total: undefined,
     noCache: undefined,
@@ -60,7 +60,7 @@ export interface CoderLanguageModelConfig {
 }
 
 /**
- * A {@link LanguageModelV3} that is backed by a remote Coder `chatd` agent
+ * A {@link LanguageModelV4} that is backed by a remote Coder `chatd` agent
  * runtime instead of a raw LLM. One model instance owns one chatd chat
  * (a "session"): the chat is created lazily on the first turn and reused for
  * subsequent turns and for client-tool resume steps.
@@ -75,8 +75,8 @@ export interface CoderLanguageModelConfig {
  * NOTE: a single model instance is single-flight — do not run concurrent
  * generations against the same instance/session.
  */
-export class CoderLanguageModel implements LanguageModelV3 {
-  readonly specificationVersion = "v3" as const;
+export class CoderLanguageModel implements LanguageModelV4 {
+  readonly specificationVersion = "v4" as const;
   readonly provider = "coder.chatd";
   readonly modelId: string;
   readonly supportedUrls: Record<string, RegExp[]> = {};
@@ -90,7 +90,7 @@ export class CoderLanguageModel implements LanguageModelV3 {
   #inFlight = false;
 
   constructor(config: CoderLanguageModelConfig) {
-    // Fail fast on an incompatible AI SDK major (see peer dependency `ai@^6`).
+    // Fail fast on an incompatible AI SDK major (see peer dependency `ai@^7`).
     assertSupportedAiVersion();
     this.#config = config;
     this.modelId = config.model ?? "chatd";
@@ -139,8 +139,8 @@ export class CoderLanguageModel implements LanguageModelV3 {
   }
 
   async *#runTurn(
-    options: LanguageModelV3CallOptions,
-  ): AsyncGenerator<LanguageModelV3StreamPart, void, void> {
+    options: LanguageModelV4CallOptions,
+  ): AsyncGenerator<LanguageModelV4StreamPart, void, void> {
     // A single model instance owns one chatd session's mutable state, so it is
     // single-flight: reject overlapping turns rather than silently corrupting
     // chatId / lastSeenMessageId / submitted tool-call tracking.
@@ -211,7 +211,7 @@ export class CoderLanguageModel implements LanguageModelV3 {
       // `responseFormat: json` request can't be honored. Warn rather than
       // silently mislead — schema-constrained output should go through the
       // provider (@coder/ai-sdk-provider) instead.
-      const warnings: SharedV3Warning[] = [];
+      const warnings: SharedV4Warning[] = [];
       if (options.responseFormat?.type === "json") {
         warnings.push({
           type: "unsupported",
@@ -357,7 +357,7 @@ export class CoderLanguageModel implements LanguageModelV3 {
     }
   }
 
-  async doStream(options: LanguageModelV3CallOptions): Promise<LanguageModelV3StreamResult> {
+  async doStream(options: LanguageModelV4CallOptions): Promise<LanguageModelV4StreamResult> {
     // A consumer can tear the stream down via ReadableStream.cancel() without
     // aborting options.abortSignal. Route cancel through an abort so the turn
     // interrupts the server run and the blocked stream reader unblocks — a bare
@@ -368,7 +368,7 @@ export class CoderLanguageModel implements LanguageModelV3 {
       ? AbortSignal.any([options.abortSignal, cancelController.signal])
       : cancelController.signal;
     const gen = this.#runTurn({ ...options, abortSignal });
-    const stream = new ReadableStream<LanguageModelV3StreamPart>({
+    const stream = new ReadableStream<LanguageModelV4StreamPart>({
       async pull(controller) {
         try {
           const { value, done } = await gen.next();
@@ -391,17 +391,17 @@ export class CoderLanguageModel implements LanguageModelV3 {
     return { stream };
   }
 
-  async doGenerate(options: LanguageModelV3CallOptions): Promise<LanguageModelV3GenerateResult> {
-    const content: LanguageModelV3Content[] = [];
+  async doGenerate(options: LanguageModelV4CallOptions): Promise<LanguageModelV4GenerateResult> {
+    const content: LanguageModelV4Content[] = [];
     const textBuf = new Map<string, string>();
     const reasoningBuf = new Map<string, string>();
-    let usage: LanguageModelV3Usage = EMPTY_USAGE;
-    let finishReason: LanguageModelV3GenerateResult["finishReason"] = {
+    let usage: LanguageModelV4Usage = EMPTY_USAGE;
+    let finishReason: LanguageModelV4GenerateResult["finishReason"] = {
       unified: "stop",
       raw: undefined,
     };
-    let providerMetadata: LanguageModelV3GenerateResult["providerMetadata"];
-    const warnings: LanguageModelV3GenerateResult["warnings"] = [];
+    let providerMetadata: LanguageModelV4GenerateResult["providerMetadata"];
+    const warnings: LanguageModelV4GenerateResult["warnings"] = [];
 
     for await (const part of this.#runTurn(options)) {
       switch (part.type) {

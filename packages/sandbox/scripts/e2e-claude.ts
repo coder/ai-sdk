@@ -6,6 +6,9 @@
  *
  *   E2E_WORKSPACE=aisdk-claude-e2e npx tsx scripts/e2e-claude.ts "<prompt>"
  *
+ * E2E_PORT overrides the bridge port inside the workspace (default 4000) when
+ * that port is already taken.
+ *
  * Auth: if ANTHROPIC_API_KEY is set on the host it is passed to the adapter
  * (optionally with ANTHROPIC_BASE_URL); otherwise the bridge inherits whatever
  * Anthropic auth the workspace's own environment provides.
@@ -39,7 +42,10 @@ console.log(
 
 const agent = new HarnessAgent({
   harness: createClaudeCode(settings),
-  sandbox: createCoderWorkspace({ workspace }),
+  sandbox: createCoderWorkspace({
+    workspace,
+    ...(process.env.E2E_PORT ? { ports: [Number(process.env.E2E_PORT)] } : {}),
+  }),
   instructions: "You are concise.",
 });
 

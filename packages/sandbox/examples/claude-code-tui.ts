@@ -14,7 +14,7 @@
  *     present in the workspace environment).
  *
  * Install the TUI package alongside the harness:
- *   npm add @ai-sdk/tui@canary
+ *   npm add @ai-sdk/tui
  *
  * Usage:
  *   CODER_WORKSPACE=my-dev-ws npx tsx examples/claude-code-tui.ts
@@ -46,7 +46,7 @@ async function main(): Promise<void> {
   }
 
   const agent = new HarnessAgent({
-    harness: createClaudeCode({ thinking: "adaptive" }),
+    harness: createClaudeCode({ thinking: { type: "adaptive" } }),
     sandbox: createCoderWorkspace({ workspace }),
     // To create a fresh workspace from a template instead of wrapping one:
     // sandbox: createCoderWorkspace({

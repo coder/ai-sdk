@@ -34,7 +34,7 @@ export async function generateEditorial(input: EditorialInput): Promise<ReleaseN
   const { object } = await generateObject({
     model: anthropic(MODEL_ID),
     schema: ReleaseNotesSchema,
-    system: SYSTEM_PROMPT,
+    instructions: SYSTEM_PROMPT,
     prompt: renderUserPrompt(input),
   });
   return object;

@@ -26,7 +26,7 @@ async function main(): Promise<void> {
   const agent = new HarnessAgent({
     harness: createClaudeCode({
       // model: 'claude-opus-4-8',
-      thinking: "adaptive",
+      thinking: { type: "adaptive" },
       // `port` defaults to the first port the sandbox exposes (4000 below).
     }),
     sandbox: createCoderWorkspace({

@@ -1,4 +1,4 @@
-import type { LanguageModelV3DataContent } from "@ai-sdk/provider";
+import type { SharedV4FileData } from "@ai-sdk/provider";
 import { CoderAgentError } from "./errors.js";
 
 /**
@@ -91,15 +91,22 @@ function base64ToBytes(b64: string): Uint8Array {
 }
 
 /**
- * Convert an AI SDK file-part `data` value into {@link FileContent} for upload.
- * The provider receives bytes or a base64 string (and, rarely, a URL). URLs are
- * not expected: this model declares no `supportedUrls`, so the SDK downloads
- * them to bytes before calling us — a URL here is therefore an error.
+ * Convert an AI SDK file-part `data` value (a tagged {@link SharedV4FileData}
+ * union) into {@link FileContent} for upload. The provider receives inline
+ * bytes, a base64 string, or inline text. URLs are not expected: this model
+ * declares no `supportedUrls`, so the SDK downloads them to bytes before
+ * calling us — a URL (or an opaque provider reference) here is therefore an
+ * error.
  */
-export function dataContentToFileContent(data: LanguageModelV3DataContent): FileContent {
-  if (data instanceof Uint8Array) return data;
-  if (typeof data === "string") return base64ToBytes(data);
-  throw new CoderAgentError(
-    "File parts referencing a URL are not supported; provide the file bytes instead.",
-  );
+export function dataContentToFileContent(data: SharedV4FileData): FileContent {
+  switch (data.type) {
+    case "data":
+      return data.data instanceof Uint8Array ? data.data : base64ToBytes(data.data);
+    case "text":
+      return new TextEncoder().encode(data.text);
+    default:
+      throw new CoderAgentError(
+        `File parts referencing a ${data.type === "url" ? "URL" : "provider reference"} are not supported; provide the file bytes instead.`,
+      );
+  }
 }

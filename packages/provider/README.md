@@ -51,7 +51,7 @@ the Agent for the tool‑driven ones.
 pnpm add @coder/ai-sdk-provider ai zod
 ```
 
-Requires Node ≥ 20, `ai` v6, and a Coder deployment with **AI Gateway enabled**
+Requires Node ≥ 22, `ai` v7, and a Coder deployment with **AI Gateway enabled**
 (stable since Coder **v2.29**, GA in v2.30, on by default in v2.34; requires the
 AI Governance Add-On).
 

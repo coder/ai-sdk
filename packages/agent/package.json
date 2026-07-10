@@ -59,11 +59,11 @@
     "ws": "^8.18.0"
   },
   "devDependencies": {
-    "@ai-sdk/provider": "3.0.10",
-    "@ai-sdk/react": "3.0.208",
+    "@ai-sdk/provider": "4.0.3",
+    "@ai-sdk/react": "4.0.20",
     "@types/node": "^25.9.3",
     "@types/ws": "^8.18.1",
-    "ai": "^6.0.206",
+    "ai": "^7.0.19",
     "tsup": "^8.5.1",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
@@ -71,7 +71,7 @@
     "zod": "4.4.3"
   },
   "peerDependencies": {
-    "ai": "^6.0.0",
+    "ai": "^7.0.0",
     "zod": "^3.23.0 || ^4.0.0"
   },
   "peerDependenciesMeta": {
@@ -80,6 +80,6 @@
     }
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   }
 }

@@ -337,7 +337,7 @@ describe("TurnTranslator — source parts", () => {
     ]);
   });
 
-  it("skips source parts without a url (the V3 part requires id + url)", () => {
+  it("skips source parts without a url (the V4 part requires id + url)", () => {
     const { parts } = run([
       msg(2, "assistant", [
         { type: "source", source_id: "src-broken" },

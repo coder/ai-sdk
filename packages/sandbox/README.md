@@ -10,14 +10,13 @@ It implements the `HarnessV1SandboxProvider` contract from `@ai-sdk/harness`, so
 you pass it as the `sandbox` to a `HarnessAgent` exactly like
 `@ai-sdk/sandbox-vercel`.
 
-> **Status:** experimental. The AI SDK harness packages are published under the
-> `@canary` tag and their APIs can change between releases. This provider tracks
-> `@ai-sdk/harness@1.0.0-canary.11`.
+> **Status:** experimental. This provider tracks the stable AI SDK v7 harness
+> packages (`@ai-sdk/harness@^1.0.23`).
 
 ## Install
 
 ```bash
-npm add @coder/ai-sdk-sandbox @ai-sdk/harness@canary @ai-sdk/harness-claude-code@canary @ai-sdk/provider-utils@canary
+npm add @coder/ai-sdk-sandbox @ai-sdk/harness @ai-sdk/harness-claude-code @ai-sdk/provider-utils
 ```
 
 On the host you also need:
@@ -172,7 +171,7 @@ For an interactive chat in your terminal instead of one-shot `generate()` calls,
 wrap the same agent with the AI SDK terminal UI ([`@ai-sdk/tui`](https://ai-sdk.dev/v7/docs/ai-sdk-harnesses/terminal-ui)):
 
 ```bash
-npm add @ai-sdk/tui@canary
+npm add @ai-sdk/tui
 ```
 
 The TUI drives a session-less agent, so adapt the `HarnessAgent` (whose
@@ -337,7 +336,7 @@ and a full Claude Code turn with tool use (`scripts/e2e-claude.ts`).
 
 ```bash
 npm install
-npm run typecheck   # tsc against the real canary harness types
+npm run typecheck   # tsc against the real harness types
 npm test            # vitest: unit + local integration (fake `coder` + `ssh`)
 npm run build       # tsup → dist/ (ESM + d.ts)
 

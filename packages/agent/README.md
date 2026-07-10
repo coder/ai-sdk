@@ -43,10 +43,10 @@ pure text/JSON steps and the Agent only for the steps that touch tools.
 ## Install
 
 ```bash
-pnpm add @coder/ai-sdk-agent ai@^6 zod
+pnpm add @coder/ai-sdk-agent ai@^7 zod
 ```
 
-Requires Node ≥ 20 and `ai` v6 — the constructors throw an actionable error when
+Requires Node ≥ 22 and `ai` v7 — the constructors throw an actionable error when
 another `ai` major is detected (the guard fails open when the installed version
 can't be resolved), instead of failing cryptically mid‑generation.
 

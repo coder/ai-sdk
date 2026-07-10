@@ -47,21 +47,33 @@ describe("resolveFileContent", () => {
 });
 
 describe("dataContentToFileContent", () => {
-  it("passes Uint8Array through unchanged", () => {
+  it("passes Uint8Array data through unchanged", () => {
     const bytes = new Uint8Array([1, 2, 3]);
-    expect(dataContentToFileContent(bytes)).toBe(bytes);
+    expect(dataContentToFileContent({ type: "data", data: bytes })).toBe(bytes);
   });
 
   it("decodes a base64 string to bytes", () => {
     // "hi" → base64 "aGk="
-    const out = dataContentToFileContent("aGk=");
+    const out = dataContentToFileContent({ type: "data", data: "aGk=" });
+    expect(out).toBeInstanceOf(Uint8Array);
+    expect(Buffer.from(out as Uint8Array).toString()).toBe("hi");
+  });
+
+  it("encodes inline text to UTF-8 bytes", () => {
+    const out = dataContentToFileContent({ type: "text", text: "hi" });
     expect(out).toBeInstanceOf(Uint8Array);
     expect(Buffer.from(out as Uint8Array).toString()).toBe("hi");
   });
 
   it("rejects URL data (the SDK should have downloaded it first)", () => {
-    expect(() => dataContentToFileContent(new URL("https://example.com/x.pdf"))).toThrow(
-      CoderAgentError,
-    );
+    expect(() =>
+      dataContentToFileContent({ type: "url", url: new URL("https://example.com/x.pdf") }),
+    ).toThrow(CoderAgentError);
+  });
+
+  it("rejects provider-reference data (no provider file store to resolve it)", () => {
+    expect(() =>
+      dataContentToFileContent({ type: "reference", reference: { openai: "file-1" } }),
+    ).toThrow(CoderAgentError);
   });
 });

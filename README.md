@@ -4,9 +4,8 @@
 agents inside Coder workspaces, and drive Coder Agents from AI SDK code.
 
 > [!NOTE]
-> All three packages are pre-1.0 and track experimental upstreams (the AI SDK
-> harness is on `canary`; Coder's chat API is experimental). Expect breaking
-> changes.
+> All three packages are pre-1.0 and track experimental upstreams (Coder's
+> chat API is experimental). Expect breaking changes.
 
 ## Packages
 
@@ -16,7 +15,7 @@ install instructions, usage, and API docs.
 | Package                                         | Version                                                                                                                 | What it does                                                                                                                                                                                                                                                                                                 |
 | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | [`@coder/ai-sdk-sandbox`](./packages/sandbox)   | [![npm](https://img.shields.io/npm/v/@coder/ai-sdk-sandbox.svg)](https://www.npmjs.com/package/@coder/ai-sdk-sandbox)   | A **sandbox provider** for the Vercel AI SDK v7 `HarnessAgent`. Runs CLI coding agents — Claude Code, Codex — inside a **Coder workspace** instead of on the local machine, so each agent gets a real, isolated dev environment with your tools, secrets, and network.                                       |
-| [`@coder/ai-sdk-agent`](./packages/agent)       | [![npm](https://img.shields.io/npm/v/@coder/ai-sdk-agent.svg)](https://www.npmjs.com/package/@coder/ai-sdk-agent)       | A Vercel AI SDK–compliant **`Agent`** (AI SDK v6) backed by **Coder Agents**, Coder's server-side agent runtime. `new CoderAgent()` returns a real `Agent` — `generate()`, `stream()`, tool calls, the whole interface.                                                                                      |
+| [`@coder/ai-sdk-agent`](./packages/agent)       | [![npm](https://img.shields.io/npm/v/@coder/ai-sdk-agent.svg)](https://www.npmjs.com/package/@coder/ai-sdk-agent)       | A Vercel AI SDK–compliant **`Agent`** (AI SDK v7) backed by **Coder Agents**, Coder's server-side agent runtime. `new CoderAgent()` returns a real `Agent` — `generate()`, `stream()`, tool calls, the whole interface.                                                                                      |
 | [`@coder/ai-sdk-provider`](./packages/provider) | [![npm](https://img.shields.io/npm/v/@coder/ai-sdk-provider.svg)](https://www.npmjs.com/package/@coder/ai-sdk-provider) | A **Vercel AI SDK provider** that routes `generateText` / `streamText` calls through your Coder deployment's [AI Gateway](https://coder.com/docs/ai-coder/ai-gateway). Point it at your deployment with a Coder API token and use any model it proxies — no raw provider keys, with per-user auth and audit. |
 
 **Which package?** Need a **model** (text, streaming, or schema‑constrained

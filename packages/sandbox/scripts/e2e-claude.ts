@@ -28,7 +28,7 @@ const auth = process.env.ANTHROPIC_API_KEY
     }
   : undefined;
 const settings: Parameters<typeof createClaudeCode>[0] = {
-  thinking: "off",
+  thinking: { type: "disabled" },
   ...(auth ? { auth } : {}),
 };
 console.log(

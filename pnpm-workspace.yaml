@@ -10,20 +10,10 @@ overrides:
   # Force the patched esbuild across the whole workspace. tsup pins a vulnerable
   # ^0.27.0 (< the 0.28.1 fix for the dev-only RCE/file-read advisories).
   esbuild: "^0.28.1"
-  # Keep the sandbox's Vercel AI SDK v7 chain on ONE coherent set of versions.
-  # @coder/ai-sdk-sandbox pins @ai-sdk/harness to canary.11 (-> ai canary.174), but
-  # @ai-sdk/harness-claude-code's range otherwise resolves a newer harness@canary.13
-  # (-> ai canary.176), and @ai-sdk/tui pins ai canary.176 directly. npm's flat hoist
-  # (the original repo) collapsed these to one `ai`; pnpm isolates strictly, so two
-  # `ai` cores leak in and HarnessAgent's types stop matching. Force the whole chain
-  # back to the combo the sandbox CI was green against. Only the sandbox uses these,
-  # so the agent's ai@6 is untouched.
-  "@ai-sdk/harness": "1.0.0-canary.11"
-  "ai@7.0.0-canary.176": "7.0.0-canary.174"
-  # The v7 chain's zod peer otherwise resolves to two versions (3.25.76 and 4.4.3),
-  # which duplicates @ai-sdk/provider-utils (where Tool/ToolSet are defined) and
-  # breaks HarnessAgent type identity. Pin the single zod the sandbox CI was green
-  # against — also the agent's version, so the whole monorepo shares one zod.
+  # The AI SDK chain's zod peer otherwise resolves to two versions (3.25.76 and
+  # 4.4.3), which duplicates @ai-sdk/provider-utils (where Tool/ToolSet are
+  # defined) and breaks HarnessAgent type identity. Pin a single zod so the
+  # whole monorepo shares one copy.
   zod: "4.4.3"
 
 # Excludes for pnpm's `minimumReleaseAge` supply-chain delay (when configured),
@@ -35,6 +25,8 @@ minimumReleaseAgeExclude:
   - "@ai-sdk/harness"
   - "@ai-sdk/harness-claude-code"
   - "@ai-sdk/openai-compatible"
+  - "@ai-sdk/provider"
   - "@ai-sdk/provider-utils"
   - "@ai-sdk/tui"
   - "ai"
+  - "@ai-sdk/mcp@2.0.10"

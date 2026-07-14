@@ -33,6 +33,6 @@ describe("runReleasePlease", () => {
 
     expect(calls).toEqual(["createReleases", "createPullRequests"]);
     expect(loadManifest).toHaveBeenCalledTimes(2);
-    expect(result).toEqual({ pullRequestCount: 1, releases: [release] });
+    expect(result).toEqual({ pullRequests: [{ number: 27 }], releases: [release] });
   });
 });

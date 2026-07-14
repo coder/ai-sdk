@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.4.0](https://github.com/coder/ai-sdk/compare/agent-v0.3.0...agent-v0.4.0) (2026-07-14)
+
+Upgrades the package to AI SDK v7 stable. This is a breaking change that requires consumers to migrate to the v7 APIs.
+
+### Highlights
+
+- All dependencies have been upgraded to AI SDK v7 stable, a breaking change that may require updating your integration code. ([#21](https://github.com/coder/ai-sdk/pull/21))
+
+### ⚠ BREAKING CHANGES
+
+* upgrade all packages to AI SDK v7 stable ([#21](https://github.com/coder/ai-sdk/issues/21))
+
+### Features
+
+* upgrade all packages to AI SDK v7 stable ([#21](https://github.com/coder/ai-sdk/issues/21)) ([cba261c](https://github.com/coder/ai-sdk/commit/cba261c5e08225a54765cf998fe793a67745ca0c))
+
 ## [0.3.0](https://github.com/coder/ai-sdk/compare/agent-v0.2.1...agent-v0.3.0) (2026-07-09)
 
 This release improves streaming correctness and overall robustness of the agent, adds previously missing helper functions, and refines lifecycle handling. It also bounds recovery requests and hardens the structured-output example.

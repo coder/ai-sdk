@@ -33,12 +33,32 @@ async function main(): Promise<void> {
   registerAiChangelogNotes();
 
   const github = await GitHub.create({ owner, repo, token, defaultBranch: targetBranch });
-  const manifest = await Manifest.fromManifest(github, targetBranch, configFile, manifestFile);
+  const result = await runReleasePlease(() =>
+    Manifest.fromManifest(github, targetBranch, configFile, manifestFile),
+  );
 
-  const pullRequests = (await manifest.createPullRequests()).filter(Boolean);
-  const releases = (await manifest.createReleases()).filter((r): r is CreatedRelease => Boolean(r));
+  emitOutputs(result.pullRequestCount, result.releases);
+}
 
-  emitOutputs(pullRequests.length, releases);
+interface ReleasePleaseManifest {
+  createReleases(): ReturnType<Manifest["createReleases"]>;
+  createPullRequests(): ReturnType<Manifest["createPullRequests"]>;
+}
+
+export async function runReleasePlease(
+  loadManifest: () => Promise<ReleasePleaseManifest>,
+): Promise<{ pullRequestCount: number; releases: CreatedRelease[] }> {
+  const releaseManifest = await loadManifest();
+  const releases = (await releaseManifest.createReleases()).filter(
+    (release): release is CreatedRelease => Boolean(release),
+  );
+
+  // Reload after tagging merged releases. Otherwise createPullRequests sees the
+  // just-merged release PR as untagged and aborts before refreshing sibling PRs.
+  const pullRequestManifest = await loadManifest();
+  const pullRequests = (await pullRequestManifest.createPullRequests()).filter(Boolean);
+
+  return { pullRequestCount: pullRequests.length, releases };
 }
 
 /** Write GitHub Actions step outputs (mirrors googleapis/release-please-action). */
@@ -62,9 +82,11 @@ function emitOutputs(prCount: number, releases: CreatedRelease[]): void {
   );
 }
 
-main().catch((error: unknown) => {
-  process.stderr.write(
-    `${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,
-  );
-  process.exitCode = 1;
-});
+if (process.env.NODE_ENV !== "test") {
+  main().catch((error: unknown) => {
+    process.stderr.write(
+      `${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,
+    );
+    process.exitCode = 1;
+  });
+}

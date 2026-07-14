@@ -1,7 +1,8 @@
 import { appendFileSync } from "node:fs";
 import { GitHub, Manifest } from "release-please";
-import type { CreatedRelease } from "release-please";
+import type { CreatedRelease, PullRequest } from "release-please";
 import { registerAiChangelogNotes } from "./changelog-notes.js";
+import { rerunActionRequiredChecks } from "./check-reruns.js";
 
 function required(name: string): string {
   const value = process.env[name];
@@ -36,8 +37,16 @@ async function main(): Promise<void> {
   const result = await runReleasePlease(() =>
     Manifest.fromManifest(github, targetBranch, configFile, manifestFile),
   );
+  const rerunCount = await rerunActionRequiredChecks(
+    github.getGitHubApi().octokit,
+    { owner, repo },
+    result.pullRequests,
+  );
+  if (rerunCount > 0) {
+    process.stderr.write(`release-please: restarted ${rerunCount} release PR check run(s)\n`);
+  }
 
-  emitOutputs(result.pullRequestCount, result.releases);
+  emitOutputs(result.pullRequests.length, result.releases);
 }
 
 interface ReleasePleaseManifest {
@@ -47,7 +56,7 @@ interface ReleasePleaseManifest {
 
 export async function runReleasePlease(
   loadManifest: () => Promise<ReleasePleaseManifest>,
-): Promise<{ pullRequestCount: number; releases: CreatedRelease[] }> {
+): Promise<{ pullRequests: PullRequest[]; releases: CreatedRelease[] }> {
   const releaseManifest = await loadManifest();
   const releases = (await releaseManifest.createReleases()).filter(
     (release): release is CreatedRelease => Boolean(release),
@@ -56,9 +65,11 @@ export async function runReleasePlease(
   // Reload after tagging merged releases. Otherwise createPullRequests sees the
   // just-merged release PR as untagged and aborts before refreshing sibling PRs.
   const pullRequestManifest = await loadManifest();
-  const pullRequests = (await pullRequestManifest.createPullRequests()).filter(Boolean);
+  const pullRequests = (await pullRequestManifest.createPullRequests()).filter(
+    (pullRequest): pullRequest is PullRequest => Boolean(pullRequest),
+  );
 
-  return { pullRequestCount: pullRequests.length, releases };
+  return { pullRequests, releases };
 }
 
 /** Write GitHub Actions step outputs (mirrors googleapis/release-please-action). */

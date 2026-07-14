@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.3.0](https://github.com/coder/ai-sdk/compare/sandbox-v0.2.0...sandbox-v0.3.0) (2026-07-14)
+
+All packages in the sandbox package now target the stable AI SDK v7. This is a breaking change that requires consumers to upgrade to AI SDK v7.
+
+### Highlights
+
+- Upgraded to AI SDK v7 stable, a breaking change that requires consumers to migrate to the v7 API. ([#21](https://github.com/coder/ai-sdk/pull/21))
+
+### ⚠ BREAKING CHANGES
+
+* upgrade all packages to AI SDK v7 stable ([#21](https://github.com/coder/ai-sdk/issues/21))
+
+### Features
+
+* upgrade all packages to AI SDK v7 stable ([#21](https://github.com/coder/ai-sdk/issues/21)) ([cba261c](https://github.com/coder/ai-sdk/commit/cba261c5e08225a54765cf998fe793a67745ca0c))
+
 ## [0.2.0](https://github.com/coder/ai-sdk/compare/sandbox-v0.1.0...sandbox-v0.2.0) (2026-07-09)
 
 Adds streaming correctness improvements, lifecycle handling, and additional helper methods to the agent, along with general hardening based on a bug-report sweep.

@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.3.0](https://github.com/coder/ai-sdk/compare/provider-v0.2.0...provider-v0.3.0) (2026-07-14)
+
+The provider package now targets AI SDK v7 stable. This is a breaking change that requires consumers to upgrade to the corresponding AI SDK v7 release.
+
+### Highlights
+
+- All packages have been upgraded to AI SDK v7 stable, which is a breaking change requiring you to migrate to AI SDK v7. ([#21](https://github.com/coder/ai-sdk/pull/21))
+
+### ⚠ BREAKING CHANGES
+
+* upgrade all packages to AI SDK v7 stable ([#21](https://github.com/coder/ai-sdk/issues/21))
+
+### Features
+
+* upgrade all packages to AI SDK v7 stable ([#21](https://github.com/coder/ai-sdk/issues/21)) ([cba261c](https://github.com/coder/ai-sdk/commit/cba261c5e08225a54765cf998fe793a67745ca0c))
+
 ## [0.2.0](https://github.com/coder/ai-sdk/compare/provider-v0.1.0...provider-v0.2.0) (2026-06-24)
 
 Adds agent cancellation and timeout support, typed errors, and lifecycle helpers to the provider package.

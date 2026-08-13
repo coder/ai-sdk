@@ -96,6 +96,8 @@ function start(message) {
     discardedProcessOutputs.delete(message.id);
     emit({ type: 'exit', id: message.id, code: processExitCode(code, signal), signal: signal || undefined });
   });
+  // Child exit is authoritative; a stdin EPIPE only means it stopped reading.
+  child.stdin.on('error', () => {});
   if (message.stdin) child.stdin.write(bytes(message.stdin));
   child.stdin.end();
 }

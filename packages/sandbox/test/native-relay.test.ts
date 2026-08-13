@@ -112,6 +112,25 @@ describe("native workspace relay", () => {
     expect((await relay.next((message) => message.type === "exit")).code).toBe(7);
   });
 
+  it("survives a child that closes before reading stdin", async () => {
+    const relay = new RelayHarness();
+    harnesses.push(relay);
+    await relay.next((message) => message.type === "ready");
+    relay.send({
+      type: "start",
+      id: "closed-stdin",
+      command: "exec 0<&-; sleep 0.1",
+      loginShell: false,
+      stdin: Buffer.alloc(1024 * 1024, 0x41).toString("base64"),
+    });
+    expect(
+      (await relay.next((message) => message.type === "exit" && message.id === "closed-stdin"))
+        .code,
+    ).toBe(0);
+    relay.send({ type: "ping" });
+    expect((await relay.next((message) => message.type === "pong")).type).toBe("pong");
+  });
+
   it("applies command environment after login profile initialization", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "coder-native-relay-env-"));
     tempDirs.push(dir);

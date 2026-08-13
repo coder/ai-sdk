@@ -266,22 +266,10 @@ export class CoderApiClient {
     let workspace = await this.requireWorkspace(ref, signal);
     for (;;) {
       if (workspace.latest_build.status === "running") return;
-      if (
-        workspace.latest_build.transition === "start" &&
-        (workspace.latest_build.status === "pending" ||
-          workspace.latest_build.status === "starting")
-      ) {
-        await this.#waitForBuild(workspace.latest_build.id, signal);
-        return;
-      }
-      if (
-        workspace.latest_build.transition !== "stop" ||
-        (workspace.latest_build.status !== "pending" &&
-          workspace.latest_build.status !== "stopping")
-      ) {
-        break;
-      }
+      if (!isWorkspaceBuildInFlight(workspace.latest_build)) break;
+      const transition = workspace.latest_build.transition;
       await this.#waitForBuild(workspace.latest_build.id, signal);
+      if (transition === "start") return;
       workspace = await this.requireWorkspace(ref, signal);
     }
     if (
@@ -317,14 +305,14 @@ export class CoderApiClient {
 
   async stop(ref: string, options?: LifecycleOptions): Promise<void> {
     const signal = options?.abortSignal;
-    const workspace = await this.requireWorkspace(ref, signal);
-    if (workspace.latest_build.status === "stopped") return;
-    if (
-      workspace.latest_build.transition === "stop" &&
-      (workspace.latest_build.status === "pending" || workspace.latest_build.status === "stopping")
-    ) {
+    let workspace = await this.requireWorkspace(ref, signal);
+    for (;;) {
+      if (workspace.latest_build.status === "stopped") return;
+      if (!isWorkspaceBuildInFlight(workspace.latest_build)) break;
+      const transition = workspace.latest_build.transition;
       await this.#waitForBuild(workspace.latest_build.id, signal);
-      return;
+      if (transition === "stop") return;
+      workspace = await this.requireWorkspace(ref, signal);
     }
     const build = await this.#createBuild(workspace.id, { transition: "stop" }, signal);
     await this.#waitForBuild(build.id, signal);
@@ -332,14 +320,14 @@ export class CoderApiClient {
 
   async destroy(ref: string, options?: LifecycleOptions): Promise<void> {
     const signal = options?.abortSignal;
-    const workspace = await this.workspace(ref, signal);
-    if (workspace === null || workspace.latest_build.status === "deleted") return;
-    if (
-      workspace.latest_build.transition === "delete" &&
-      (workspace.latest_build.status === "pending" || workspace.latest_build.status === "deleting")
-    ) {
+    let workspace = await this.workspace(ref, signal);
+    for (;;) {
+      if (workspace === null || workspace.latest_build.status === "deleted") return;
+      if (!isWorkspaceBuildInFlight(workspace.latest_build)) break;
+      const transition = workspace.latest_build.transition;
       await this.#waitForBuild(workspace.latest_build.id, signal);
-      return;
+      if (transition === "delete") return;
+      workspace = await this.workspace(ref, signal);
     }
     const build = await this.#createBuild(workspace.id, { transition: "delete" }, signal);
     await this.#waitForBuild(build.id, signal);
@@ -777,6 +765,15 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function isRedirectStatus(status: number): boolean {
   return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
+}
+
+function isWorkspaceBuildInFlight(build: ApiWorkspaceBuild): boolean {
+  return (
+    build.status === "pending" ||
+    build.status === "starting" ||
+    build.status === "stopping" ||
+    build.status === "deleting"
+  );
 }
 
 function deleteRequestBodyHeaders(headers: Record<string, string>): void {

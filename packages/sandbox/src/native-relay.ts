@@ -32,8 +32,11 @@ const path = require('node:path');
 const readline = require('node:readline');
 const processes = new Map();
 const discardedProcessOutputs = new Map();
+const processOutputPauses = new Map();
 const sockets = new Map();
+const socketOutputPauses = new Map();
 const signalNumbers = os.constants.signals;
+let outputCarrierPaused = false;
 function resolveExecutable(name) {
   for (const directory of String(process.env.PATH || '/usr/local/bin:/usr/bin:/bin').split(path.delimiter)) {
     const candidate = path.resolve(directory || '.', name);
@@ -42,8 +45,63 @@ function resolveExecutable(name) {
   return name;
 }
 const bashPath = resolveExecutable('bash');
+function processStream(child, streamName) {
+  return streamName === 'stdout' ? child && child.stdout : streamName === 'stderr' ? child && child.stderr : undefined;
+}
+function setProcessOutputPaused(id, streamName, reason, paused) {
+  const child = processes.get(id);
+  const pauses = processOutputPauses.get(id);
+  const stream = processStream(child, streamName);
+  const reasons = pauses && pauses[streamName];
+  if (!stream || !reasons) return;
+  if (discardedProcessOutputs.get(id)?.has(streamName)) {
+    reasons.clear();
+    stream.resume();
+    return;
+  }
+  if (paused) {
+    reasons.add(reason);
+    stream.pause();
+  } else if (reasons.delete(reason) && reasons.size === 0) {
+    stream.resume();
+  }
+}
+function setSocketOutputPaused(id, reason, paused) {
+  const socket = sockets.get(id);
+  const reasons = socketOutputPauses.get(id);
+  if (!socket || !reasons) return;
+  if (paused) {
+    reasons.add(reason);
+    socket.pause();
+  } else if (reasons.delete(reason) && reasons.size === 0) {
+    socket.resume();
+  }
+}
+function pauseOutputCarrier() {
+  if (outputCarrierPaused) return;
+  outputCarrierPaused = true;
+  for (const id of processes.keys()) {
+    setProcessOutputPaused(id, 'stdout', 'carrier', true);
+    setProcessOutputPaused(id, 'stderr', 'carrier', true);
+  }
+  for (const id of sockets.keys()) setSocketOutputPaused(id, 'carrier', true);
+}
+function resumeOutputCarrier() {
+  if (!outputCarrierPaused) return;
+  outputCarrierPaused = false;
+  for (const id of processes.keys()) {
+    setProcessOutputPaused(id, 'stdout', 'carrier', false);
+    if (outputCarrierPaused) return;
+    setProcessOutputPaused(id, 'stderr', 'carrier', false);
+    if (outputCarrierPaused) return;
+  }
+  for (const id of sockets.keys()) {
+    setSocketOutputPaused(id, 'carrier', false);
+    if (outputCarrierPaused) return;
+  }
+}
 function emit(message) {
-  process.stdout.write(JSON.stringify(Object.assign({ v: 1 }, message)) + '\n');
+  if (!process.stdout.write(JSON.stringify(Object.assign({ v: 1 }, message)) + '\n')) pauseOutputCarrier();
 }
 function bytes(value) {
   return Buffer.from(value || '', 'base64');
@@ -82,6 +140,7 @@ function start(message) {
   const discardedOutputs = new Set();
   processes.set(message.id, child);
   discardedProcessOutputs.set(message.id, discardedOutputs);
+  processOutputPauses.set(message.id, { stdout: new Set(), stderr: new Set() });
   child.once('spawn', () => emit({ type: 'started', id: message.id, pid: child.pid }));
   child.stdout.on('data', (data) => {
     if (!discardedOutputs.has('stdout')) emit({ type: 'stdout', id: message.id, data: data.toString('base64') });
@@ -89,14 +148,20 @@ function start(message) {
   child.stderr.on('data', (data) => {
     if (!discardedOutputs.has('stderr')) emit({ type: 'stderr', id: message.id, data: data.toString('base64') });
   });
+  if (outputCarrierPaused) {
+    setProcessOutputPaused(message.id, 'stdout', 'carrier', true);
+    setProcessOutputPaused(message.id, 'stderr', 'carrier', true);
+  }
   child.once('error', (error) => {
     processes.delete(message.id);
     discardedProcessOutputs.delete(message.id);
+    processOutputPauses.delete(message.id);
     emit({ type: 'proc-error', id: message.id, message: String(error && error.message || error) });
   });
   child.once('close', (code, signal) => {
     if (!processes.delete(message.id)) return;
     discardedProcessOutputs.delete(message.id);
+    processOutputPauses.delete(message.id);
     emit({ type: 'exit', id: message.id, code: processExitCode(code, signal), signal: signal || undefined });
   });
   // Child exit is authoritative; a stdin EPIPE only means it stopped reading.
@@ -129,6 +194,7 @@ function tcpOpen(message) {
     return;
   }
   sockets.set(message.id, socket);
+  socketOutputPauses.set(message.id, new Set());
   socket.once('connect', () => emit({ type: 'tcp-opened', id: message.id }));
   socket.on('data', (data) => emit({ type: 'tcp-data', id: message.id, data: data.toString('base64') }));
   socket.on('drain', () => emit({ type: 'tcp-resume', id: message.id }));
@@ -136,8 +202,10 @@ function tcpOpen(message) {
   socket.once('error', (error) => emit({ type: 'tcp-error', id: message.id, message: String(error && error.message || error) }));
   socket.once('close', () => {
     sockets.delete(message.id);
+    socketOutputPauses.delete(message.id);
     emit({ type: 'tcp-close', id: message.id });
   });
+  if (outputCarrierPaused) setSocketOutputPaused(message.id, 'carrier', true);
 }
 function receive(line) {
   if (!line) return;
@@ -149,22 +217,22 @@ function receive(line) {
     case 'start': start(message); break;
     case 'kill': kill(message); break;
     case 'proc-pause': {
-      const child = processes.get(message.id);
-      const stream = message.stream === 'stdout' ? child && child.stdout : message.stream === 'stderr' ? child && child.stderr : undefined;
-      if (stream) stream.pause();
+      setProcessOutputPaused(message.id, message.stream, 'host', true);
       break;
     }
     case 'proc-resume': {
-      const child = processes.get(message.id);
-      const stream = message.stream === 'stdout' ? child && child.stdout : message.stream === 'stderr' ? child && child.stderr : undefined;
-      if (stream) stream.resume();
+      setProcessOutputPaused(message.id, message.stream, 'host', false);
       break;
     }
     case 'proc-discard': {
       const child = processes.get(message.id);
       const discardedOutputs = discardedProcessOutputs.get(message.id);
-      const stream = message.stream === 'stdout' ? child && child.stdout : message.stream === 'stderr' ? child && child.stderr : undefined;
-      if (stream && discardedOutputs) { discardedOutputs.add(message.stream); stream.resume(); }
+      const stream = processStream(child, message.stream);
+      if (stream && discardedOutputs) {
+        discardedOutputs.add(message.stream);
+        processOutputPauses.get(message.id)?.[message.stream]?.clear();
+        stream.resume();
+      }
       break;
     }
     case 'tcp-open': tcpOpen(message); break;
@@ -175,8 +243,8 @@ function receive(line) {
     }
     case 'tcp-end': { const socket = sockets.get(message.id); if (socket) socket.end(); break; }
     case 'tcp-close': { const socket = sockets.get(message.id); if (socket) socket.destroy(); break; }
-    case 'tcp-pause': { const socket = sockets.get(message.id); if (socket) socket.pause(); break; }
-    case 'tcp-resume': { const socket = sockets.get(message.id); if (socket) socket.resume(); break; }
+    case 'tcp-pause': { setSocketOutputPaused(message.id, 'host', true); break; }
+    case 'tcp-resume': { setSocketOutputPaused(message.id, 'host', false); break; }
     case 'ping': emit({ type: 'pong' }); break;
     default: emit({ type: 'error', id: message.id, message: 'unknown message type: ' + message.type });
   }
@@ -189,6 +257,7 @@ function cleanup() {
   for (const socket of sockets.values()) socket.destroy();
 }
 const input = readline.createInterface({ input: process.stdin, crlfDelay: Infinity, terminal: false });
+process.stdout.on('drain', resumeOutputCarrier);
 input.on('line', receive);
 input.once('close', () => { cleanup(); process.exit(0); });
 for (const signal of ['SIGHUP', 'SIGINT', 'SIGQUIT', 'SIGTERM']) {

@@ -233,6 +233,41 @@ describe("native workspace relay", () => {
     expect((await relay.next((message) => message.type === "exit")).code).toBe(7);
   });
 
+  it("backpressures workspace process output while the relay carrier is blocked", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "coder-native-relay-output-pressure-"));
+    tempDirs.push(dir);
+    const started = path.join(dir, "started");
+    const completed = path.join(dir, "completed");
+    const relay = new RelayHarness();
+    harnesses.push(relay);
+    await relay.next((message) => message.type === "ready");
+    relay.child.stdout.pause();
+    relay.send({
+      type: "start",
+      id: "process-output-pressure",
+      command:
+        `printf started > ${shellQuote(started)} && ` +
+        `${shellQuote(process.execPath)} -e ${shellQuote(
+          "process.stdout.write(Buffer.alloc(8 * 1024 * 1024, 0x41))",
+        )} && printf completed > ${shellQuote(completed)}`,
+      loginShell: false,
+    });
+
+    expect(await waitForFile(started)).toBe("started");
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    await expect(readFile(completed, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+
+    relay.child.stdout.resume();
+    expect(await waitForFile(completed)).toBe("completed");
+    expect(
+      (
+        await relay.next(
+          (message) => message.type === "exit" && message.id === "process-output-pressure",
+        )
+      ).code,
+    ).toBe(0);
+  });
+
   it("survives a child that closes before reading stdin", async () => {
     const relay = new RelayHarness();
     harnesses.push(relay);

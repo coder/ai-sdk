@@ -42,6 +42,11 @@ interface RelayEntry {
   relay: NativeRelay;
 }
 
+interface RelaySetup {
+  controller: AbortController;
+  promise: Promise<RelayEntry>;
+}
+
 /**
  * Native Coder transport: Coderd's REST API supplies the control plane and an
  * authenticated workspace-agent PTY carries a small multiplexed process/TCP
@@ -52,7 +57,7 @@ export class CoderNativeTransport implements CoderTransport {
   readonly #loginShell: boolean;
   readonly #relayNodeCommand: string;
   readonly #relayConnectTimeoutMs: number;
-  readonly #relays = new Map<string, Promise<RelayEntry>>();
+  readonly #relays = new Map<string, RelaySetup>();
 
   constructor(options: CoderNativeTransportOptions = {}) {
     const url = options.url ?? process.env.CODER_URL;
@@ -139,9 +144,11 @@ export class CoderNativeTransport implements CoderTransport {
 
   /** Close every cached workspace relay. Existing local port-forwards close too. */
   async close(): Promise<void> {
-    const entries = [...this.#relays.values()];
+    const setups = [...this.#relays.values()];
     this.#relays.clear();
-    const settled = await Promise.allSettled(entries);
+    const error = new Error("Coder native transport closed");
+    for (const setup of setups) setup.controller.abort(error);
+    const settled = await Promise.allSettled(setups.map((setup) => setup.promise));
     for (const result of settled) {
       if (result.status === "fulfilled") result.value.relay.close();
     }
@@ -151,14 +158,18 @@ export class CoderNativeTransport implements CoderTransport {
     if (signal?.aborted) throw abortError(signal);
     const existing = this.#relays.get(workspace);
     if (existing !== undefined) {
-      const entry = await waitWithAbort(existing, signal);
+      const entry = await waitWithAbort(existing.promise, signal);
       if (!entry.relay.closed) return entry.relay;
       if (this.#relays.get(workspace) === existing) this.#relays.delete(workspace);
     }
-    let pending!: Promise<RelayEntry>;
-    pending = (async () => {
+    const controller = new AbortController();
+    let setup!: RelaySetup;
+    const promise = (async () => {
       try {
-        const resolved = await this.#api.resolveAgent(workspace);
+        const resolved = await waitWithAbort(
+          this.#api.resolveAgent(workspace, controller.signal),
+          controller.signal,
+        );
         if (resolved.workspace.latest_build.status !== "running") {
           throw new Error(
             `Coder workspace "${workspace}" is ${resolved.workspace.latest_build.status}; start it before connecting`,
@@ -174,31 +185,35 @@ export class CoderNativeTransport implements CoderTransport {
           agentId: resolved.agent.id,
           nodeCommand: this.#relayNodeCommand,
           connectTimeoutMs: this.#relayConnectTimeoutMs,
+          signal: controller.signal,
         });
         relay.onClose(() => {
-          if (this.#relays.get(workspace) === pending) this.#relays.delete(workspace);
+          if (this.#relays.get(workspace) === setup) this.#relays.delete(workspace);
         });
         return { workspaceId: resolved.workspace.id, relay };
       } catch (error) {
-        if (this.#relays.get(workspace) === pending) this.#relays.delete(workspace);
+        if (this.#relays.get(workspace) === setup) this.#relays.delete(workspace);
         throw error;
       }
     })();
-    this.#relays.set(workspace, pending);
-    return (await waitWithAbort(pending, signal)).relay;
+    setup = { controller, promise };
+    this.#relays.set(workspace, setup);
+    return (await waitWithAbort(promise, signal)).relay;
   }
 
   async #closeWorkspaceRelays(workspace: string, signal?: AbortSignal): Promise<void> {
     const target = await this.#api.workspace(workspace, signal);
     if (target === null) return;
     const entries = [...this.#relays.entries()];
-    const settled = await Promise.allSettled(entries.map(([, entry]) => entry));
+    const settled = await Promise.allSettled(entries.map(([, setup]) => setup.promise));
     for (let index = 0; index < settled.length; index++) {
       const result = settled[index];
       if (result?.status !== "fulfilled" || result.value.workspaceId !== target.id) continue;
       result.value.relay.close();
-      const key = entries[index]?.[0];
-      if (key !== undefined) this.#relays.delete(key);
+      const entry = entries[index];
+      if (entry !== undefined && this.#relays.get(entry[0]) === entry[1]) {
+        this.#relays.delete(entry[0]);
+      }
     }
   }
 }

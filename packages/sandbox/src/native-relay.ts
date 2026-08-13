@@ -209,6 +209,7 @@ export class NativeRelay {
   }
 
   static async connect(options: NativeRelayConnectOptions): Promise<NativeRelay> {
+    if (options.signal?.aborted) throw abortError(options.signal);
     const query = new URLSearchParams({
       reconnect: randomUUID(),
       width: "80",
@@ -376,16 +377,24 @@ export class NativeRelay {
   #onData(data: RawData): void {
     const chunk = rawDataBuffer(data).toString("utf8");
     this.#buffer += chunk;
+    if (!this.#bootstrapReadySeen) {
+      const marker = this.#buffer.indexOf(NATIVE_RELAY_BOOTSTRAP_MARKER);
+      if (marker !== -1) {
+        this.#bootstrapOutput = `${this.#bootstrapOutput}${this.#buffer.slice(0, marker)}`.slice(
+          -500,
+        );
+        this.#buffer = this.#buffer.slice(marker + NATIVE_RELAY_BOOTSTRAP_MARKER.length);
+        if (this.#buffer.startsWith("\r\n")) this.#buffer = this.#buffer.slice(2);
+        else if (this.#buffer.startsWith("\n")) this.#buffer = this.#buffer.slice(1);
+        this.#bootstrapReadySeen = true;
+        this.#bootstrapReady.resolve();
+      }
+    }
     for (;;) {
       const newline = this.#buffer.indexOf("\n");
       if (newline === -1) return;
       const line = this.#buffer.slice(0, newline).replace(/\r$/, "");
       this.#buffer = this.#buffer.slice(newline + 1);
-      if (line === NATIVE_RELAY_BOOTSTRAP_MARKER) {
-        this.#bootstrapReadySeen = true;
-        this.#bootstrapReady.resolve();
-        continue;
-      }
       let message: RelayMessage;
       try {
         message = JSON.parse(line) as RelayMessage;

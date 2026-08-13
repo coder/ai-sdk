@@ -18,7 +18,7 @@ afterEach(async () => {
   await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
 });
 
-async function fakeCoderd(): Promise<{
+async function fakeCoderd(options: { bootstrapPrefix?: string } = {}): Promise<{
   url: string;
   requests: RelayRequest[];
   bootstrapSource: () => string;
@@ -118,7 +118,11 @@ async function fakeCoderd(): Promise<{
         }
       });
       resolvePtyConnected();
-      if (releaseRequested) websocket.send(Buffer.from(`${NATIVE_RELAY_BOOTSTRAP_MARKER}\n`));
+      if (releaseRequested) {
+        websocket.send(
+          Buffer.from(`${options.bootstrapPrefix ?? ""}${NATIVE_RELAY_BOOTSTRAP_MARKER}\n`),
+        );
+      }
     });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -139,7 +143,9 @@ async function fakeCoderd(): Promise<{
     ptyConnected,
     releaseBootstrap: () => {
       releaseRequested = true;
-      ptyWebsocket?.send(Buffer.from(`${NATIVE_RELAY_BOOTSTRAP_MARKER}\n`));
+      ptyWebsocket?.send(
+        Buffer.from(`${options.bootstrapPrefix ?? ""}${NATIVE_RELAY_BOOTSTRAP_MARKER}\n`),
+      );
     },
   };
 }
@@ -227,5 +233,49 @@ describe("CoderNativeTransport", () => {
       stderr: "separate-error",
     });
     expect(coderd.requests.filter((request) => request.type === "start")).toHaveLength(1);
+  });
+
+  it("recognizes a bootstrap marker appended to profile output without a newline", async () => {
+    const coderd = await fakeCoderd({ bootstrapPrefix: "profile output without newline" });
+    const transport = new CoderNativeTransport({
+      url: coderd.url,
+      token: "test-token",
+      loginShell: false,
+      relayConnectTimeoutMs: 2_000,
+    });
+    cleanups.push(() => transport.close());
+
+    const execution = transport.exec({ workspace: "ws", command: "ignored", stdin: "ready" });
+    await coderd.ptyConnected;
+    coderd.releaseBootstrap();
+
+    await expect(execution).resolves.toEqual({
+      exitCode: 7,
+      stdout: "ready",
+      stderr: "separate-error",
+    });
+  });
+
+  it("cancels pending relay setup when the transport closes", async () => {
+    let resolveFetchStarted!: () => void;
+    const fetchStarted = new Promise<void>((resolve) => {
+      resolveFetchStarted = resolve;
+    });
+    const transport = new CoderNativeTransport({
+      url: "http://coder.example.test",
+      token: "test-token",
+      fetch: async () => {
+        resolveFetchStarted();
+        return await new Promise<Response>(() => {});
+      },
+    });
+    cleanups.push(() => transport.close());
+
+    const execution = transport.exec({ workspace: "ws", command: "ignored" });
+    void execution.catch(() => {});
+    await fetchStarted;
+    await transport.close();
+
+    await expect(execution).rejects.toThrow("Coder native transport closed");
   });
 });

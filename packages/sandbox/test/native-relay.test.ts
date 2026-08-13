@@ -139,19 +139,17 @@ describe("native workspace relay", () => {
       },
     });
     expect(
-      Buffer.from(
-        (
-          await relay.next(
-            (message) => message.type === "stdout" && message.id === "process-env-order",
-          )
-        ).data ?? "",
-        "base64",
-      ).toString(),
-    ).toBe(`caller ' "$PATH"|/command-only-without-bash|${requestedDirectory}\n`);
-    expect(
       (await relay.next((message) => message.type === "exit" && message.id === "process-env-order"))
         .code,
     ).toBe(0);
+    const stdout = Buffer.concat(
+      relay.messages
+        .filter((message) => message.type === "stdout" && message.id === "process-env-order")
+        .map((message) => Buffer.from(message.data ?? "", "base64")),
+    );
+    expect(stdout.toString()).toBe(
+      `caller ' "$PATH"|/command-only-without-bash|${requestedDirectory}\n`,
+    );
   });
 
   it("pauses workspace process output until the host resumes each stream", async () => {

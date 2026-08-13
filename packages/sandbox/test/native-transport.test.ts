@@ -200,7 +200,8 @@ describe("CoderNativeTransport", () => {
     const result = await execution;
     expect(result).toEqual({ exitCode: 7, stdout: "hello", stderr: "separate-error" });
     expect(bootstrapBeforeMarker).toBe("");
-    expect(coderd.bootstrapSource()).toContain("childProcess.spawn('bash'");
+    expect(coderd.bootstrapSource()).toContain("const bashPath = resolveExecutable('bash')");
+    expect(coderd.bootstrapSource()).toContain("childProcess.spawn(bashPath");
     expect(coderd.requests.find((request) => request.type === "start")).toMatchObject({
       type: "start",
       command: "ignored",

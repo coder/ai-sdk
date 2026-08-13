@@ -124,9 +124,12 @@ describe("native workspace relay", () => {
     relay.send({
       type: "start",
       id: "process-env-order",
-      command: 'printf %s "$CODER_RELAY_ENV_ORDER"',
+      command: 'printf "%s|%s" "$CODER_RELAY_ENV_ORDER" "$PATH"',
       loginShell: true,
-      env: { CODER_RELAY_ENV_ORDER: `caller ' "$PATH"` },
+      env: {
+        CODER_RELAY_ENV_ORDER: `caller ' "$PATH"`,
+        PATH: "/command-only-without-bash",
+      },
     });
     expect(
       Buffer.from(
@@ -137,7 +140,7 @@ describe("native workspace relay", () => {
         ).data ?? "",
         "base64",
       ).toString(),
-    ).toBe(`caller ' "$PATH"`);
+    ).toBe(`caller ' "$PATH"|/command-only-without-bash`);
     expect(
       (await relay.next((message) => message.type === "exit" && message.id === "process-env-order"))
         .code,
@@ -259,6 +262,81 @@ describe("native workspace relay", () => {
     }
   });
 
+  it("keeps the upstream write side open after a remote TCP half-close", async () => {
+    let resolveRequest!: (data: Buffer) => void;
+    const request = new Promise<Buffer>((resolve) => {
+      resolveRequest = resolve;
+    });
+    const upstream = net.createServer({ allowHalfOpen: true }, (socket) => {
+      socket.on("data", (data) => {
+        resolveRequest(data);
+        socket.destroy();
+      });
+      socket.end("remote-half-close");
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+    const address = upstream.address();
+    if (address === null || typeof address === "string") throw new Error("no upstream address");
+    const relay = new RelayHarness();
+    harnesses.push(relay);
+    try {
+      await relay.next((message) => message.type === "ready");
+      relay.send({ type: "tcp-open", id: "socket-half-close", port: address.port });
+      await relay.next(
+        (message) => message.type === "tcp-opened" && message.id === "socket-half-close",
+      );
+      await relay.next(
+        (message) => message.type === "tcp-end" && message.id === "socket-half-close",
+      );
+      relay.send({
+        type: "tcp-data",
+        id: "socket-half-close",
+        data: Buffer.from("request-after-remote-eof").toString("base64"),
+      });
+      expect((await request).toString()).toBe("request-after-remote-eof");
+    } finally {
+      upstream.close();
+    }
+  });
+
+  it("signals backpressure while upstream TCP writes are queued", async () => {
+    const upstream = net.createServer((socket) => socket.pause());
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+    const address = upstream.address();
+    if (address === null || typeof address === "string") throw new Error("no upstream address");
+    const relay = new RelayHarness();
+    harnesses.push(relay);
+    try {
+      await relay.next((message) => message.type === "ready");
+      relay.send({ type: "tcp-open", id: "socket-backpressure", port: address.port });
+      await relay.next(
+        (message) => message.type === "tcp-opened" && message.id === "socket-backpressure",
+      );
+      relay.send({
+        type: "tcp-data",
+        id: "socket-backpressure",
+        data: Buffer.alloc(1024 * 1024, 0x31).toString("base64"),
+      });
+      expect(
+        (
+          await relay.next(
+            (message) => message.type === "tcp-pause" && message.id === "socket-backpressure",
+          )
+        ).type,
+      ).toBe("tcp-pause");
+      expect(
+        (
+          await relay.next(
+            (message) => message.type === "tcp-resume" && message.id === "socket-backpressure",
+          )
+        ).type,
+      ).toBe("tcp-resume");
+      relay.send({ type: "tcp-close", id: "socket-backpressure" });
+    } finally {
+      upstream.close();
+    }
+  });
+
   it("flushes queued TCP data before a graceful remote close", async () => {
     type Sink = {
       opened(): void;
@@ -280,6 +358,8 @@ describe("native workspace relay", () => {
       },
       tcpData: () => {},
       tcpEnd: () => {},
+      pauseTcp: () => {},
+      resumeTcp: () => {},
       closeTcp: () => {},
     } as unknown as NativeRelay;
     const forward = await openNativePortForward(relay, { workspace: "ws", remotePort: 4444 });
@@ -306,6 +386,105 @@ describe("native workspace relay", () => {
       const result = Buffer.concat(received);
       expect(result.length).toBe(payload.length);
       expect(result.equals(payload)).toBe(true);
+    } finally {
+      await forward.close();
+    }
+  });
+
+  it("preserves response data after a local TCP half-close", async () => {
+    type Sink = {
+      opened(): void;
+      data(data: Uint8Array): void;
+      end(): void;
+      close(): void;
+      error(error: Error): void;
+    };
+    let sink!: Sink;
+    const request: Buffer[] = [];
+    const relay = {
+      closed: false,
+      onClose: () => () => {},
+      openTcp: (_id: string, _port: number, opened: Sink) => {
+        sink = opened;
+        sink.opened();
+      },
+      tcpData: (_id: string, data: Uint8Array) => request.push(Buffer.from(data)),
+      tcpEnd: () => {
+        sink.data(Buffer.from("response-after-eof"));
+        sink.end();
+        sink.close();
+      },
+      pauseTcp: () => {},
+      resumeTcp: () => {},
+      closeTcp: () => {},
+    } as unknown as NativeRelay;
+    const forward = await openNativePortForward(relay, { workspace: "ws", remotePort: 4444 });
+    try {
+      const response: Buffer[] = [];
+      const socket = net.connect(forward.localPort, forward.localHost);
+      socket.on("data", (data) => response.push(data));
+      const socketClosed = once(socket, "close");
+      await once(socket, "connect");
+      socket.end("request-before-eof");
+      await socketClosed;
+      expect(Buffer.concat(request).toString()).toBe("request-before-eof");
+      expect(Buffer.concat(response).toString()).toBe("response-after-eof");
+    } finally {
+      await forward.close();
+    }
+  });
+
+  it("pauses remote TCP data until a slow local client drains", async () => {
+    type Sink = {
+      opened(): void;
+      data(data: Uint8Array): void;
+      end(): void;
+      close(): void;
+      error(error: Error): void;
+    };
+    let resolveSink!: (sink: Sink) => void;
+    const sinkReady = new Promise<Sink>((resolve) => {
+      resolveSink = resolve;
+    });
+    let resolvePaused!: () => void;
+    const paused = new Promise<void>((resolve) => {
+      resolvePaused = resolve;
+    });
+    let resolveResumed!: () => void;
+    const resumed = new Promise<void>((resolve) => {
+      resolveResumed = resolve;
+    });
+    const relay = {
+      closed: false,
+      onClose: () => () => {},
+      openTcp: (_id: string, _port: number, sink: Sink) => {
+        resolveSink(sink);
+        sink.opened();
+      },
+      tcpData: () => {},
+      tcpEnd: () => {},
+      pauseTcp: () => resolvePaused(),
+      resumeTcp: () => resolveResumed(),
+      closeTcp: () => {},
+    } as unknown as NativeRelay;
+    const forward = await openNativePortForward(relay, { workspace: "ws", remotePort: 4444 });
+    try {
+      const payload = Buffer.alloc(1024 * 1024, 0x42);
+      const received: Buffer[] = [];
+      const socket = net.connect(forward.localPort, forward.localHost);
+      socket.on("data", (data) => received.push(data));
+      const socketClosed = once(socket, "close");
+      socket.pause();
+      await once(socket, "connect");
+      const sink = await sinkReady;
+      sink.data(payload);
+      await paused;
+      socket.resume();
+      await resumed;
+      sink.end();
+      sink.close();
+      await socketClosed;
+      expect(Buffer.concat(received).equals(payload)).toBe(true);
     } finally {
       await forward.close();
     }

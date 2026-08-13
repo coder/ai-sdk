@@ -22,12 +22,22 @@ export const NATIVE_RELAY_BOOTSTRAP_MARKER = "__CODER_AI_SDK_RELAY_BOOTSTRAP_REA
  */
 export const NATIVE_RELAY_SOURCE = String.raw`'use strict';
 const childProcess = require('node:child_process');
+const fs = require('node:fs');
 const net = require('node:net');
 const os = require('node:os');
+const path = require('node:path');
 const readline = require('node:readline');
 const processes = new Map();
 const sockets = new Map();
 const signalNumbers = os.constants.signals;
+function resolveExecutable(name) {
+  for (const directory of String(process.env.PATH || '/usr/local/bin:/usr/bin:/bin').split(path.delimiter)) {
+    const candidate = path.resolve(directory || '.', name);
+    try { fs.accessSync(candidate, fs.constants.X_OK); return candidate; } catch (_) {}
+  }
+  return name;
+}
+const bashPath = resolveExecutable('bash');
 function emit(message) {
   process.stdout.write(JSON.stringify(Object.assign({ v: 1 }, message)) + '\n');
 }
@@ -41,7 +51,7 @@ function commandScript(message) {
   const entries = Object.entries(message.env || {});
   if (entries.length === 0) return message.command;
   const assignments = entries.map(([key, value]) => shellQuote(key + '=' + String(value))).join(' ');
-  return 'exec env ' + assignments + ' bash -c ' + shellQuote(message.command);
+  return 'exec env ' + assignments + ' ' + shellQuote(bashPath) + ' -c ' + shellQuote(message.command);
 }
 function processExitCode(code, signal) {
   if (typeof code === 'number') return code;
@@ -55,7 +65,7 @@ function start(message) {
   const args = [message.loginShell === false ? '-c' : '-lc', commandScript(message)];
   let child;
   try {
-    child = childProcess.spawn('bash', args, {
+    child = childProcess.spawn(bashPath, args, {
       cwd: message.cwd || undefined,
       env: process.env,
       detached: process.platform !== 'win32',
@@ -98,7 +108,7 @@ function tcpOpen(message) {
     return;
   }
   let socket;
-  try { socket = net.createConnection({ host: '127.0.0.1', port: message.port }); }
+  try { socket = net.createConnection({ host: '127.0.0.1', port: message.port, allowHalfOpen: true }); }
   catch (error) {
     emit({ type: 'tcp-error', id: message.id, message: String(error && error.message || error) });
     emit({ type: 'tcp-close', id: message.id });
@@ -107,6 +117,7 @@ function tcpOpen(message) {
   sockets.set(message.id, socket);
   socket.once('connect', () => emit({ type: 'tcp-opened', id: message.id }));
   socket.on('data', (data) => emit({ type: 'tcp-data', id: message.id, data: data.toString('base64') }));
+  socket.on('drain', () => emit({ type: 'tcp-resume', id: message.id }));
   socket.once('end', () => emit({ type: 'tcp-end', id: message.id }));
   socket.once('error', (error) => emit({ type: 'tcp-error', id: message.id, message: String(error && error.message || error) }));
   socket.once('close', () => {
@@ -124,9 +135,15 @@ function receive(line) {
     case 'start': start(message); break;
     case 'kill': kill(message); break;
     case 'tcp-open': tcpOpen(message); break;
-    case 'tcp-data': { const socket = sockets.get(message.id); if (socket) socket.write(bytes(message.data)); break; }
+    case 'tcp-data': {
+      const socket = sockets.get(message.id);
+      if (socket && !socket.write(bytes(message.data))) emit({ type: 'tcp-pause', id: message.id });
+      break;
+    }
     case 'tcp-end': { const socket = sockets.get(message.id); if (socket) socket.end(); break; }
     case 'tcp-close': { const socket = sockets.get(message.id); if (socket) socket.destroy(); break; }
+    case 'tcp-pause': { const socket = sockets.get(message.id); if (socket) socket.pause(); break; }
+    case 'tcp-resume': { const socket = sockets.get(message.id); if (socket) socket.resume(); break; }
     case 'ping': emit({ type: 'pong' }); break;
     default: emit({ type: 'error', id: message.id, message: 'unknown message type: ' + message.type });
   }
@@ -171,6 +188,8 @@ interface TcpSink {
   opened(): void;
   data(data: Uint8Array): void;
   end(): void;
+  pause(): void;
+  resume(): void;
   close(): void;
   error(error: Error): void;
 }
@@ -331,6 +350,16 @@ export class NativeRelay {
     this.#send({ type: "tcp-end", id });
   }
 
+  pauseTcp(id: string): void {
+    if (this.#closed) return;
+    this.#send({ type: "tcp-pause", id });
+  }
+
+  resumeTcp(id: string): void {
+    if (this.#closed) return;
+    this.#send({ type: "tcp-resume", id });
+  }
+
   closeTcp(id: string): void {
     const existed = this.#sockets.delete(id);
     if (existed && !this.#closed) this.#send({ type: "tcp-close", id });
@@ -472,6 +501,12 @@ export class NativeRelay {
       case "tcp-end":
         socket.end();
         break;
+      case "tcp-pause":
+        socket.pause();
+        break;
+      case "tcp-resume":
+        socket.resume();
+        break;
       case "tcp-close":
         this.#sockets.delete(message.id);
         socket.close();
@@ -599,7 +634,7 @@ export async function openNativePortForward(
   relay: NativeRelay,
   options: ForwardPortOptions,
 ): Promise<PortForward> {
-  const server = net.createServer();
+  const server = net.createServer({ allowHalfOpen: true });
   const sockets = new Set<net.Socket>();
   let closed = false;
   const closeForward = (): void => {
@@ -618,6 +653,7 @@ export async function openNativePortForward(
     socket.pause();
     let remoteClosed = false;
     let remoteEnded = false;
+    let remotePaused = false;
     const closeRemote = () => {
       if (remoteClosed) return;
       remoteClosed = true;
@@ -625,6 +661,11 @@ export async function openNativePortForward(
     };
     socket.on("data", (data) => relay.tcpData(id, data));
     socket.on("end", () => relay.tcpEnd(id));
+    socket.on("drain", () => {
+      if (remoteClosed || !remotePaused) return;
+      remotePaused = false;
+      relay.resumeTcp(id);
+    });
     socket.on("close", () => {
       sockets.delete(socket);
       closeRemote();
@@ -634,11 +675,18 @@ export async function openNativePortForward(
       relay.openTcp(id, options.remotePort, {
         opened: () => socket.resume(),
         data: (data) => {
-          if (!socket.destroyed) socket.write(data);
+          if (!socket.destroyed && !socket.write(data) && !remotePaused) {
+            remotePaused = true;
+            relay.pauseTcp(id);
+          }
         },
         end: () => {
           remoteEnded = true;
           socket.end();
+        },
+        pause: () => socket.pause(),
+        resume: () => {
+          if (!socket.destroyed) socket.resume();
         },
         close: () => {
           remoteClosed = true;

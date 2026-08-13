@@ -118,21 +118,36 @@ export class CoderNativeTransport implements CoderTransport {
   }
 
   async start(workspace: string, options?: LifecycleOptions): Promise<void> {
-    const status = await this.#api.status(workspace, options);
-    if (status?.buildStatus === "running") return;
-    await this.#closeWorkspaceRelays(workspace, status?.id, options?.abortSignal);
+    const current = await this.#api.workspace(workspace, options?.abortSignal);
+    if (current?.latest_build.status === "running") return;
+    await this.#closeWorkspaceRelays(
+      workspace,
+      current?.id,
+      current?.owner_name,
+      options?.abortSignal,
+    );
     await this.#api.start(workspace, options);
   }
 
   async stop(workspace: string, options?: LifecycleOptions): Promise<void> {
-    const status = await this.#api.status(workspace, options);
-    await this.#closeWorkspaceRelays(workspace, status?.id, options?.abortSignal);
+    const current = await this.#api.workspace(workspace, options?.abortSignal);
+    await this.#closeWorkspaceRelays(
+      workspace,
+      current?.id,
+      current?.owner_name,
+      options?.abortSignal,
+    );
     await this.#api.stop(workspace, options);
   }
 
   async destroy(workspace: string, options?: LifecycleOptions): Promise<void> {
-    const status = await this.#api.status(workspace, options);
-    await this.#closeWorkspaceRelays(workspace, status?.id, options?.abortSignal);
+    const current = await this.#api.workspace(workspace, options?.abortSignal);
+    await this.#closeWorkspaceRelays(
+      workspace,
+      current?.id,
+      current?.owner_name,
+      options?.abortSignal,
+    );
     await this.#api.destroy(workspace, options);
   }
 
@@ -182,6 +197,7 @@ export class CoderNativeTransport implements CoderTransport {
           controller.signal,
         );
         setup.workspaceId = resolved.workspace.id;
+        setup.workspaceKey = canonicalWorkspaceKey(workspace, resolved.workspace.owner_name);
         if (resolved.workspace.latest_build.status !== "running") {
           throw new Error(
             `Coder workspace "${workspace}" is ${resolved.workspace.latest_build.status}; start it before connecting`,
@@ -216,9 +232,10 @@ export class CoderNativeTransport implements CoderTransport {
   async #closeWorkspaceRelays(
     workspace: string,
     workspaceId?: string,
+    workspaceOwner?: string,
     signal?: AbortSignal,
   ): Promise<void> {
-    const workspaceKey = canonicalWorkspaceKey(workspace);
+    const workspaceKey = canonicalWorkspaceKey(workspace, workspaceOwner);
     const entries = [...this.#relays.entries()].filter(
       ([, setup]) =>
         setup.workspaceKey === workspaceKey ||
@@ -244,9 +261,9 @@ export class CoderNativeTransport implements CoderTransport {
   }
 }
 
-function canonicalWorkspaceKey(workspace: string): string {
+function canonicalWorkspaceKey(workspace: string, resolvedOwner?: string): string {
   const { owner, name } = parseNativeWorkspaceRef(workspace);
-  return `${owner}/${name}`;
+  return `${resolvedOwner ?? owner}/${name}`;
 }
 
 async function drain(stream: ReadableStream<Uint8Array>): Promise<string> {

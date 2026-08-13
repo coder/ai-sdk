@@ -19,7 +19,7 @@ afterEach(async () => {
 });
 
 async function fakeCoderd(
-  options: { bootstrapPrefix?: string; ptyRedirect?: string } = {},
+  options: { bootstrapPrefix?: string; ownerName?: string; ptyRedirect?: string } = {},
 ): Promise<{
   url: string;
   requests: RelayRequest[];
@@ -46,7 +46,7 @@ async function fakeCoderd(
       response.end(
         JSON.stringify({
           id: "workspace-id",
-          owner_name: "me",
+          owner_name: options.ownerName ?? "me",
           name: "ws",
           latest_build: {
             id: "build-id",
@@ -410,6 +410,37 @@ describe("CoderNativeTransport", () => {
 
     await transport.close();
     await expect(unrelated).rejects.toThrow("Coder native transport closed");
+  });
+
+  it("cancels a pending explicit-owner relay through the me alias", async () => {
+    const coderd = await fakeCoderd({ ownerName: "alice" });
+    let resolveExplicitLookup!: () => void;
+    const explicitLookup = new Promise<void>((resolve) => {
+      resolveExplicitLookup = resolve;
+    });
+    const transport = new CoderNativeTransport({
+      url: coderd.url,
+      token: "test-token",
+      buildPollIntervalMs: 1,
+      fetch: async (input, init) => {
+        if (new URL(String(input)).pathname === "/api/v2/users/alice/workspace/ws") {
+          resolveExplicitLookup();
+          return await new Promise<Response>(() => {});
+        }
+        return await fetch(input, init);
+      },
+    });
+    cleanups.push(() => transport.close());
+
+    const execution = transport.exec({ workspace: "alice/ws", command: "ignored" });
+    const outcome = execution.then(
+      () => "fulfilled",
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+    await explicitLookup;
+
+    await transport.stop("me/ws");
+    await expect(outcome).resolves.toMatch(/workspace "me\/ws" lifecycle/);
   });
 
   it("cancels target relay setup before a lifecycle transition", async () => {

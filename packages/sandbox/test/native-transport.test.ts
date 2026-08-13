@@ -68,6 +68,28 @@ async function fakeCoderd(options: { bootstrapPrefix?: string } = {}): Promise<{
       );
       return;
     }
+    if (request.url === "/api/v2/workspaces/workspace-id/builds" && request.method === "POST") {
+      response.writeHead(201, { "Content-Type": "application/json" });
+      response.end(
+        JSON.stringify({
+          id: "stop-build-id",
+          transition: "stop",
+          job: { status: "pending" },
+        }),
+      );
+      return;
+    }
+    if (request.url === "/api/v2/workspacebuilds/stop-build-id") {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(
+        JSON.stringify({
+          id: "stop-build-id",
+          transition: "stop",
+          job: { status: "succeeded" },
+        }),
+      );
+      return;
+    }
     response.writeHead(404, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ message: "not found" }));
   });
@@ -277,5 +299,96 @@ describe("CoderNativeTransport", () => {
     await transport.close();
 
     await expect(execution).rejects.toThrow("Coder native transport closed");
+  });
+
+  it("preserves an active relay when start is already a no-op", async () => {
+    const coderd = await fakeCoderd();
+    const transport = new CoderNativeTransport({
+      url: coderd.url,
+      token: "test-token",
+      relayConnectTimeoutMs: 2_000,
+    });
+    cleanups.push(() => transport.close());
+
+    const forwarding = transport.forwardPort({ workspace: "ws", remotePort: 4444 });
+    await coderd.ptyConnected;
+    coderd.releaseBootstrap();
+    const forward = await forwarding;
+    try {
+      await transport.start("ws");
+      expect(forward.closed).toBe(false);
+    } finally {
+      await forward.close();
+    }
+  });
+
+  it("does not wait for unrelated relay setup during lifecycle cleanup", async () => {
+    const coderd = await fakeCoderd();
+    let resolveOtherFetchStarted!: () => void;
+    const otherFetchStarted = new Promise<void>((resolve) => {
+      resolveOtherFetchStarted = resolve;
+    });
+    const transport = new CoderNativeTransport({
+      url: coderd.url,
+      token: "test-token",
+      buildPollIntervalMs: 1,
+      fetch: async (input, init) => {
+        if (new URL(String(input)).pathname.endsWith("/workspace/other")) {
+          resolveOtherFetchStarted();
+          return await new Promise<Response>(() => {});
+        }
+        return await fetch(input, init);
+      },
+    });
+    cleanups.push(() => transport.close());
+
+    let unrelatedSettled = false;
+    const unrelated = transport.exec({ workspace: "other", command: "ignored" });
+    void unrelated.then(
+      () => {
+        unrelatedSettled = true;
+      },
+      () => {
+        unrelatedSettled = true;
+      },
+    );
+    await otherFetchStarted;
+
+    await transport.stop("ws");
+    expect(unrelatedSettled).toBe(false);
+
+    await transport.close();
+    await expect(unrelated).rejects.toThrow("Coder native transport closed");
+  });
+
+  it("cancels target relay setup before a lifecycle transition", async () => {
+    const coderd = await fakeCoderd();
+    let resolveSetupFetchStarted!: () => void;
+    const setupFetchStarted = new Promise<void>((resolve) => {
+      resolveSetupFetchStarted = resolve;
+    });
+    let stallNextWorkspaceLookup = true;
+    const transport = new CoderNativeTransport({
+      url: coderd.url,
+      token: "test-token",
+      buildPollIntervalMs: 1,
+      fetch: async (input, init) => {
+        const path = new URL(String(input)).pathname;
+        if (path.endsWith("/workspace/ws") && stallNextWorkspaceLookup) {
+          stallNextWorkspaceLookup = false;
+          resolveSetupFetchStarted();
+          return await new Promise<Response>(() => {});
+        }
+        return await fetch(input, init);
+      },
+    });
+    cleanups.push(() => transport.close());
+
+    const execution = transport.exec({ workspace: "ws", command: "ignored" });
+    void execution.catch(() => {});
+    await setupFetchStarted;
+
+    await transport.stop("ws");
+    await expect(execution).rejects.toThrow(/workspace "ws" lifecycle/);
   });
 });

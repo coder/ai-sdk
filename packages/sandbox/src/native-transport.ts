@@ -11,7 +11,7 @@ import type {
   TransportExecOptions,
   WorkspaceStatus,
 } from "./transport.js";
-import { CoderApiClient } from "./native-api.js";
+import { CoderApiClient, parseNativeWorkspaceRef } from "./native-api.js";
 import { NativeRelay, NativeSpawnedProcess, openNativePortForward } from "./native-relay.js";
 
 const DEFAULT_RELAY_CONNECT_TIMEOUT_MS = 30_000;
@@ -45,6 +45,8 @@ interface RelayEntry {
 interface RelaySetup {
   controller: AbortController;
   promise: Promise<RelayEntry>;
+  workspaceKey: string;
+  workspaceId?: string;
 }
 
 /**
@@ -116,17 +118,21 @@ export class CoderNativeTransport implements CoderTransport {
   }
 
   async start(workspace: string, options?: LifecycleOptions): Promise<void> {
-    await this.#closeWorkspaceRelays(workspace, options?.abortSignal);
+    const status = await this.#api.status(workspace, options);
+    if (status?.buildStatus === "running") return;
+    await this.#closeWorkspaceRelays(workspace, status?.id, options?.abortSignal);
     await this.#api.start(workspace, options);
   }
 
   async stop(workspace: string, options?: LifecycleOptions): Promise<void> {
-    await this.#closeWorkspaceRelays(workspace, options?.abortSignal);
+    const status = await this.#api.status(workspace, options);
+    await this.#closeWorkspaceRelays(workspace, status?.id, options?.abortSignal);
     await this.#api.stop(workspace, options);
   }
 
   async destroy(workspace: string, options?: LifecycleOptions): Promise<void> {
-    await this.#closeWorkspaceRelays(workspace, options?.abortSignal);
+    const status = await this.#api.status(workspace, options);
+    await this.#closeWorkspaceRelays(workspace, status?.id, options?.abortSignal);
     await this.#api.destroy(workspace, options);
   }
 
@@ -163,6 +169,7 @@ export class CoderNativeTransport implements CoderTransport {
       if (this.#relays.get(workspace) === existing) this.#relays.delete(workspace);
     }
     const controller = new AbortController();
+    const workspaceKey = canonicalWorkspaceKey(workspace);
     let setup!: RelaySetup;
     const promise = (async () => {
       try {
@@ -170,6 +177,7 @@ export class CoderNativeTransport implements CoderTransport {
           this.#api.resolveAgent(workspace, controller.signal),
           controller.signal,
         );
+        setup.workspaceId = resolved.workspace.id;
         if (resolved.workspace.latest_build.status !== "running") {
           throw new Error(
             `Coder workspace "${workspace}" is ${resolved.workspace.latest_build.status}; start it before connecting`,
@@ -196,26 +204,41 @@ export class CoderNativeTransport implements CoderTransport {
         throw error;
       }
     })();
-    setup = { controller, promise };
+    setup = { controller, promise, workspaceKey };
     this.#relays.set(workspace, setup);
     return (await waitWithAbort(promise, signal)).relay;
   }
 
-  async #closeWorkspaceRelays(workspace: string, signal?: AbortSignal): Promise<void> {
-    const target = await this.#api.workspace(workspace, signal);
-    if (target === null) return;
-    const entries = [...this.#relays.entries()];
-    const settled = await Promise.allSettled(entries.map(([, setup]) => setup.promise));
-    for (let index = 0; index < settled.length; index++) {
-      const result = settled[index];
-      if (result?.status !== "fulfilled" || result.value.workspaceId !== target.id) continue;
-      result.value.relay.close();
-      const entry = entries[index];
-      if (entry !== undefined && this.#relays.get(entry[0]) === entry[1]) {
-        this.#relays.delete(entry[0]);
-      }
+  async #closeWorkspaceRelays(
+    workspace: string,
+    workspaceId?: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const workspaceKey = canonicalWorkspaceKey(workspace);
+    const entries = [...this.#relays.entries()].filter(
+      ([, setup]) =>
+        setup.workspaceKey === workspaceKey ||
+        (workspaceId !== undefined && setup.workspaceId === workspaceId),
+    );
+    const error = new Error(`Coder native relay closed for workspace "${workspace}" lifecycle`);
+    for (const [key, setup] of entries) {
+      if (this.#relays.get(key) === setup) this.#relays.delete(key);
+      setup.controller.abort(error);
     }
+    const closing = Promise.allSettled(entries.map(([, setup]) => setup.promise)).then(
+      (settled) => {
+        for (const result of settled) {
+          if (result.status === "fulfilled") result.value.relay.close();
+        }
+      },
+    );
+    await waitWithAbort(closing, signal);
   }
+}
+
+function canonicalWorkspaceKey(workspace: string): string {
+  const { owner, name } = parseNativeWorkspaceRef(workspace);
+  return `${owner}/${name}`;
 }
 
 async function drain(stream: ReadableStream<Uint8Array>): Promise<string> {

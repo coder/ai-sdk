@@ -494,14 +494,45 @@ export class CoderApiClient {
   }
 
   async #waitForBuild(buildId: string, signal?: AbortSignal): Promise<ApiWorkspaceBuild> {
+    if (signal?.aborted) throw abortReason(signal);
     const deadline = Date.now() + this.#buildTimeoutMs;
+    const timeoutError = () =>
+      new Error(`timed out after ${this.#buildTimeoutMs}ms waiting for Coder build ${buildId}`);
     for (;;) {
-      const build = await this.request<ApiWorkspaceBuild>(
-        "GET",
-        `/api/v2/workspacebuilds/${buildId}`,
-        undefined,
-        signal,
-      );
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw timeoutError();
+      const controller = new AbortController();
+      let rejectInterrupted!: (error: Error) => void;
+      const interrupted = new Promise<never>((_resolve, reject) => {
+        rejectInterrupted = reject;
+      });
+      const onAbort = () => {
+        const error = abortReason(signal);
+        rejectInterrupted(error);
+        controller.abort(error);
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) onAbort();
+      const timer = setTimeout(() => {
+        const error = timeoutError();
+        rejectInterrupted(error);
+        controller.abort(error);
+      }, remaining);
+      let build: ApiWorkspaceBuild;
+      try {
+        build = await Promise.race([
+          this.request<ApiWorkspaceBuild>(
+            "GET",
+            `/api/v2/workspacebuilds/${buildId}`,
+            undefined,
+            controller.signal,
+          ),
+          interrupted,
+        ]);
+      } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+      }
       const jobStatus = build.job?.status;
       if (jobStatus === "succeeded") return build;
       if (jobStatus === "failed" || jobStatus === "canceled") {
@@ -511,12 +542,9 @@ export class CoderApiClient {
             (build.job?.error_code ? ` (${build.job.error_code})` : ""),
         );
       }
-      if (Date.now() >= deadline) {
-        throw new Error(
-          `timed out after ${this.#buildTimeoutMs}ms waiting for Coder build ${buildId}`,
-        );
-      }
-      await delay(this.#buildPollIntervalMs, undefined, { signal });
+      const wait = Math.min(this.#buildPollIntervalMs, Math.max(0, deadline - Date.now()));
+      if (wait <= 0) throw timeoutError();
+      await delay(wait, undefined, { signal });
     }
   }
 
@@ -691,6 +719,11 @@ function resolveCreateParameterValues(
 
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+}
+
+function abortReason(signal?: AbortSignal): Error {
+  if (signal?.reason instanceof Error) return signal.reason;
+  return new DOMException("The operation was aborted", "AbortError");
 }
 
 async function readParameterFile(path: string): Promise<Record<string, string>> {

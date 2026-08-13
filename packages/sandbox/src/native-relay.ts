@@ -11,6 +11,9 @@ import type {
 } from "./transport.js";
 
 const RELAY_PROTOCOL_VERSION = 1;
+const CARRIER_HIGH_WATER_MARK = 1024 * 1024;
+const CARRIER_LOW_WATER_MARK = 256 * 1024;
+const CARRIER_DRAIN_POLL_INTERVAL_MS = 10;
 export const NATIVE_RELAY_BOOTSTRAP_MARKER = "__CODER_AI_SDK_RELAY_BOOTSTRAP_READY_V1__";
 
 /**
@@ -215,13 +218,14 @@ interface ProcessSink {
 }
 
 type ProcessOutput = "stdout" | "stderr";
+type TcpPauseReason = "carrier" | "remote";
 
 interface TcpSink {
   opened(): void;
   data(data: Uint8Array): void;
   end(): void;
-  pause(): void;
-  resume(): void;
+  pause(reason: TcpPauseReason): void;
+  resume(reason: TcpPauseReason): void;
   close(): void;
   error(error: Error): void;
 }
@@ -250,6 +254,8 @@ export class NativeRelay {
   #buffer = "";
   #bootstrapOutput = "";
   #bootstrapReadySeen = false;
+  #carrierPaused = false;
+  #carrierDrainTimer?: ReturnType<typeof setInterval>;
   #closed = false;
   #readySeen = false;
   #closeError?: Error;
@@ -380,6 +386,7 @@ export class NativeRelay {
     this.#assertOpen();
     this.#sockets.set(id, sink);
     try {
+      if (this.#carrierPaused) sink.pause("carrier");
       this.#send({ type: "tcp-open", id, port });
     } catch (error) {
       this.#sockets.delete(id);
@@ -437,6 +444,7 @@ export class NativeRelay {
       throw this.#closeError ?? new Error("Coder native relay WebSocket is not open");
     }
     this.#websocket.send(Buffer.from(JSON.stringify({ data }), "utf8"), { binary: true });
+    this.#updateCarrierBackpressure();
   }
 
   #assertOpen(): void {
@@ -549,10 +557,10 @@ export class NativeRelay {
         socket.end();
         break;
       case "tcp-pause":
-        socket.pause();
+        socket.pause("remote");
         break;
       case "tcp-resume":
-        socket.resume();
+        socket.resume("remote");
         break;
       case "tcp-close":
         this.#sockets.delete(message.id);
@@ -567,6 +575,7 @@ export class NativeRelay {
   #fail(error: Error): void {
     if (this.#closed) return;
     this.#closed = true;
+    this.#stopCarrierDrainTimer();
     this.#closeError = error;
     this.#bootstrapReady.reject(error);
     this.#ready.reject(error);
@@ -582,6 +591,34 @@ export class NativeRelay {
     ) {
       this.#websocket.close();
     }
+  }
+
+  #updateCarrierBackpressure(): void {
+    if (this.#closed) return;
+    if (!this.#carrierPaused) {
+      if (this.#websocket.bufferedAmount < CARRIER_HIGH_WATER_MARK) return;
+      this.#carrierPaused = true;
+      for (const socket of this.#sockets.values()) socket.pause("carrier");
+      this.#carrierDrainTimer = setInterval(
+        () => this.#updateCarrierBackpressure(),
+        CARRIER_DRAIN_POLL_INTERVAL_MS,
+      );
+      this.#carrierDrainTimer.unref?.();
+      return;
+    }
+    if (this.#websocket.bufferedAmount > CARRIER_LOW_WATER_MARK) return;
+    this.#carrierPaused = false;
+    this.#stopCarrierDrainTimer();
+    for (const socket of this.#sockets.values()) {
+      socket.resume("carrier");
+      if (this.#carrierPaused) break;
+    }
+  }
+
+  #stopCarrierDrainTimer(): void {
+    if (this.#carrierDrainTimer === undefined) return;
+    clearInterval(this.#carrierDrainTimer);
+    this.#carrierDrainTimer = undefined;
   }
 }
 
@@ -752,9 +789,14 @@ export async function openNativePortForward(
     const id = randomUUID();
     sockets.add(socket);
     socket.pause();
+    let opened = false;
     let remoteClosed = false;
     let remoteEnded = false;
     let remotePaused = false;
+    const uploadPauses = new Set<TcpPauseReason>();
+    const resumeUpload = () => {
+      if (opened && uploadPauses.size === 0 && !remoteClosed && !socket.destroyed) socket.resume();
+    };
     const closeRemote = () => {
       if (remoteClosed) return;
       remoteClosed = true;
@@ -778,7 +820,10 @@ export async function openNativePortForward(
     socket.on("error", closeRemote);
     try {
       relay.openTcp(id, options.remotePort, {
-        opened: () => socket.resume(),
+        opened: () => {
+          opened = true;
+          resumeUpload();
+        },
         data: (data) => {
           if (!socket.destroyed && !socket.write(data) && !remotePaused) {
             remotePaused = true;
@@ -789,9 +834,13 @@ export async function openNativePortForward(
           remoteEnded = true;
           socket.end();
         },
-        pause: () => socket.pause(),
-        resume: () => {
-          if (!socket.destroyed) socket.resume();
+        pause: (reason) => {
+          uploadPauses.add(reason);
+          socket.pause();
+        },
+        resume: (reason) => {
+          uploadPauses.delete(reason);
+          resumeUpload();
         },
         close: () => {
           remoteClosed = true;

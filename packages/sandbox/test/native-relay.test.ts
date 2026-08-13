@@ -1,5 +1,5 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
@@ -7,6 +7,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   NativeRelay,
+  NATIVE_RELAY_BOOTSTRAP_MARKER,
   NATIVE_RELAY_SOURCE,
   NativeSpawnedProcess,
   openNativePortForward,
@@ -85,6 +86,126 @@ afterEach(async () => {
 });
 
 describe("native workspace relay", () => {
+  it("backpressures all TCP uploads while the WebSocket carrier is saturated", async () => {
+    class BufferedWebSocket extends EventEmitter {
+      readyState = 1;
+      bufferedAmount = 0;
+
+      send(data: Uint8Array): void {
+        this.bufferedAmount += data.byteLength;
+      }
+
+      close(): void {
+        this.readyState = 3;
+      }
+    }
+
+    const websocket = new BufferedWebSocket();
+    const RelayConstructor = NativeRelay as unknown as new (
+      websocket: BufferedWebSocket,
+    ) => NativeRelay;
+    const relay = new RelayConstructor(websocket);
+    websocket.emit(
+      "message",
+      Buffer.from(
+        `${NATIVE_RELAY_BOOTSTRAP_MARKER}\n${JSON.stringify({ v: 1, type: "ready", pid: 1 })}\n`,
+      ),
+    );
+    const flow: string[] = [];
+    const sink = (id: string) => ({
+      opened: () => {},
+      data: (_data: Uint8Array) => {},
+      end: () => {},
+      pause: (reason: string) => flow.push(`${id}:pause:${reason}`),
+      resume: (reason: string) => flow.push(`${id}:resume:${reason}`),
+      close: () => {},
+      error: (_error: Error) => {},
+    });
+    relay.openTcp("one", 1, sink("one"));
+    relay.openTcp("two", 2, sink("two"));
+
+    const chunk = Buffer.alloc(256 * 1024, 0x41);
+    for (let index = 0; index < 16 && flow.length === 0; index += 1) {
+      relay.tcpData("one", chunk);
+    }
+    expect(flow).toEqual(["one:pause:carrier", "two:pause:carrier"]);
+
+    relay.openTcp("three", 3, sink("three"));
+    expect(flow).toContain("three:pause:carrier");
+    websocket.bufferedAmount = 0;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(flow).toEqual([
+      "one:pause:carrier",
+      "two:pause:carrier",
+      "three:pause:carrier",
+      "one:resume:carrier",
+      "two:resume:carrier",
+      "three:resume:carrier",
+    ]);
+    relay.close();
+  });
+
+  it("keeps TCP uploads paused until every pause reason clears", async () => {
+    type Sink = {
+      opened(): void;
+      data(data: Uint8Array): void;
+      end(): void;
+      pause(reason: "carrier" | "remote"): void;
+      resume(reason: "carrier" | "remote"): void;
+      close(): void;
+      error(error: Error): void;
+    };
+    let resolveSink!: (sink: Sink) => void;
+    const sinkReady = new Promise<Sink>((resolve) => {
+      resolveSink = resolve;
+    });
+    let resolveUpload!: () => void;
+    const upload = new Promise<void>((resolve) => {
+      resolveUpload = resolve;
+    });
+    const uploaded: Buffer[] = [];
+    const relay = {
+      closed: false,
+      onClose: () => () => {},
+      openTcp: (_id: string, _port: number, sink: Sink) => {
+        resolveSink(sink);
+        sink.opened();
+      },
+      tcpData: (_id: string, data: Uint8Array) => {
+        uploaded.push(Buffer.from(data));
+        resolveUpload();
+      },
+      tcpEnd: () => {},
+      pauseTcp: () => {},
+      resumeTcp: () => {},
+      closeTcp: () => {},
+    } as unknown as NativeRelay;
+    const forward = await openNativePortForward(relay, { workspace: "ws", remotePort: 4444 });
+    try {
+      const socket = net.connect(forward.localPort, forward.localHost);
+      const socketClosed = once(socket, "close");
+      await once(socket, "connect");
+      const sink = await sinkReady;
+      sink.pause("remote");
+      sink.pause("carrier");
+      socket.write("queued-upload");
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(uploaded).toEqual([]);
+
+      sink.resume("carrier");
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(uploaded).toEqual([]);
+
+      sink.resume("remote");
+      await upload;
+      expect(Buffer.concat(uploaded).toString()).toBe("queued-upload");
+      socket.destroy();
+      await socketClosed;
+    } finally {
+      await forward.close();
+    }
+  });
+
   it("streams separated output, stdin, pid, and exit status", async () => {
     const relay = new RelayHarness();
     harnesses.push(relay);

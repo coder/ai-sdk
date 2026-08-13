@@ -462,4 +462,36 @@ describe("CoderApiClient", () => {
       body: { transition: "start", template_version_id: "version-current" },
     });
   });
+
+  it("enforces the build deadline while a status request is stalled", async () => {
+    let pollSignal: AbortSignal | null | undefined;
+    const client = new CoderApiClient({
+      url: "https://coder.example.test",
+      token: "secret",
+      buildPollIntervalMs: 1,
+      buildTimeoutMs: 50,
+      fetch: async (input, init) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/api/v2/users/me/workspace/ws") return json(workspace());
+        if (url.pathname === "/api/v2/workspaces/workspace-id/builds") {
+          return json(
+            { id: "stalled-build", transition: "stop", job: { status: "pending" } },
+            { status: 201 },
+          );
+        }
+        if (url.pathname === "/api/v2/workspacebuilds/stalled-build") {
+          pollSignal = init?.signal;
+          return await new Promise<Response>(() => {});
+        }
+        return json({}, { status: 500 });
+      },
+    });
+
+    const startedAt = Date.now();
+    await expect(client.stop("ws")).rejects.toThrow(
+      "timed out after 50ms waiting for Coder build stalled-build",
+    );
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    expect(pollSignal?.aborted).toBe(true);
+  });
 });

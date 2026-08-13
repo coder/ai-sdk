@@ -91,6 +91,44 @@ describe("CoderApiClient", () => {
     expect(header).toBe("secret");
   });
 
+  it("cancels stalled response bodies when custom fetch ignores its signal", async () => {
+    let resolveReadStarted!: () => void;
+    const readStarted = new Promise<void>((resolve) => {
+      resolveReadStarted = resolve;
+    });
+    let resolveCanceled!: () => void;
+    const canceled = new Promise<void>((resolve) => {
+      resolveCanceled = resolve;
+    });
+    let cancelReason: unknown;
+    const client = new CoderApiClient({
+      url: "https://coder.example.test",
+      token: "secret",
+      fetch: async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull() {
+              resolveReadStarted();
+            },
+            cancel(reason) {
+              cancelReason = reason;
+              resolveCanceled();
+            },
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        ),
+    });
+    const controller = new AbortController();
+    const status = client.status("ws", { abortSignal: controller.signal });
+    await readStarted;
+
+    const reason = new Error("cancel response body");
+    controller.abort(reason);
+    await expect(status).rejects.toBe(reason);
+    await canceled;
+    expect(cancelReason).toBe(reason);
+  });
+
   it("returns null only for a 404 workspace lookup", async () => {
     const client = new CoderApiClient({
       url: "https://coder.example.test",

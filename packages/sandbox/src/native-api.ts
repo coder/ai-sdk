@@ -515,7 +515,7 @@ export class CoderApiClient {
       }
       requestUrl = redirectedUrl;
     }
-    const text = await response.text();
+    const text = await readResponseText(response, signal);
     let parsed: unknown;
     try {
       parsed = text === "" ? undefined : JSON.parse(text);
@@ -870,6 +870,42 @@ async function waitWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Prom
     return await Promise.race([promise, aborted]);
   } finally {
     signal.removeEventListener("abort", onAbort);
+  }
+}
+
+async function readResponseText(response: Response, signal?: AbortSignal): Promise<string> {
+  if (response.body === null) return "";
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let releaseAfterCancel = false;
+  try {
+    for (;;) {
+      const { done, value } = await waitWithAbort(reader.read(), signal);
+      if (done) return text + decoder.decode();
+      text += decoder.decode(value, { stream: true });
+    }
+  } catch (error) {
+    if (!signal?.aborted) throw error;
+    const reason = abortReason(signal);
+    releaseAfterCancel = true;
+    try {
+      void reader
+        .cancel(reason)
+        .catch(() => {})
+        .then(() => {
+          try {
+            reader.releaseLock();
+          } catch {
+            // A non-cooperative stream may still have a pending read.
+          }
+        });
+    } catch {
+      // The abort reason remains authoritative even if stream cancellation fails.
+    }
+    throw reason;
+  } finally {
+    if (!releaseAfterCancel) reader.releaseLock();
   }
 }
 

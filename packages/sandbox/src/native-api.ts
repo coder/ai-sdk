@@ -90,6 +90,7 @@ interface ApiTemplateVersionParameter {
   name: string;
   display_name?: string;
   default_value: string;
+  default_valid?: boolean;
   required: boolean;
   ephemeral: boolean;
 }
@@ -725,6 +726,9 @@ export class CoderApiClient {
       name: parameter.name,
       ...(parameter.display_name ? { display_name: parameter.display_name } : {}),
       default_value: parameter.default_value?.value ?? "",
+      ...(parameter.default_value?.valid === undefined
+        ? {}
+        : { default_valid: parameter.default_value.valid }),
       required: parameter.required ?? false,
       ephemeral: parameter.ephemeral ?? false,
     }));
@@ -787,7 +791,7 @@ function resolveCreateParameterValues(
     const name = parameter.display_name || parameter.name;
     if (parameter.required) {
       required.push(name);
-    } else if (useDefaults) {
+    } else if (useDefaults && parameter.default_valid !== false) {
       resolved[parameter.name] = parameter.default_value;
     } else {
       awaitingDefaults.push(name);
@@ -804,7 +808,8 @@ function resolveCreateParameterValues(
     const names = awaitingDefaults.map((name) => `"${name}"`).join(", ");
     throw new Error(
       `Coder workspace parameters require explicit values: ${names}; ` +
-        "supply values with parameters, parameterFile, or a preset, or set useParameterDefaults: true",
+        "supply values with parameters, parameterFile, or a preset" +
+        (useDefaults ? "" : ", or set useParameterDefaults: true"),
     );
   }
   return resolved;

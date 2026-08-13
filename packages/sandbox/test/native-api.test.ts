@@ -412,6 +412,74 @@ describe("CoderApiClient", () => {
     });
   });
 
+  it("requires an explicit value for an invalid dynamic parameter default", async () => {
+    let createBody: Record<string, unknown> | undefined;
+    let createRequests = 0;
+    const client = new CoderApiClient({
+      url: "https://coder.example.test",
+      token: "secret",
+      buildPollIntervalMs: 1,
+      fetch: async (input, init) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/api/v2/templates") {
+          return json([
+            {
+              id: "template-id",
+              name: "docker",
+              organization_id: "org-id",
+              organization_name: "default",
+              active_version_id: "version-id",
+              use_classic_parameter_flow: false,
+            },
+          ]);
+        }
+        if (url.pathname === "/api/v2/templateversions/version-id/dynamic-parameters/evaluate") {
+          return json({
+            parameters: [
+              {
+                name: "region",
+                display_name: "Region",
+                default_value: { value: "retired-region", valid: false },
+                required: false,
+                ephemeral: false,
+              },
+            ],
+          });
+        }
+        if (url.pathname === "/api/v2/users/me/workspaces") {
+          createRequests += 1;
+          createBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          return json(workspace({ latest_build: { id: "new-build" } }), { status: 201 });
+        }
+        if (url.pathname === "/api/v2/workspacebuilds/new-build") {
+          return json({ id: "new-build", transition: "start", job: { status: "succeeded" } });
+        }
+        return json({ message: "unexpected route", detail: url.pathname }, { status: 500 });
+      },
+    });
+
+    await expect(
+      client.create({
+        workspace: "ws",
+        template: "docker",
+        preset: "none",
+        useParameterDefaults: true,
+      }),
+    ).rejects.toThrow(
+      'Coder workspace parameters require explicit values: "Region"; supply values with parameters, parameterFile, or a preset',
+    );
+    await client.create({
+      workspace: "ws",
+      template: "docker",
+      preset: "none",
+      parameters: { region: "active-region" },
+      useParameterDefaults: true,
+    });
+
+    expect(createRequests).toBe(1);
+    expect(createBody?.rich_parameter_values).toEqual([{ name: "region", value: "active-region" }]);
+  });
+
   it("selects the default preset only when preset is omitted", async () => {
     const createBodies: Record<string, unknown>[] = [];
     let presetRequests = 0;

@@ -169,7 +169,7 @@ export class CoderNativeTransport implements CoderTransport {
 
   /** Close every cached workspace relay. Existing local port-forwards close too. */
   async close(): Promise<void> {
-    const setups = [...this.#relays.values()];
+    const setups = [...new Set(this.#relays.values())];
     this.#relays.clear();
     const error = new Error("Coder native transport closed");
     for (const setup of setups) setup.controller.abort(error);
@@ -185,11 +185,12 @@ export class CoderNativeTransport implements CoderTransport {
 
   async #relayFor(workspace: string, signal?: AbortSignal): Promise<NativeRelay> {
     if (signal?.aborted) throw abortError(signal);
-    const existing = this.#relays.get(workspace);
+    const referenceKey = relayReferenceKey(workspace);
+    const existing = this.#relays.get(referenceKey);
     if (existing !== undefined) {
       const entry = await waitWithAbort(existing.promise, signal);
       if (!entry.relay.closed) return entry.relay;
-      if (this.#relays.get(workspace) === existing) this.#relays.delete(workspace);
+      this.#removeRelaySetup(existing);
     }
     const controller = new AbortController();
     const workspaceKey = canonicalWorkspaceKey(workspace);
@@ -202,6 +203,16 @@ export class CoderNativeTransport implements CoderTransport {
         );
         setup.workspaceId = resolved.workspace.id;
         setup.workspaceKey = canonicalWorkspaceKey(workspace, resolved.workspace.owner_name);
+        const agentKey = relayAgentKey(resolved.workspace.id, resolved.agent.id);
+        const shared = this.#relays.get(agentKey);
+        if (shared !== undefined && shared !== setup) {
+          this.#relays.set(referenceKey, shared);
+          const entry = await waitWithAbort(shared.promise, controller.signal);
+          if (!entry.relay.closed) return entry;
+          this.#removeRelaySetup(shared);
+          this.#relays.set(referenceKey, setup);
+        }
+        this.#relays.set(agentKey, setup);
         if (resolved.workspace.latest_build.status !== "running") {
           throw new Error(
             `Coder workspace "${workspace}" is ${resolved.workspace.latest_build.status}; start it before connecting`,
@@ -220,16 +231,16 @@ export class CoderNativeTransport implements CoderTransport {
           signal: controller.signal,
         });
         relay.onClose(() => {
-          if (this.#relays.get(workspace) === setup) this.#relays.delete(workspace);
+          this.#removeRelaySetup(setup);
         });
         return { workspaceId: resolved.workspace.id, relay };
       } catch (error) {
-        if (this.#relays.get(workspace) === setup) this.#relays.delete(workspace);
+        this.#removeRelaySetup(setup);
         throw error;
       }
     })();
     setup = { controller, promise, workspaceKey };
-    this.#relays.set(workspace, setup);
+    this.#relays.set(referenceKey, setup);
     return (await waitWithAbort(promise, signal)).relay;
   }
 
@@ -245,7 +256,8 @@ export class CoderNativeTransport implements CoderTransport {
     const workspaceKey = canonicalWorkspaceKey(workspace, workspaceOwner);
     const workspaceKeys = new Set([requestedWorkspaceKey, workspaceKey]);
     const meWorkspaceKey = `me/${parsedWorkspace.name}`;
-    const hasUnresolvedMeSetup = [...this.#relays.values()].some(
+    const setups = [...new Set(this.#relays.values())];
+    const hasUnresolvedMeSetup = setups.some(
       (setup) => setup.workspaceId === undefined && setup.workspaceKey === meWorkspaceKey,
     );
     if (
@@ -256,17 +268,17 @@ export class CoderNativeTransport implements CoderTransport {
     ) {
       workspaceKeys.add(meWorkspaceKey);
     }
-    const entries = [...this.#relays.entries()].filter(
-      ([, setup]) =>
+    const entries = setups.filter(
+      (setup) =>
         workspaceKeys.has(setup.workspaceKey) ||
         (workspaceId !== undefined && setup.workspaceId === workspaceId),
     );
     const error = new Error(`Coder native relay closed for workspace "${workspace}" lifecycle`);
-    for (const [key, setup] of entries) {
-      if (this.#relays.get(key) === setup) this.#relays.delete(key);
+    for (const setup of entries) {
+      this.#removeRelaySetup(setup);
       setup.controller.abort(error);
     }
-    const closing = Promise.allSettled(entries.map(([, setup]) => setup.promise)).then(
+    const closing = Promise.allSettled(entries.map((setup) => setup.promise)).then(
       async (settled) =>
         await Promise.all(
           settled
@@ -279,6 +291,20 @@ export class CoderNativeTransport implements CoderTransport {
     );
     await waitWithAbort(closing, signal);
   }
+
+  #removeRelaySetup(setup: RelaySetup): void {
+    for (const [key, candidate] of this.#relays) {
+      if (candidate === setup) this.#relays.delete(key);
+    }
+  }
+}
+
+function relayReferenceKey(workspace: string): string {
+  return `reference:${workspace}`;
+}
+
+function relayAgentKey(workspaceId: string, agentId: string): string {
+  return `agent:${workspaceId}:${agentId}`;
 }
 
 function canonicalWorkspaceKey(workspace: string, resolvedOwner?: string): string {

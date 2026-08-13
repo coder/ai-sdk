@@ -32,12 +32,14 @@ async function fakeCoderd(
   url: string;
   requests: RelayRequest[];
   bootstrapSource: () => string;
+  ptyConnections: () => number;
   ptyConnected: Promise<void>;
   releaseBootstrap: () => void;
   sendBootstrapChunk: (data: string) => void;
 }> {
   let bootstrap = "";
   let releaseRequested = false;
+  let ptyConnections = 0;
   let ptyWebsocket: WebSocket | undefined;
   let resolvePtyConnected!: () => void;
   const ptyConnected = new Promise<void>((resolve) => {
@@ -133,6 +135,7 @@ async function fakeCoderd(
     expect(url.searchParams.get("backend_type")).toBe("buffered");
     expect(url.searchParams.get("command")?.length).toBeLessThan(500);
     websocketServer.handleUpgrade(request, socket, head, (websocket) => {
+      ptyConnections += 1;
       ptyWebsocket = websocket;
       let bootstrapped = false;
       const processInputs = new Map<string, Buffer[]>();
@@ -199,6 +202,7 @@ async function fakeCoderd(
     url: `http://127.0.0.1:${address.port}`,
     requests,
     bootstrapSource: () => bootstrap,
+    ptyConnections: () => ptyConnections,
     ptyConnected,
     releaseBootstrap: () => {
       releaseRequested = true;
@@ -366,6 +370,28 @@ describe("CoderNativeTransport", () => {
       stderr: "separate-error",
     });
     expect(coderd.requests.filter((request) => request.type === "start")).toHaveLength(1);
+  });
+
+  it("coalesces equivalent references by resolved workspace agent", async () => {
+    const coderd = await fakeCoderd();
+    const transport = new CoderNativeTransport({
+      url: coderd.url,
+      token: "test-token",
+      loginShell: false,
+      relayConnectTimeoutMs: 2_000,
+    });
+    cleanups.push(() => transport.close());
+    coderd.releaseBootstrap();
+
+    const results = await Promise.all([
+      transport.exec({ workspace: "ws", command: "first", stdin: "one" }),
+      transport.exec({ workspace: "me/ws", command: "second", stdin: "two" }),
+      transport.exec({ workspace: "ws.main", command: "third", stdin: "three" }),
+    ]);
+
+    expect(results.map((result) => result.stdout)).toEqual(["one", "two", "three"]);
+    expect(coderd.ptyConnections()).toBe(1);
+    expect(coderd.requests.filter((request) => request.type === "start")).toHaveLength(3);
   });
 
   it("recognizes a bootstrap marker appended to profile output without a newline", async () => {

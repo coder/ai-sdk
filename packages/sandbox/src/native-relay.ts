@@ -19,6 +19,8 @@ const PROCESS_STDIN_BATCH_BYTES = 256 * 1024;
 const RELAY_CLOSE_GRACE_MS = 1_000;
 export const NATIVE_RELAY_BOOTSTRAP_MARKER = "__CODER_AI_SDK_RELAY_BOOTSTRAP_READY_V1__";
 const BOOTSTRAP_DIAGNOSTIC_LIMIT = 500;
+const BOOTSTRAP_FRAME_LIMIT = 64 * 1024;
+const PROTOCOL_FRAME_LIMIT = 1024 * 1024;
 
 /**
  * Dependency-free relay executed inside the workspace. It deliberately emits
@@ -644,6 +646,24 @@ export class NativeRelay {
     }
     for (;;) {
       const newline = this.#buffer.indexOf("\n");
+      const frameLength = newline === -1 ? this.#buffer.length : newline;
+      const frameLimit = this.#readySeen ? PROTOCOL_FRAME_LIMIT : BOOTSTRAP_FRAME_LIMIT;
+      if (frameLength > frameLimit) {
+        if (!this.#readySeen) {
+          this.#bootstrapOutput = `${this.#bootstrapOutput}${this.#buffer.slice(
+            -BOOTSTRAP_DIAGNOSTIC_LIMIT,
+          )}`.slice(-BOOTSTRAP_DIAGNOSTIC_LIMIT);
+        }
+        this.#buffer = "";
+        this.#fail(
+          new Error(
+            this.#readySeen
+              ? `Coder native relay protocol frame exceeded ${PROTOCOL_FRAME_LIMIT} characters`
+              : `Coder native relay bootstrap frame exceeded ${BOOTSTRAP_FRAME_LIMIT} characters`,
+          ),
+        );
+        return;
+      }
       if (newline === -1) return;
       const line = this.#buffer.slice(0, newline).replace(/\r$/, "");
       this.#buffer = this.#buffer.slice(newline + 1);

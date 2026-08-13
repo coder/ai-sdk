@@ -140,7 +140,15 @@ async function fakeCoderd(
       let bootstrapped = false;
       const processInputs = new Map<string, Buffer[]>();
       const finishProcess = (id: string, stdin: string) => {
-        send(websocket, { type: "stdout", id, data: stdin });
+        const stdout = Buffer.from(stdin, "base64");
+        if (stdout.length === 0) send(websocket, { type: "stdout", id, data: "" });
+        for (let offset = 0; offset < stdout.length; offset += 64 * 1024) {
+          send(websocket, {
+            type: "stdout",
+            id,
+            data: stdout.subarray(offset, offset + 64 * 1024).toString("base64"),
+          });
+        }
         send(websocket, {
           type: "stderr",
           id,

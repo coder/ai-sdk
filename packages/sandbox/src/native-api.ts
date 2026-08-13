@@ -492,19 +492,19 @@ export class CoderApiClient {
       if (!isRedirectStatus(response.status) || location === null) break;
       redirectCount += 1;
       if (redirectCount > MAX_API_REDIRECTS) {
-        await response.body?.cancel();
+        cancelResponseBody(response);
         throw new Error(
           `Coder API ${method} ${path} exceeded ${MAX_API_REDIRECTS} same-origin redirects`,
         );
       }
       const redirectedUrl = new URL(location, requestUrl);
       if (redirectedUrl.origin !== initialUrl.origin) {
-        await response.body?.cancel();
+        cancelResponseBody(response);
         throw new Error(
           `Coder API ${method} ${path} refused cross-origin redirect from ${initialUrl.origin} to ${redirectedUrl.origin}`,
         );
       }
-      await response.body?.cancel();
+      cancelResponseBody(response);
       if (
         (response.status === 303 && requestMethod !== "GET" && requestMethod !== "HEAD") ||
         ((response.status === 301 || response.status === 302) && requestMethod === "POST")
@@ -850,6 +850,14 @@ function deleteRequestBodyHeaders(headers: Record<string, string>): void {
   ]);
   for (const name of Object.keys(headers)) {
     if (bodyHeaders.has(name.toLowerCase())) delete headers[name];
+  }
+}
+
+function cancelResponseBody(response: Response): void {
+  try {
+    void response.body?.cancel().catch(() => {});
+  } catch {
+    // A custom response body cannot be allowed to block redirect handling.
   }
 }
 

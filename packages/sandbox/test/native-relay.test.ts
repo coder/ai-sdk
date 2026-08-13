@@ -92,6 +92,51 @@ afterEach(async () => {
 });
 
 describe("native workspace relay", () => {
+  it("bounds unterminated bootstrap and protocol frames", async () => {
+    class RecordingWebSocket extends EventEmitter {
+      readyState = 1;
+      bufferedAmount = 0;
+
+      send(): void {}
+
+      close(): void {
+        this.readyState = 3;
+      }
+    }
+
+    const RelayConstructor = NativeRelay as unknown as new (
+      websocket: RecordingWebSocket,
+    ) => NativeRelay;
+    const bootstrapWebSocket = new RecordingWebSocket();
+    const bootstrapRelay = new RelayConstructor(bootstrapWebSocket);
+    const bootstrapClosed = new Promise<Error | undefined>((resolve) => {
+      bootstrapRelay.onClose(resolve);
+    });
+    bootstrapWebSocket.emit(
+      "message",
+      Buffer.from(`${NATIVE_RELAY_BOOTSTRAP_MARKER}\n${"x".repeat(128 * 1024)}`),
+    );
+    await expect(bootstrapClosed).resolves.toMatchObject({
+      message: expect.stringMatching(/bootstrap frame exceeded 65536 characters/),
+    });
+
+    const protocolWebSocket = new RecordingWebSocket();
+    const protocolRelay = new RelayConstructor(protocolWebSocket);
+    protocolWebSocket.emit(
+      "message",
+      Buffer.from(
+        `${NATIVE_RELAY_BOOTSTRAP_MARKER}\n${JSON.stringify({ v: 1, type: "ready", pid: 1 })}\n`,
+      ),
+    );
+    const protocolClosed = new Promise<Error | undefined>((resolve) => {
+      protocolRelay.onClose(resolve);
+    });
+    protocolWebSocket.emit("message", Buffer.from("x".repeat(2 * 1024 * 1024)));
+    await expect(protocolClosed).resolves.toMatchObject({
+      message: expect.stringMatching(/protocol frame exceeded 1048576 characters/),
+    });
+  });
+
   it("marks process kills to discard paused remote output", async () => {
     class RecordingWebSocket extends EventEmitter {
       readyState = 1;

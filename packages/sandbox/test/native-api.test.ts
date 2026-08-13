@@ -189,6 +189,37 @@ describe("CoderApiClient", () => {
     ]);
   });
 
+  it("does not await unbounded redirect body cleanup", async () => {
+    let resolveCancelCalled!: () => void;
+    const cancelCalled = new Promise<void>((resolve) => {
+      resolveCancelCalled = resolve;
+    });
+    let requests = 0;
+    const client = new CoderApiClient({
+      url: "https://coder.example.test",
+      token: "secret",
+      fetch: async () => {
+        requests += 1;
+        if (requests === 1) {
+          return new Response(
+            new ReadableStream({
+              cancel() {
+                resolveCancelCalled();
+                return new Promise<void>(() => {});
+              },
+            }),
+            { status: 307, headers: { Location: "/redirected-workspace" } },
+          );
+        }
+        return json(workspace());
+      },
+    });
+
+    await expect(client.status("ws")).resolves.toMatchObject({ id: "workspace-id" });
+    await cancelCalled;
+    expect(requests).toBe(2);
+  });
+
   it("treats a null preset response as an empty list", async () => {
     const client = new CoderApiClient({
       url: "https://coder.example.test",

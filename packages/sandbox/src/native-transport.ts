@@ -119,14 +119,15 @@ export class CoderNativeTransport implements CoderTransport {
 
   async start(workspace: string, options?: LifecycleOptions): Promise<void> {
     const current = await this.#api.workspace(workspace, options?.abortSignal);
-    if (current?.latest_build.status === "running") return;
-    await this.#closeWorkspaceRelays(
-      workspace,
-      current?.id,
-      current?.owner_name,
-      current?.owner_id,
-      options?.abortSignal,
-    );
+    if (current?.latest_build.status !== "running") {
+      await this.#closeWorkspaceRelays(
+        workspace,
+        current?.id,
+        current?.owner_name,
+        current?.owner_id,
+        options?.abortSignal,
+      );
+    }
     await this.#api.start(workspace, options);
   }
 

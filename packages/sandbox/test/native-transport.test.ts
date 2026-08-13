@@ -479,6 +479,98 @@ describe("CoderNativeTransport", () => {
     }
   });
 
+  it("routes a running start behind a concurrent stop", async () => {
+    let status = "running";
+    let transition = "start";
+    let workspaceRequests = 0;
+    const buildTransitions: string[] = [];
+    let resolveStopInnerReached!: () => void;
+    const stopInnerReached = new Promise<void>((resolve) => {
+      resolveStopInnerReached = resolve;
+    });
+    let releaseStopInner!: () => void;
+    const stopInnerRelease = new Promise<void>((resolve) => {
+      releaseStopInner = resolve;
+    });
+    let resolveStartLookupReached!: () => void;
+    const startLookupReached = new Promise<void>((resolve) => {
+      resolveStartLookupReached = resolve;
+    });
+    const transport = new CoderNativeTransport({
+      url: "https://coder.example.test",
+      token: "test-token",
+      buildPollIntervalMs: 1,
+      fetch: async (input, init) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/api/v2/users/me/workspace/ws") {
+          workspaceRequests += 1;
+          if (workspaceRequests === 3) {
+            resolveStopInnerReached();
+            await stopInnerRelease;
+          }
+          if (workspaceRequests === 4) resolveStartLookupReached();
+          return new Response(
+            JSON.stringify({
+              id: "workspace-id",
+              owner_id: "user-id",
+              owner_name: "me",
+              name: "ws",
+              latest_build: {
+                id: `${transition}-build`,
+                template_version_id: "version-current",
+                transition,
+                status,
+                job: { status: "succeeded" },
+                resources: [],
+              },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.pathname === "/api/v2/workspaces/workspace-id/builds") {
+          const requested = (JSON.parse(String(init?.body)) as { transition: string }).transition;
+          buildTransitions.push(requested);
+          return new Response(
+            JSON.stringify({
+              id: `${requested}-build`,
+              transition: requested,
+              job: { status: "pending" },
+            }),
+            { status: 201, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        const build = url.pathname.match(/^\/api\/v2\/workspacebuilds\/(start|stop)-build$/);
+        if (build?.[1]) {
+          transition = build[1];
+          status = transition === "start" ? "running" : "stopped";
+          return new Response(
+            JSON.stringify({
+              id: `${transition}-build`,
+              transition,
+              job: { status: "succeeded" },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response(JSON.stringify({ message: "unexpected route", detail: url.pathname }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    });
+    cleanups.push(() => transport.close());
+
+    const stopping = transport.stop("ws");
+    await stopInnerReached;
+    const starting = transport.start("ws");
+    await startLookupReached;
+    releaseStopInner();
+
+    await Promise.all([stopping, starting]);
+    expect(buildTransitions).toEqual(["stop", "start"]);
+    await expect(transport.status("ws")).resolves.toMatchObject({ buildStatus: "running" });
+  });
+
   it("does not wait for unrelated relay setup during lifecycle cleanup", async () => {
     const coderd = await fakeCoderd();
     let resolveOtherFetchStarted!: () => void;

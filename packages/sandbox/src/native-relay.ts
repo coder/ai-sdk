@@ -211,7 +211,20 @@ function terminate(child, signal) {
     try { child.kill(signal); } catch (_) {}
   }
 }
+function discardProcessOutput(id, streamName) {
+  const child = processes.get(id);
+  const discardedOutputs = discardedProcessOutputs.get(id);
+  const stream = processStream(child, streamName);
+  if (!stream || !discardedOutputs) return;
+  discardedOutputs.add(streamName);
+  processOutputPauses.get(id)?.[streamName]?.clear();
+  stream.resume();
+}
 function kill(message) {
+  if (message.discardOutput) {
+    discardProcessOutput(message.id, 'stdout');
+    discardProcessOutput(message.id, 'stderr');
+  }
   terminate(processes.get(message.id), message.signal || 'SIGTERM');
 }
 function tcpOpen(message) {
@@ -260,14 +273,7 @@ function receive(line) {
       break;
     }
     case 'proc-discard': {
-      const child = processes.get(message.id);
-      const discardedOutputs = discardedProcessOutputs.get(message.id);
-      const stream = processStream(child, message.stream);
-      if (stream && discardedOutputs) {
-        discardedOutputs.add(message.stream);
-        processOutputPauses.get(message.id)?.[message.stream]?.clear();
-        stream.resume();
-      }
+      discardProcessOutput(message.id, message.stream);
       break;
     }
     case 'tcp-open': tcpOpen(message); break;
@@ -502,7 +508,7 @@ export class NativeRelay {
 
   killProcess(id: string, signal = "SIGTERM"): void {
     if (this.#closed) return;
-    this.#send({ type: "kill", id, signal });
+    this.#send({ type: "kill", id, signal, discardOutput: true });
   }
 
   pauseProcessOutput(id: string, stream: ProcessOutput): void {

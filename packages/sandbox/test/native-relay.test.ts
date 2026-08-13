@@ -20,6 +20,8 @@ interface Message {
   id?: string;
   pid?: number;
   code?: number;
+  signal?: string;
+  discardOutput?: boolean;
   data?: string;
   message?: string;
 }
@@ -90,6 +92,44 @@ afterEach(async () => {
 });
 
 describe("native workspace relay", () => {
+  it("marks process kills to discard paused remote output", async () => {
+    class RecordingWebSocket extends EventEmitter {
+      readyState = 1;
+      bufferedAmount = 0;
+      readonly messages: Message[] = [];
+
+      send(data: Uint8Array): void {
+        const outer = JSON.parse(Buffer.from(data).toString("utf8")) as { data: string };
+        this.messages.push(JSON.parse(outer.data.trim()) as Message);
+      }
+
+      close(): void {
+        this.readyState = 3;
+      }
+    }
+
+    const websocket = new RecordingWebSocket();
+    const RelayConstructor = NativeRelay as unknown as new (
+      websocket: RecordingWebSocket,
+    ) => NativeRelay;
+    const relay = new RelayConstructor(websocket);
+    websocket.emit(
+      "message",
+      Buffer.from(
+        `${NATIVE_RELAY_BOOTSTRAP_MARKER}\n${JSON.stringify({ v: 1, type: "ready", pid: 1 })}\n`,
+      ),
+    );
+
+    relay.killProcess("kill-output-pressure");
+    expect(websocket.messages.at(-1)).toMatchObject({
+      type: "kill",
+      id: "kill-output-pressure",
+      signal: "SIGTERM",
+      discardOutput: true,
+    });
+    await relay.close();
+  });
+
   it("streams process stdin in bounded flow-controlled frames", async () => {
     class RecordingWebSocket extends EventEmitter {
       readyState = 1;
@@ -439,6 +479,52 @@ describe("native workspace relay", () => {
         )
       ).code,
     ).toBe(0);
+  });
+
+  it("drains paused process output before terminating the process", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "coder-native-relay-kill-pressure-"));
+    tempDirs.push(dir);
+    const started = path.join(dir, "started");
+    const relay = new RelayHarness();
+    harnesses.push(relay);
+    await relay.next((message) => message.type === "ready");
+    relay.send({
+      type: "start",
+      id: "kill-output-pressure",
+      command:
+        `kill -STOP $$; printf started > ${shellQuote(started)}; ` +
+        `exec ${shellQuote(process.execPath)} -e ${shellQuote(
+          "process.stdout.write(Buffer.alloc(8 * 1024 * 1024, 0x41)); setInterval(() => {}, 1000)",
+        )}`,
+      loginShell: false,
+    });
+    await relay.next(
+      (message) => message.type === "started" && message.id === "kill-output-pressure",
+    );
+    relay.send({ type: "proc-pause", id: "kill-output-pressure", stream: "stdout" });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    relay.send({ type: "kill", id: "kill-output-pressure", signal: "SIGCONT" });
+    expect(await waitForFile(started)).toBe("started");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(
+      relay.messages.some(
+        (message) => message.type === "stdout" && message.id === "kill-output-pressure",
+      ),
+    ).toBe(false);
+
+    relay.send({
+      type: "kill",
+      id: "kill-output-pressure",
+      signal: "SIGTERM",
+      discardOutput: true,
+    });
+    expect(
+      (
+        await relay.next(
+          (message) => message.type === "exit" && message.id === "kill-output-pressure",
+        )
+      ).code,
+    ).toBe(143);
   });
 
   it("survives a child that closes before reading stdin", async () => {

@@ -1,11 +1,16 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { once } from "node:events";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { NativeRelay, NATIVE_RELAY_SOURCE, openNativePortForward } from "../src/native-relay.js";
+import {
+  NativeRelay,
+  NATIVE_RELAY_SOURCE,
+  NativeSpawnedProcess,
+  openNativePortForward,
+} from "../src/native-relay.js";
 import { shellQuote } from "../src/shell.js";
 
 interface Message {
@@ -110,10 +115,11 @@ describe("native workspace relay", () => {
   it("applies command environment after login profile initialization", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "coder-native-relay-env-"));
     tempDirs.push(dir);
+    const requestedDirectory = await realpath(dir);
     const bash = path.join(dir, "bash");
     await writeFile(
       bash,
-      '#!/bin/sh\nif [ "$1" = "-lc" ]; then export CODER_RELAY_ENV_ORDER=profile; fi\nexec /bin/bash "$@"\n',
+      '#!/bin/sh\nif [ "$1" = "-lc" ]; then export CODER_RELAY_ENV_ORDER=profile; cd /; fi\nexec /bin/bash "$@"\n',
     );
     await chmod(bash, 0o755);
     const relay = new RelayHarness({
@@ -124,7 +130,8 @@ describe("native workspace relay", () => {
     relay.send({
       type: "start",
       id: "process-env-order",
-      command: 'printf "%s|%s" "$CODER_RELAY_ENV_ORDER" "$PATH"',
+      command: 'printf "%s|%s|" "$CODER_RELAY_ENV_ORDER" "$PATH"; pwd -P',
+      cwd: requestedDirectory,
       loginShell: true,
       env: {
         CODER_RELAY_ENV_ORDER: `caller ' "$PATH"`,
@@ -140,11 +147,116 @@ describe("native workspace relay", () => {
         ).data ?? "",
         "base64",
       ).toString(),
-    ).toBe(`caller ' "$PATH"|/command-only-without-bash`);
+    ).toBe(`caller ' "$PATH"|/command-only-without-bash|${requestedDirectory}\n`);
     expect(
       (await relay.next((message) => message.type === "exit" && message.id === "process-env-order"))
         .code,
     ).toBe(0);
+  });
+
+  it("pauses workspace process output until the host resumes each stream", async () => {
+    const relay = new RelayHarness();
+    harnesses.push(relay);
+    await relay.next((message) => message.type === "ready");
+    relay.send({
+      type: "start",
+      id: "process-flow-control",
+      command: "kill -STOP $$; printf out; printf err >&2; kill -STOP $$",
+      loginShell: false,
+    });
+    await relay.next(
+      (message) => message.type === "started" && message.id === "process-flow-control",
+    );
+    relay.send({ type: "proc-pause", id: "process-flow-control", stream: "stdout" });
+    relay.send({ type: "proc-pause", id: "process-flow-control", stream: "stderr" });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    relay.send({ type: "kill", id: "process-flow-control", signal: "SIGCONT" });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(
+      relay.messages.filter(
+        (message) =>
+          message.id === "process-flow-control" &&
+          (message.type === "stdout" || message.type === "stderr"),
+      ),
+    ).toEqual([]);
+    relay.send({ type: "proc-resume", id: "process-flow-control", stream: "stdout" });
+    expect(
+      Buffer.from(
+        (
+          await relay.next(
+            (message) => message.type === "stdout" && message.id === "process-flow-control",
+          )
+        ).data ?? "",
+        "base64",
+      ).toString(),
+    ).toBe("out");
+    expect(
+      relay.messages.some(
+        (message) => message.type === "stderr" && message.id === "process-flow-control",
+      ),
+    ).toBe(false);
+    relay.send({ type: "proc-resume", id: "process-flow-control", stream: "stderr" });
+    expect(
+      Buffer.from(
+        (
+          await relay.next(
+            (message) => message.type === "stderr" && message.id === "process-flow-control",
+          )
+        ).data ?? "",
+        "base64",
+      ).toString(),
+    ).toBe("err");
+    relay.send({ type: "kill", id: "process-flow-control", signal: "SIGCONT" });
+    expect(
+      (
+        await relay.next(
+          (message) => message.type === "exit" && message.id === "process-flow-control",
+        )
+      ).code,
+    ).toBe(0);
+  });
+
+  it("backpressures unread host process streams", async () => {
+    type Sink = {
+      onStarted(pid: number): void;
+      onStdout(data: Uint8Array): void;
+      onStderr(data: Uint8Array): void;
+      onExit(code: number): void;
+      onError(error: Error): void;
+    };
+    let sink!: Sink;
+    const flow: string[] = [];
+    const relay = {
+      startProcess: (_id: string, _options: unknown, processSink: Sink) => {
+        sink = processSink;
+        sink.onStarted(123);
+      },
+      pauseProcessOutput: (_id: string, stream: string) => flow.push(`pause:${stream}`),
+      resumeProcessOutput: (_id: string, stream: string) => flow.push(`resume:${stream}`),
+      unregisterProcess: () => {},
+      killProcess: () => {},
+    } as unknown as NativeRelay;
+    const process = new NativeSpawnedProcess(
+      Promise.resolve(relay),
+      { workspace: "ws", command: "ignored" },
+      false,
+    );
+    await Promise.resolve();
+
+    sink.onStdout(Buffer.from("out"));
+    sink.onStderr(Buffer.from("err"));
+    expect(flow).toEqual(["pause:stdout", "pause:stderr"]);
+
+    const stdoutReader = process.stdout.getReader();
+    await expect(stdoutReader.read()).resolves.toMatchObject({ value: Buffer.from("out") });
+    const stderrReader = process.stderr.getReader();
+    await expect(stderrReader.read()).resolves.toMatchObject({ value: Buffer.from("err") });
+    await Promise.resolve();
+    expect(flow).toEqual(["pause:stdout", "pause:stderr", "resume:stdout", "resume:stderr"]);
+    stdoutReader.releaseLock();
+    stderrReader.releaseLock();
+    sink.onExit(0);
+    await expect(process.wait()).resolves.toEqual({ exitCode: 0 });
   });
 
   it("terminates a spawned process group", async () => {
@@ -488,6 +600,22 @@ describe("native workspace relay", () => {
     } finally {
       await forward.close();
     }
+  });
+
+  it("rejects a pending port bind with the caller's abort reason", async () => {
+    const relay = {
+      closed: false,
+      onClose: () => () => {},
+    } as unknown as NativeRelay;
+    const controller = new AbortController();
+    const reason = new Error("cancel pending bind");
+    const pending = openNativePortForward(relay, {
+      workspace: "ws",
+      remotePort: 4444,
+      abortSignal: controller.signal,
+    });
+    controller.abort(reason);
+    await expect(pending).rejects.toBe(reason);
   });
 });
 

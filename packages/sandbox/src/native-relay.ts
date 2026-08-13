@@ -48,10 +48,11 @@ function shellQuote(value) {
   return "'" + String(value).replace(/'/g, "'\\''") + "'";
 }
 function commandScript(message) {
+  const directory = message.cwd ? 'cd ' + shellQuote(message.cwd) + ' && ' : '';
   const entries = Object.entries(message.env || {});
-  if (entries.length === 0) return message.command;
+  if (entries.length === 0) return directory + message.command;
   const assignments = entries.map(([key, value]) => shellQuote(key + '=' + String(value))).join(' ');
-  return 'exec env ' + assignments + ' ' + shellQuote(bashPath) + ' -c ' + shellQuote(message.command);
+  return directory + 'exec env ' + assignments + ' ' + shellQuote(bashPath) + ' -c ' + shellQuote(message.command);
 }
 function processExitCode(code, signal) {
   if (typeof code === 'number') return code;
@@ -66,7 +67,6 @@ function start(message) {
   let child;
   try {
     child = childProcess.spawn(bashPath, args, {
-      cwd: message.cwd || undefined,
       env: process.env,
       detached: process.platform !== 'win32',
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -134,6 +134,18 @@ function receive(line) {
   switch (message.type) {
     case 'start': start(message); break;
     case 'kill': kill(message); break;
+    case 'proc-pause': {
+      const child = processes.get(message.id);
+      const stream = message.stream === 'stdout' ? child && child.stdout : message.stream === 'stderr' ? child && child.stderr : undefined;
+      if (stream) stream.pause();
+      break;
+    }
+    case 'proc-resume': {
+      const child = processes.get(message.id);
+      const stream = message.stream === 'stdout' ? child && child.stdout : message.stream === 'stderr' ? child && child.stderr : undefined;
+      if (stream) stream.resume();
+      break;
+    }
     case 'tcp-open': tcpOpen(message); break;
     case 'tcp-data': {
       const socket = sockets.get(message.id);
@@ -183,6 +195,8 @@ interface ProcessSink {
   onExit(code: number): void;
   onError(error: Error): void;
 }
+
+type ProcessOutput = "stdout" | "stderr";
 
 interface TcpSink {
   opened(): void;
@@ -327,6 +341,16 @@ export class NativeRelay {
   killProcess(id: string, signal = "SIGTERM"): void {
     if (this.#closed) return;
     this.#send({ type: "kill", id, signal });
+  }
+
+  pauseProcessOutput(id: string, stream: ProcessOutput): void {
+    if (this.#closed) return;
+    this.#send({ type: "proc-pause", id, stream });
+  }
+
+  resumeProcessOutput(id: string, stream: ProcessOutput): void {
+    if (this.#closed) return;
+    this.#send({ type: "proc-resume", id, stream });
   }
 
   openTcp(id: string, port: number, sink: TcpSink): void {
@@ -551,17 +575,21 @@ export class NativeSpawnedProcess implements SpawnedProcess, ProcessSink {
   #relay?: NativeRelay;
   #pid?: number;
   #settled = false;
+  #stdoutPaused = false;
+  #stderrPaused = false;
 
   constructor(relay: Promise<NativeRelay>, options: TransportExecOptions, loginShell: boolean) {
     this.stdout = new ReadableStream({
       start: (controller) => {
         this.#stdoutController = controller;
       },
+      pull: () => this.#resumeOutput("stdout"),
     });
     this.stderr = new ReadableStream({
       start: (controller) => {
         this.#stderrController = controller;
       },
+      pull: () => this.#resumeOutput("stderr"),
     });
     this.#abortSignal = options.abortSignal;
     this.#onAbort = () => {
@@ -589,11 +617,11 @@ export class NativeSpawnedProcess implements SpawnedProcess, ProcessSink {
   }
 
   onStdout(data: Uint8Array): void {
-    if (!this.#settled) this.#stdoutController.enqueue(data);
+    this.#enqueueOutput("stdout", data);
   }
 
   onStderr(data: Uint8Array): void {
-    if (!this.#settled) this.#stderrController.enqueue(data);
+    this.#enqueueOutput("stderr", data);
   }
 
   onExit(code: number): void {
@@ -624,6 +652,33 @@ export class NativeSpawnedProcess implements SpawnedProcess, ProcessSink {
     this.#relay?.killProcess(this.#id);
   }
 
+  #enqueueOutput(stream: ProcessOutput, data: Uint8Array): void {
+    if (this.#settled) return;
+    const controller = stream === "stdout" ? this.#stdoutController : this.#stderrController;
+    controller.enqueue(data);
+    if ((controller.desiredSize ?? 0) > 0) return;
+    if (stream === "stdout") {
+      if (this.#stdoutPaused) return;
+      this.#stdoutPaused = true;
+    } else {
+      if (this.#stderrPaused) return;
+      this.#stderrPaused = true;
+    }
+    this.#relay?.pauseProcessOutput(this.#id, stream);
+  }
+
+  #resumeOutput(stream: ProcessOutput): void {
+    if (this.#settled) return;
+    if (stream === "stdout") {
+      if (!this.#stdoutPaused) return;
+      this.#stdoutPaused = false;
+    } else {
+      if (!this.#stderrPaused) return;
+      this.#stderrPaused = false;
+    }
+    this.#relay?.resumeProcessOutput(this.#id, stream);
+  }
+
   #cleanup(): void {
     this.#abortSignal?.removeEventListener("abort", this.#onAbort);
     this.#relay?.unregisterProcess(this.#id);
@@ -637,6 +692,7 @@ export async function openNativePortForward(
   const server = net.createServer({ allowHalfOpen: true });
   const sockets = new Set<net.Socket>();
   let closed = false;
+  let rejectPendingBind: ((error: Error) => void) | undefined;
   const closeForward = (): void => {
     if (closed) return;
     closed = true;
@@ -703,6 +759,7 @@ export async function openNativePortForward(
   });
   const onAbort = () => {
     removeCloseListener();
+    rejectPendingBind?.(abortError(options.abortSignal));
     closeForward();
   };
   options.abortSignal?.addEventListener("abort", onAbort, { once: true });
@@ -712,10 +769,19 @@ export async function openNativePortForward(
   }
   try {
     await new Promise<void>((resolve, reject) => {
-      const onError = (error: Error) => reject(error);
+      const onError = (error: Error) => {
+        rejectPendingBind = undefined;
+        reject(error);
+      };
+      rejectPendingBind = (error) => {
+        server.off("error", onError);
+        rejectPendingBind = undefined;
+        reject(error);
+      };
       server.once("error", onError);
       server.listen(0, "127.0.0.1", () => {
         server.off("error", onError);
+        rejectPendingBind = undefined;
         resolve();
       });
     });

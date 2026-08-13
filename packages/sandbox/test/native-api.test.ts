@@ -99,6 +99,57 @@ describe("CoderApiClient", () => {
     expect(await client.status("missing")).toBeNull();
   });
 
+  it("rejects cross-origin API redirects before forwarding credentials", async () => {
+    let targetCalled = false;
+    const client = new CoderApiClient({
+      url: "https://coder.example.test",
+      token: "secret",
+      fetch: async (input, init) => {
+        const url = new URL(String(input));
+        expect(init?.redirect).toBe("manual");
+        if (url.origin === "https://coder.example.test") {
+          return new Response(null, {
+            status: 302,
+            headers: { Location: "https://attacker.example.test/capture" },
+          });
+        }
+        targetCalled = true;
+        return json(workspace());
+      },
+    });
+
+    await expect(client.status("ws")).rejects.toThrow(/refused cross-origin redirect/);
+    expect(targetCalled).toBe(false);
+  });
+
+  it("preserves credentials across same-origin API redirects", async () => {
+    const requests: { pathname: string; token: string | null }[] = [];
+    const client = new CoderApiClient({
+      url: "https://coder.example.test",
+      token: "secret",
+      fetch: async (input, init) => {
+        const url = new URL(String(input));
+        requests.push({
+          pathname: url.pathname,
+          token: new Headers(init?.headers).get("Coder-Session-Token"),
+        });
+        if (url.pathname.endsWith("/workspace/ws")) {
+          return new Response(null, {
+            status: 307,
+            headers: { Location: "/redirected-workspace" },
+          });
+        }
+        return json(workspace());
+      },
+    });
+
+    await expect(client.status("ws")).resolves.toMatchObject({ id: "workspace-id" });
+    expect(requests).toEqual([
+      { pathname: "/api/v2/users/me/workspace/ws", token: "secret" },
+      { pathname: "/redirected-workspace", token: "secret" },
+    ]);
+  });
+
   it("treats a null preset response as an empty list", async () => {
     const client = new CoderApiClient({
       url: "https://coder.example.test",

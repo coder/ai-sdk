@@ -155,9 +155,13 @@ export class CoderNativeTransport implements CoderTransport {
     const error = new Error("Coder native transport closed");
     for (const setup of setups) setup.controller.abort(error);
     const settled = await Promise.allSettled(setups.map((setup) => setup.promise));
-    for (const result of settled) {
-      if (result.status === "fulfilled") result.value.relay.close();
-    }
+    await Promise.all(
+      settled
+        .filter(
+          (result): result is PromiseFulfilledResult<RelayEntry> => result.status === "fulfilled",
+        )
+        .map((result) => result.value.relay.close()),
+    );
   }
 
   async #relayFor(workspace: string, signal?: AbortSignal): Promise<NativeRelay> {
@@ -226,11 +230,15 @@ export class CoderNativeTransport implements CoderTransport {
       setup.controller.abort(error);
     }
     const closing = Promise.allSettled(entries.map(([, setup]) => setup.promise)).then(
-      (settled) => {
-        for (const result of settled) {
-          if (result.status === "fulfilled") result.value.relay.close();
-        }
-      },
+      async (settled) =>
+        await Promise.all(
+          settled
+            .filter(
+              (result): result is PromiseFulfilledResult<RelayEntry> =>
+                result.status === "fulfilled",
+            )
+            .map((result) => result.value.relay.close()),
+        ),
     );
     await waitWithAbort(closing, signal);
   }

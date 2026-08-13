@@ -18,7 +18,9 @@ afterEach(async () => {
   await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
 });
 
-async function fakeCoderd(options: { bootstrapPrefix?: string } = {}): Promise<{
+async function fakeCoderd(
+  options: { bootstrapPrefix?: string; ptyRedirect?: string } = {},
+): Promise<{
   url: string;
   requests: RelayRequest[];
   bootstrapSource: () => string;
@@ -104,6 +106,12 @@ async function fakeCoderd(options: { bootstrapPrefix?: string } = {}): Promise<{
       socket.destroy();
       return;
     }
+    if (options.ptyRedirect) {
+      socket.end(
+        `HTTP/1.1 302 Found\r\nLocation: ${options.ptyRedirect}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`,
+      );
+      return;
+    }
     expect(url.searchParams.get("backend_type")).toBe("buffered");
     expect(url.searchParams.get("command")?.length).toBeLessThan(500);
     websocketServer.handleUpgrade(request, socket, head, (websocket) => {
@@ -177,6 +185,48 @@ function send(websocket: WebSocket, message: Record<string, unknown>): void {
 }
 
 describe("CoderNativeTransport", () => {
+  it("rejects cross-origin PTY redirects without forwarding credentials", async () => {
+    let targetRequests = 0;
+    let targetToken: string | undefined;
+    const target = http.createServer((request, response) => {
+      targetRequests += 1;
+      targetToken = request.headers["coder-session-token"] as string | undefined;
+      response.end();
+    });
+    target.on("upgrade", (request, socket) => {
+      targetRequests += 1;
+      targetToken = request.headers["coder-session-token"] as string | undefined;
+      socket.destroy();
+    });
+    await new Promise<void>((resolve) => target.listen(0, "127.0.0.1", resolve));
+    const targetAddress = target.address();
+    if (targetAddress === null || typeof targetAddress === "string") {
+      throw new Error("no redirect target port");
+    }
+    cleanups.push(
+      async () =>
+        await new Promise<void>((resolve) => {
+          target.close(() => resolve());
+        }),
+    );
+    const coderd = await fakeCoderd({
+      ptyRedirect: `ws://127.0.0.1:${targetAddress.port}/capture`,
+    });
+    const transport = new CoderNativeTransport({
+      url: coderd.url,
+      token: "test-token",
+      relayConnectTimeoutMs: 2_000,
+    });
+    cleanups.push(() => transport.close());
+
+    await expect(transport.exec({ workspace: "ws", command: "ignored" })).rejects.toThrow(
+      /refused cross-origin WebSocket redirect/,
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(targetRequests).toBe(0);
+    expect(targetToken).toBeUndefined();
+  });
+
   it("runs process and TCP contracts through authenticated Coderd WebSockets", async () => {
     const coderd = await fakeCoderd();
     const transport = new CoderNativeTransport({

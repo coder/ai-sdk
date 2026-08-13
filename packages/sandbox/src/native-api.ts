@@ -117,6 +117,7 @@ interface ApiErrorBody {
 
 const DEFAULT_BUILD_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_BUILD_TIMEOUT_MS = 30 * 60_000;
+const MAX_API_REDIRECTS = 10;
 
 /** Error returned for a non-success response from Coderd's v2 API. */
 export class CoderNativeApiError extends Error {
@@ -436,18 +437,53 @@ export class CoderApiClient {
     body?: unknown,
     signal?: AbortSignal,
   ): Promise<T> {
-    const headers: Record<string, string> = {
+    const requestHeaders: Record<string, string> = {
       ...this.headers,
       "Coder-Session-Token": this.token,
       Accept: "application/json",
     };
-    if (body !== undefined) headers["Content-Type"] = "application/json";
-    const response = await this.#fetch(this.#url(path), {
-      method,
-      headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal,
-    });
+    if (body !== undefined) requestHeaders["Content-Type"] = "application/json";
+    const initialUrl = this.#url(path);
+    let requestUrl = initialUrl;
+    let requestMethod = method.toUpperCase();
+    let requestBody = body === undefined ? undefined : JSON.stringify(body);
+    let redirectCount = 0;
+    let response: Response;
+    for (;;) {
+      response = await this.#fetch(requestUrl, {
+        method: requestMethod,
+        headers: requestHeaders,
+        body: requestBody,
+        signal,
+        redirect: "manual",
+      });
+      const location = response.headers.get("location");
+      if (!isRedirectStatus(response.status) || location === null) break;
+      redirectCount += 1;
+      if (redirectCount > MAX_API_REDIRECTS) {
+        await response.body?.cancel();
+        throw new Error(
+          `Coder API ${method} ${path} exceeded ${MAX_API_REDIRECTS} same-origin redirects`,
+        );
+      }
+      const redirectedUrl = new URL(location, requestUrl);
+      if (redirectedUrl.origin !== initialUrl.origin) {
+        await response.body?.cancel();
+        throw new Error(
+          `Coder API ${method} ${path} refused cross-origin redirect from ${initialUrl.origin} to ${redirectedUrl.origin}`,
+        );
+      }
+      await response.body?.cancel();
+      if (
+        (response.status === 303 && requestMethod !== "GET" && requestMethod !== "HEAD") ||
+        ((response.status === 301 || response.status === 302) && requestMethod === "POST")
+      ) {
+        requestMethod = "GET";
+        requestBody = undefined;
+        deleteRequestBodyHeaders(requestHeaders);
+      }
+      requestUrl = redirectedUrl;
+    }
     const text = await response.text();
     let parsed: unknown;
     try {
@@ -719,6 +755,22 @@ function resolveCreateParameterValues(
 
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+}
+
+function isRedirectStatus(status: number): boolean {
+  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
+}
+
+function deleteRequestBodyHeaders(headers: Record<string, string>): void {
+  const bodyHeaders = new Set([
+    "content-encoding",
+    "content-language",
+    "content-location",
+    "content-type",
+  ]);
+  for (const name of Object.keys(headers)) {
+    if (bodyHeaders.has(name.toLowerCase())) delete headers[name];
+  }
 }
 
 function abortReason(signal?: AbortSignal): Error {

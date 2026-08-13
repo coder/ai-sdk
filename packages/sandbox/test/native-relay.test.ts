@@ -4,7 +4,7 @@ import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promi
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   NativeRelay,
   NATIVE_RELAY_BOOTSTRAP_MARKER,
@@ -143,6 +143,51 @@ describe("native workspace relay", () => {
       "three:resume:carrier",
     ]);
     relay.close();
+  });
+
+  it("waits for WebSocket teardown and terminates a stalled close", async () => {
+    vi.useFakeTimers();
+    try {
+      class StalledWebSocket extends EventEmitter {
+        readyState = 1;
+        closeCalls = 0;
+        terminateCalls = 0;
+
+        close(): void {
+          this.closeCalls += 1;
+          this.readyState = 2;
+        }
+
+        terminate(): void {
+          this.terminateCalls += 1;
+          this.readyState = 3;
+          this.emit("close", 1006, Buffer.alloc(0));
+        }
+      }
+
+      const websocket = new StalledWebSocket();
+      const RelayConstructor = NativeRelay as unknown as new (
+        websocket: StalledWebSocket,
+      ) => NativeRelay;
+      const relay = new RelayConstructor(websocket);
+      let settled = false;
+      const closing = relay.close().then(() => {
+        settled = true;
+      });
+      await Promise.resolve();
+      expect(websocket.closeCalls).toBe(1);
+      expect(websocket.terminateCalls).toBe(0);
+      expect(settled).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await closing;
+      expect(websocket.terminateCalls).toBe(1);
+      expect(settled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps TCP uploads paused until every pause reason clears", async () => {

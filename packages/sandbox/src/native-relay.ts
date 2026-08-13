@@ -14,6 +14,7 @@ const RELAY_PROTOCOL_VERSION = 1;
 const CARRIER_HIGH_WATER_MARK = 1024 * 1024;
 const CARRIER_LOW_WATER_MARK = 256 * 1024;
 const CARRIER_DRAIN_POLL_INTERVAL_MS = 10;
+const RELAY_CLOSE_GRACE_MS = 1_000;
 export const NATIVE_RELAY_BOOTSTRAP_MARKER = "__CODER_AI_SDK_RELAY_BOOTSTRAP_READY_V1__";
 
 /**
@@ -317,6 +318,7 @@ export class NativeRelay {
   readonly #websocket: WebSocket;
   readonly #bootstrapReady = deferred<void>();
   readonly #ready = deferred<void>();
+  readonly #websocketClosed = deferred<void>();
   readonly #processes = new Map<string, ProcessSink>();
   readonly #sockets = new Map<string, TcpSink>();
   readonly #closeListeners = new Set<(error?: Error) => void>();
@@ -328,12 +330,14 @@ export class NativeRelay {
   #closed = false;
   #readySeen = false;
   #closeError?: Error;
+  #websocketClosePromise?: Promise<void>;
 
   private constructor(websocket: WebSocket) {
     this.#websocket = websocket;
     websocket.on("message", (data) => this.#onData(data));
     websocket.on("error", (error) => this.#fail(toError(error)));
     websocket.on("close", (code, reason) => {
+      this.#websocketClosed.resolve();
       const detail = Buffer.from(reason).toString("utf8");
       this.#fail(
         this.#closeError ??
@@ -354,10 +358,23 @@ export class NativeRelay {
     const url = options.api.websocketUrl(
       `/api/v2/workspaceagents/${encodeURIComponent(options.agentId)}/pty?${query.toString()}`,
     );
+    const websocketOrigin = new URL(url).origin;
     const websocket = new WebSocket(url, {
       headers: options.api.websocketHeaders(),
       followRedirects: true,
       perMessageDeflate: false,
+      finishRequest: (request, candidate) => {
+        const candidateOrigin = new URL(candidate.url).origin;
+        if (candidateOrigin !== websocketOrigin) {
+          request.destroy(
+            new Error(
+              `Coder native relay refused cross-origin WebSocket redirect from ${websocketOrigin} to ${candidateOrigin}`,
+            ),
+          );
+          return;
+        }
+        request.end();
+      },
     });
     const relay = new NativeRelay(websocket);
     const open = deferred<void>();
@@ -370,7 +387,7 @@ export class NativeRelay {
       open.reject(error);
       relay.#bootstrapReady.reject(error);
       relay.#ready.reject(error);
-      websocket.close();
+      relay.#fail(error);
     };
     options.signal?.addEventListener("abort", abort, { once: true });
     const timer = setTimeout(() => {
@@ -378,7 +395,7 @@ export class NativeRelay {
       open.reject(error);
       relay.#bootstrapReady.reject(error);
       relay.#ready.reject(error);
-      websocket.close();
+      relay.#fail(error);
     }, options.connectTimeoutMs);
     timer.unref?.();
     try {
@@ -390,6 +407,7 @@ export class NativeRelay {
       return relay;
     } catch (error) {
       relay.#fail(toError(error));
+      await relay.#closeWebSocket();
       throw error;
     } finally {
       clearTimeout(timer);
@@ -497,11 +515,12 @@ export class NativeRelay {
     return () => this.#closeListeners.delete(listener);
   }
 
-  close(): void {
-    if (this.#closed) return;
-    this.#closeError = new Error("Coder native relay closed");
-    this.#websocket.close(1000, "transport closed");
-    this.#fail(this.#closeError);
+  async close(): Promise<void> {
+    if (!this.#closed) {
+      this.#closeError = new Error("Coder native relay closed");
+      this.#fail(this.#closeError, 1000, "transport closed");
+    }
+    await this.#closeWebSocket(1000, "transport closed");
   }
 
   #send(message: Record<string, unknown>): void {
@@ -641,7 +660,7 @@ export class NativeRelay {
     }
   }
 
-  #fail(error: Error): void {
+  #fail(error: Error, closeCode?: number, closeReason?: string): void {
     if (this.#closed) return;
     this.#closed = true;
     this.#stopCarrierDrainTimer();
@@ -654,12 +673,32 @@ export class NativeRelay {
     this.#sockets.clear();
     for (const listener of this.#closeListeners) listener(error);
     this.#closeListeners.clear();
-    if (
-      this.#websocket.readyState === WebSocket.CONNECTING ||
-      this.#websocket.readyState === WebSocket.OPEN
-    ) {
-      this.#websocket.close();
-    }
+    void this.#closeWebSocket(closeCode, closeReason);
+  }
+
+  #closeWebSocket(code?: number, reason?: string): Promise<void> {
+    if (this.#websocketClosePromise !== undefined) return this.#websocketClosePromise;
+    this.#websocketClosePromise = (async () => {
+      if (isWebSocketClosed(this.#websocket)) return;
+      try {
+        if (
+          this.#websocket.readyState === WebSocket.CONNECTING ||
+          this.#websocket.readyState === WebSocket.OPEN
+        ) {
+          this.#websocket.close(code, reason);
+        }
+      } catch {
+        this.#websocket.terminate();
+      }
+      if (isWebSocketClosed(this.#websocket)) return;
+      const forceTimer = setTimeout(() => this.#websocket.terminate(), RELAY_CLOSE_GRACE_MS);
+      try {
+        await this.#websocketClosed.promise;
+      } finally {
+        clearTimeout(forceTimer);
+      }
+    })();
+    return this.#websocketClosePromise;
   }
 
   #updateCarrierBackpressure(): void {
@@ -993,6 +1032,10 @@ function rawDataBuffer(data: RawData): Buffer {
   if (Buffer.isBuffer(data)) return data;
   if (Array.isArray(data)) return Buffer.concat(data);
   return Buffer.from(data);
+}
+
+function isWebSocketClosed(websocket: WebSocket): boolean {
+  return websocket.readyState === WebSocket.CLOSED;
 }
 
 function deferred<T>(): Deferred<T> {

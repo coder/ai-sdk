@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import http from "node:http";
 import net from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
@@ -9,6 +10,7 @@ interface RelayRequest {
   type?: string;
   id?: string;
   stdin?: string;
+  stdinMode?: string;
   data?: string;
 }
 
@@ -133,6 +135,16 @@ async function fakeCoderd(
     websocketServer.handleUpgrade(request, socket, head, (websocket) => {
       ptyWebsocket = websocket;
       let bootstrapped = false;
+      const processInputs = new Map<string, Buffer[]>();
+      const finishProcess = (id: string, stdin: string) => {
+        send(websocket, { type: "stdout", id, data: stdin });
+        send(websocket, {
+          type: "stderr",
+          id,
+          data: Buffer.from("separate-error").toString("base64"),
+        });
+        send(websocket, { type: "exit", id, code: 7 });
+      };
       websocket.on("message", (raw) => {
         const outer = JSON.parse(Buffer.from(raw as Buffer).toString("utf8")) as {
           data: string;
@@ -147,13 +159,14 @@ async function fakeCoderd(
         requests.push(message);
         if (message.type === "start" && message.id) {
           send(websocket, { type: "started", id: message.id, pid: 1234 });
-          send(websocket, { type: "stdout", id: message.id, data: message.stdin ?? "" });
-          send(websocket, {
-            type: "stderr",
-            id: message.id,
-            data: Buffer.from("separate-error").toString("base64"),
-          });
-          send(websocket, { type: "exit", id: message.id, code: 7 });
+          if (message.stdinMode === "stream") processInputs.set(message.id, []);
+          else finishProcess(message.id, message.stdin ?? "");
+        } else if (message.type === "proc-stdin" && message.id) {
+          processInputs.get(message.id)?.push(Buffer.from(message.data ?? "", "base64"));
+        } else if (message.type === "proc-stdin-end" && message.id) {
+          const stdin = Buffer.concat(processInputs.get(message.id) ?? []).toString("base64");
+          processInputs.delete(message.id);
+          finishProcess(message.id, stdin);
         } else if (message.type === "tcp-open" && message.id) {
           send(websocket, { type: "tcp-opened", id: message.id });
         } else if (message.type === "tcp-data" && message.id) {
@@ -291,6 +304,36 @@ describe("CoderNativeTransport", () => {
     } finally {
       await forward.close();
     }
+  });
+
+  it("delivers large Unicode stdin through bounded relay frames", async () => {
+    const coderd = await fakeCoderd();
+    const transport = new CoderNativeTransport({
+      url: coderd.url,
+      token: "test-token",
+      relayConnectTimeoutMs: 2_000,
+    });
+    cleanups.push(() => transport.close());
+
+    const stdin = `x${"😀".repeat(200_000)}tail`;
+    const execution = transport.exec({ workspace: "ws", command: "ignored", stdin });
+    await coderd.ptyConnected;
+    coderd.releaseBootstrap();
+    const result = await execution;
+    const digest = (value: string) => createHash("sha256").update(value).digest("hex");
+    expect(digest(result.stdout)).toBe(digest(stdin));
+
+    const start = coderd.requests.find((request) => request.type === "start");
+    expect(start).toMatchObject({ stdinMode: "stream" });
+    expect(start?.stdin).toBeUndefined();
+    const frames = coderd.requests.filter((request) => request.type === "proc-stdin");
+    const decodedSizes = frames.map(
+      (request) => Buffer.from(request.data ?? "", "base64").byteLength,
+    );
+    expect(frames.length).toBeGreaterThan(1);
+    expect(Math.max(...decodedSizes)).toBeLessThanOrEqual(64 * 1024);
+    expect(decodedSizes.reduce((total, size) => total + size, 0)).toBe(Buffer.byteLength(stdin));
+    expect(coderd.requests.filter((request) => request.type === "proc-stdin-end")).toHaveLength(1);
   });
 
   it("isolates shared relay setup from one caller's cancellation", async () => {

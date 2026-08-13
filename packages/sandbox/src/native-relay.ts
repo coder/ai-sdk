@@ -14,6 +14,8 @@ const RELAY_PROTOCOL_VERSION = 1;
 const CARRIER_HIGH_WATER_MARK = 1024 * 1024;
 const CARRIER_LOW_WATER_MARK = 256 * 1024;
 const CARRIER_DRAIN_POLL_INTERVAL_MS = 10;
+const PROCESS_STDIN_CHUNK_BYTES = 64 * 1024;
+const PROCESS_STDIN_BATCH_BYTES = 256 * 1024;
 const RELAY_CLOSE_GRACE_MS = 1_000;
 export const NATIVE_RELAY_BOOTSTRAP_MARKER = "__CODER_AI_SDK_RELAY_BOOTSTRAP_READY_V1__";
 const BOOTSTRAP_DIAGNOSTIC_LIMIT = 500;
@@ -35,6 +37,7 @@ const readline = require('node:readline');
 const processes = new Map();
 const discardedProcessOutputs = new Map();
 const processOutputPauses = new Map();
+const processInputPauses = new Set();
 const sockets = new Map();
 const socketOutputPauses = new Map();
 const signalNumbers = os.constants.signals;
@@ -158,18 +161,46 @@ function start(message) {
     processes.delete(message.id);
     discardedProcessOutputs.delete(message.id);
     processOutputPauses.delete(message.id);
+    processInputPauses.delete(message.id);
     emit({ type: 'proc-error', id: message.id, message: String(error && error.message || error) });
   });
   child.once('close', (code, signal) => {
     if (!processes.delete(message.id)) return;
     discardedProcessOutputs.delete(message.id);
     processOutputPauses.delete(message.id);
+    processInputPauses.delete(message.id);
     emit({ type: 'exit', id: message.id, code: processExitCode(code, signal), signal: signal || undefined });
   });
   // Child exit is authoritative; a stdin EPIPE only means it stopped reading.
-  child.stdin.on('error', () => {});
-  if (message.stdin) child.stdin.write(bytes(message.stdin));
-  child.stdin.end();
+  child.stdin.on('error', () => { processInputPauses.delete(message.id); });
+  child.stdin.once('close', () => {
+    processInputPauses.delete(message.id);
+    if (processes.has(message.id)) emit({ type: 'proc-stdin-close', id: message.id });
+  });
+  child.stdin.on('drain', () => {
+    if (processInputPauses.delete(message.id) && processes.has(message.id)) {
+      emit({ type: 'proc-stdin-resume', id: message.id });
+    }
+  });
+  if (message.stdinMode !== 'stream') {
+    if (message.stdin) child.stdin.write(bytes(message.stdin));
+    child.stdin.end();
+  }
+}
+function processStdinData(message) {
+  const child = processes.get(message.id);
+  if (!child || child.stdin.destroyed || child.stdin.writableEnded) return;
+  try {
+    if (!child.stdin.write(bytes(message.data)) && !processInputPauses.has(message.id)) {
+      processInputPauses.add(message.id);
+      emit({ type: 'proc-stdin-pause', id: message.id });
+    }
+  } catch (_) {}
+}
+function processStdinEnd(message) {
+  const child = processes.get(message.id);
+  if (!child || child.stdin.destroyed || child.stdin.writableEnded) return;
+  try { child.stdin.end(); } catch (_) {}
 }
 function terminate(child, signal) {
   if (!child || !child.pid) return;
@@ -217,6 +248,8 @@ function receive(line) {
   if (message.v !== 1) { emit({ type: 'error', message: 'unsupported protocol version' }); return; }
   switch (message.type) {
     case 'start': start(message); break;
+    case 'proc-stdin': processStdinData(message); break;
+    case 'proc-stdin-end': processStdinEnd(message); break;
     case 'kill': kill(message); break;
     case 'proc-pause': {
       setProcessOutputPaused(message.id, message.stream, 'host', true);
@@ -288,6 +321,13 @@ interface ProcessSink {
   onError(error: Error): void;
 }
 
+interface ProcessInputState {
+  data: Uint8Array | string;
+  offset: number;
+  remotePaused: boolean;
+  scheduled: boolean;
+}
+
 type ProcessOutput = "stdout" | "stderr";
 type TcpPauseReason = "carrier" | "remote";
 
@@ -321,6 +361,7 @@ export class NativeRelay {
   readonly #ready = deferred<void>();
   readonly #websocketClosed = deferred<void>();
   readonly #processes = new Map<string, ProcessSink>();
+  readonly #processInputs = new Map<string, ProcessInputState>();
   readonly #sockets = new Map<string, TcpSink>();
   readonly #closeListeners = new Set<(error?: Error) => void>();
   #buffer = "";
@@ -428,6 +469,14 @@ export class NativeRelay {
   ): void {
     this.#assertOpen();
     this.#processes.set(id, sink);
+    if (options.stdin !== undefined) {
+      this.#processInputs.set(id, {
+        data: options.stdin,
+        offset: 0,
+        remotePaused: false,
+        scheduled: false,
+      });
+    }
     try {
       this.#send({
         type: "start",
@@ -435,19 +484,20 @@ export class NativeRelay {
         command: options.command,
         ...(options.workingDirectory ? { cwd: options.workingDirectory } : {}),
         ...(options.env ? { env: options.env } : {}),
-        ...(options.stdin !== undefined
-          ? { stdin: Buffer.from(options.stdin).toString("base64") }
-          : {}),
+        ...(options.stdin !== undefined ? { stdinMode: "stream" } : {}),
         loginShell,
       });
+      this.#pumpProcessInput(id);
     } catch (error) {
       this.#processes.delete(id);
+      this.#processInputs.delete(id);
       throw error;
     }
   }
 
   unregisterProcess(id: string): void {
     this.#processes.delete(id);
+    this.#processInputs.delete(id);
   }
 
   killProcess(id: string, signal = "SIGTERM"): void {
@@ -639,12 +689,34 @@ export class NativeRelay {
         case "stderr":
           process.onStderr(Buffer.from(message.data ?? "", "base64"));
           break;
+        case "proc-stdin-pause": {
+          const input = this.#processInputs.get(message.id);
+          if (input !== undefined) input.remotePaused = true;
+          break;
+        }
+        case "proc-stdin-resume": {
+          const input = this.#processInputs.get(message.id);
+          if (input !== undefined) {
+            input.remotePaused = false;
+            try {
+              this.#pumpProcessInput(message.id);
+            } catch (error) {
+              this.#fail(toError(error));
+            }
+          }
+          break;
+        }
+        case "proc-stdin-close":
+          this.#processInputs.delete(message.id);
+          break;
         case "exit":
           this.#processes.delete(message.id);
+          this.#processInputs.delete(message.id);
           process.onExit(message.code ?? 1);
           break;
         case "proc-error":
           this.#processes.delete(message.id);
+          this.#processInputs.delete(message.id);
           process.onError(new Error(message.message ?? "workspace process failed"));
           break;
       }
@@ -687,6 +759,7 @@ export class NativeRelay {
     this.#ready.reject(error);
     for (const process of this.#processes.values()) process.onError(error);
     this.#processes.clear();
+    this.#processInputs.clear();
     for (const socket of this.#sockets.values()) socket.error(error);
     this.#sockets.clear();
     for (const listener of this.#closeListeners) listener(error);
@@ -735,9 +808,57 @@ export class NativeRelay {
     if (this.#websocket.bufferedAmount > CARRIER_LOW_WATER_MARK) return;
     this.#carrierPaused = false;
     this.#stopCarrierDrainTimer();
+    for (const id of this.#processInputs.keys()) {
+      try {
+        this.#pumpProcessInput(id);
+      } catch (error) {
+        this.#fail(toError(error));
+        return;
+      }
+      if (this.#carrierPaused) return;
+    }
     for (const socket of this.#sockets.values()) {
       socket.resume("carrier");
       if (this.#carrierPaused) break;
+    }
+  }
+
+  #pumpProcessInput(id: string): void {
+    let input = this.#processInputs.get(id);
+    if (input?.scheduled) return;
+    let sentBytes = 0;
+    // Yield between bounded batches so carrier and child-pipe pause frames can
+    // arrive before the complete caller-owned payload is queued.
+    while (
+      input !== undefined &&
+      !this.#closed &&
+      !this.#carrierPaused &&
+      !input.remotePaused &&
+      sentBytes < PROCESS_STDIN_BATCH_BYTES
+    ) {
+      const chunk = processInputChunk(input);
+      if (chunk === undefined) {
+        this.#send({ type: "proc-stdin-end", id });
+        this.#processInputs.delete(id);
+        return;
+      }
+      this.#send({ type: "proc-stdin", id, data: chunk.toString("base64") });
+      sentBytes += chunk.byteLength;
+      input = this.#processInputs.get(id);
+    }
+    if (input !== undefined && !this.#closed && !this.#carrierPaused && !input.remotePaused) {
+      input.scheduled = true;
+      const immediate = setImmediate(() => {
+        const scheduled = this.#processInputs.get(id);
+        if (scheduled === undefined) return;
+        scheduled.scheduled = false;
+        try {
+          this.#pumpProcessInput(id);
+        } catch (error) {
+          this.#fail(toError(error));
+        }
+      });
+      immediate.unref?.();
     }
   }
 
@@ -1050,6 +1171,43 @@ function rawDataBuffer(data: RawData): Buffer {
   if (Buffer.isBuffer(data)) return data;
   if (Array.isArray(data)) return Buffer.concat(data);
   return Buffer.from(data);
+}
+
+function processInputChunk(input: ProcessInputState): Buffer | undefined {
+  if (typeof input.data === "string") {
+    if (input.offset >= input.data.length) return undefined;
+    // Four UTF-8 bytes per UTF-16 code unit is a conservative frame bound;
+    // keep surrogate pairs together so chunking cannot corrupt Unicode input.
+    const maxCodeUnits = Math.max(1, Math.floor(PROCESS_STDIN_CHUNK_BYTES / 4));
+    let end = Math.min(input.data.length, input.offset + maxCodeUnits);
+    if (
+      end < input.data.length &&
+      isHighSurrogate(input.data.charCodeAt(end - 1)) &&
+      isLowSurrogate(input.data.charCodeAt(end))
+    ) {
+      end -= 1;
+    }
+    const chunk = Buffer.from(input.data.slice(input.offset, end));
+    input.offset = end;
+    return chunk;
+  }
+  if (input.offset >= input.data.byteLength) return undefined;
+  const end = Math.min(input.data.byteLength, input.offset + PROCESS_STDIN_CHUNK_BYTES);
+  const chunk = Buffer.from(
+    input.data.buffer,
+    input.data.byteOffset + input.offset,
+    end - input.offset,
+  );
+  input.offset = end;
+  return chunk;
+}
+
+function isHighSurrogate(value: number): boolean {
+  return value >= 0xd800 && value <= 0xdbff;
+}
+
+function isLowSurrogate(value: number): boolean {
+  return value >= 0xdc00 && value <= 0xdfff;
 }
 
 function isWebSocketClosed(websocket: WebSocket): boolean {

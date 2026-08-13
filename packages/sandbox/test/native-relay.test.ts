@@ -59,7 +59,11 @@ class RelayHarness {
     return await new Promise<Message>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.waiters.delete(check);
-        reject(new Error(`timed out waiting for relay message: ${JSON.stringify(this.messages)}`));
+        const summary = this.messages.map((message) => ({
+          ...message,
+          ...(message.data ? { data: `<${message.data.length} base64 characters>` } : {}),
+        }));
+        reject(new Error(`timed out waiting for relay message: ${JSON.stringify(summary)}`));
       }, 5_000);
       const check = () => {
         const found = this.messages.find(predicate);
@@ -86,6 +90,90 @@ afterEach(async () => {
 });
 
 describe("native workspace relay", () => {
+  it("streams process stdin in bounded flow-controlled frames", async () => {
+    class RecordingWebSocket extends EventEmitter {
+      readyState = 1;
+      bufferedAmount = 0;
+      readonly messages: Message[] = [];
+
+      send(data: Uint8Array): void {
+        this.bufferedAmount += data.byteLength;
+        const outer = JSON.parse(Buffer.from(data).toString("utf8")) as { data: string };
+        this.messages.push(JSON.parse(outer.data.trim()) as Message);
+      }
+
+      close(): void {
+        this.readyState = 3;
+      }
+    }
+
+    const websocket = new RecordingWebSocket();
+    const RelayConstructor = NativeRelay as unknown as new (
+      websocket: RecordingWebSocket,
+    ) => NativeRelay;
+    const relay = new RelayConstructor(websocket);
+    websocket.emit(
+      "message",
+      Buffer.from(
+        `${NATIVE_RELAY_BOOTSTRAP_MARKER}\n${JSON.stringify({ v: 1, type: "ready", pid: 1 })}\n`,
+      ),
+    );
+    const stdin = Buffer.alloc(8 * 1024 * 1024, 0x41);
+    relay.startProcess(
+      "large-stdin",
+      { workspace: "ws", command: "cat", stdin },
+      {
+        onStarted: () => {},
+        onStdout: () => {},
+        onStderr: () => {},
+        onExit: () => {},
+        onError: () => {},
+      },
+      false,
+    );
+
+    const start = websocket.messages.find((message) => message.type === "start") as Message & {
+      stdinMode?: string;
+      stdin?: string;
+    };
+    expect(start.stdinMode).toBe("stream");
+    expect(start.stdin).toBeUndefined();
+    const initialFrames = websocket.messages.filter((message) => message.type === "proc-stdin");
+    expect(initialFrames.length).toBeGreaterThan(1);
+    expect(
+      initialFrames.reduce(
+        (total, frame) => total + Buffer.from(frame.data ?? "", "base64").length,
+        0,
+      ),
+    ).toBeLessThanOrEqual(256 * 1024);
+    expect(
+      Math.max(...initialFrames.map((frame) => Buffer.from(frame.data ?? "", "base64").length)),
+    ).toBeLessThanOrEqual(64 * 1024);
+
+    websocket.emit(
+      "message",
+      Buffer.from(`${JSON.stringify({ v: 1, type: "proc-stdin-pause", id: "large-stdin" })}\n`),
+    );
+    const pausedFrameCount = websocket.messages.length;
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(websocket.messages).toHaveLength(pausedFrameCount);
+
+    websocket.emit(
+      "message",
+      Buffer.from(`${JSON.stringify({ v: 1, type: "proc-stdin-resume", id: "large-stdin" })}\n`),
+    );
+    expect(websocket.messages.length).toBeGreaterThan(pausedFrameCount);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const carrierPausedFrameCount = websocket.messages.length;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(websocket.messages).toHaveLength(carrierPausedFrameCount);
+    websocket.bufferedAmount = 0;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(websocket.messages.length).toBeGreaterThan(carrierPausedFrameCount);
+    relay.unregisterProcess("large-stdin");
+    await relay.close();
+  });
+
   it("backpressures all TCP uploads while the WebSocket carrier is saturated", async () => {
     class BufferedWebSocket extends EventEmitter {
       readyState = 1;
@@ -276,6 +364,46 @@ describe("native workspace relay", () => {
       ).toString(),
     ).toBe("err");
     expect((await relay.next((message) => message.type === "exit")).code).toBe(7);
+  });
+
+  it("backpressures streamed stdin at the child pipe", async () => {
+    const relay = new RelayHarness();
+    harnesses.push(relay);
+    await relay.next((message) => message.type === "ready");
+    relay.send({
+      type: "start",
+      id: "streamed-stdin",
+      command: `${shellQuote(process.execPath)} -e ${shellQuote(
+        "process.stdin.pause(); setTimeout(() => process.stdin.pipe(process.stdout), 250)",
+      )}`,
+      loginShell: false,
+      stdinMode: "stream",
+    });
+    await relay.next((message) => message.type === "started" && message.id === "streamed-stdin");
+    const chunks = Array.from({ length: 16 }, (_, index) =>
+      Buffer.alloc(64 * 1024, 0x41 + (index % 2)),
+    );
+    for (const chunk of chunks) {
+      relay.send({ type: "proc-stdin", id: "streamed-stdin", data: chunk.toString("base64") });
+    }
+    await relay.next(
+      (message) => message.type === "proc-stdin-pause" && message.id === "streamed-stdin",
+    );
+    await relay.next(
+      (message) => message.type === "proc-stdin-resume" && message.id === "streamed-stdin",
+    );
+    relay.send({ type: "proc-stdin-end", id: "streamed-stdin" });
+
+    expect(
+      (await relay.next((message) => message.type === "exit" && message.id === "streamed-stdin"))
+        .code,
+    ).toBe(0);
+    const stdout = Buffer.concat(
+      relay.messages
+        .filter((message) => message.type === "stdout" && message.id === "streamed-stdin")
+        .map((message) => Buffer.from(message.data ?? "", "base64")),
+    );
+    expect(stdout).toEqual(Buffer.concat(chunks));
   });
 
   it("backpressures workspace process output while the relay carrier is blocked", async () => {

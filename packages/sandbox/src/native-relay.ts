@@ -28,6 +28,7 @@ const os = require('node:os');
 const path = require('node:path');
 const readline = require('node:readline');
 const processes = new Map();
+const discardedProcessOutputs = new Map();
 const sockets = new Map();
 const signalNumbers = os.constants.signals;
 function resolveExecutable(name) {
@@ -75,16 +76,24 @@ function start(message) {
     emit({ type: 'proc-error', id: message.id, message: String(error && error.message || error) });
     return;
   }
+  const discardedOutputs = new Set();
   processes.set(message.id, child);
+  discardedProcessOutputs.set(message.id, discardedOutputs);
   child.once('spawn', () => emit({ type: 'started', id: message.id, pid: child.pid }));
-  child.stdout.on('data', (data) => emit({ type: 'stdout', id: message.id, data: data.toString('base64') }));
-  child.stderr.on('data', (data) => emit({ type: 'stderr', id: message.id, data: data.toString('base64') }));
+  child.stdout.on('data', (data) => {
+    if (!discardedOutputs.has('stdout')) emit({ type: 'stdout', id: message.id, data: data.toString('base64') });
+  });
+  child.stderr.on('data', (data) => {
+    if (!discardedOutputs.has('stderr')) emit({ type: 'stderr', id: message.id, data: data.toString('base64') });
+  });
   child.once('error', (error) => {
     processes.delete(message.id);
+    discardedProcessOutputs.delete(message.id);
     emit({ type: 'proc-error', id: message.id, message: String(error && error.message || error) });
   });
   child.once('close', (code, signal) => {
     if (!processes.delete(message.id)) return;
+    discardedProcessOutputs.delete(message.id);
     emit({ type: 'exit', id: message.id, code: processExitCode(code, signal), signal: signal || undefined });
   });
   if (message.stdin) child.stdin.write(bytes(message.stdin));
@@ -144,6 +153,13 @@ function receive(line) {
       const child = processes.get(message.id);
       const stream = message.stream === 'stdout' ? child && child.stdout : message.stream === 'stderr' ? child && child.stderr : undefined;
       if (stream) stream.resume();
+      break;
+    }
+    case 'proc-discard': {
+      const child = processes.get(message.id);
+      const discardedOutputs = discardedProcessOutputs.get(message.id);
+      const stream = message.stream === 'stdout' ? child && child.stdout : message.stream === 'stderr' ? child && child.stderr : undefined;
+      if (stream && discardedOutputs) { discardedOutputs.add(message.stream); stream.resume(); }
       break;
     }
     case 'tcp-open': tcpOpen(message); break;
@@ -351,6 +367,11 @@ export class NativeRelay {
   resumeProcessOutput(id: string, stream: ProcessOutput): void {
     if (this.#closed) return;
     this.#send({ type: "proc-resume", id, stream });
+  }
+
+  discardProcessOutput(id: string, stream: ProcessOutput): void {
+    if (this.#closed) return;
+    this.#send({ type: "proc-discard", id, stream });
   }
 
   openTcp(id: string, port: number, sink: TcpSink): void {
@@ -575,6 +596,8 @@ export class NativeSpawnedProcess implements SpawnedProcess, ProcessSink {
   #relay?: NativeRelay;
   #pid?: number;
   #settled = false;
+  #stdoutCanceled = false;
+  #stderrCanceled = false;
   #stdoutPaused = false;
   #stderrPaused = false;
 
@@ -584,12 +607,14 @@ export class NativeSpawnedProcess implements SpawnedProcess, ProcessSink {
         this.#stdoutController = controller;
       },
       pull: () => this.#resumeOutput("stdout"),
+      cancel: () => this.#cancelOutput("stdout"),
     });
     this.stderr = new ReadableStream({
       start: (controller) => {
         this.#stderrController = controller;
       },
       pull: () => this.#resumeOutput("stderr"),
+      cancel: () => this.#cancelOutput("stderr"),
     });
     this.#abortSignal = options.abortSignal;
     this.#onAbort = () => {
@@ -604,6 +629,8 @@ export class NativeSpawnedProcess implements SpawnedProcess, ProcessSink {
         if (this.#settled) return;
         this.#relay = connected;
         connected.startProcess(this.#id, options, this, loginShell);
+        if (this.#stdoutCanceled) connected.discardProcessOutput(this.#id, "stdout");
+        if (this.#stderrCanceled) connected.discardProcessOutput(this.#id, "stderr");
       })
       .catch((error: unknown) => this.onError(toError(error)));
   }
@@ -628,8 +655,8 @@ export class NativeSpawnedProcess implements SpawnedProcess, ProcessSink {
     if (this.#settled) return;
     this.#settled = true;
     this.#cleanup();
-    this.#stdoutController.close();
-    this.#stderrController.close();
+    if (!this.#stdoutCanceled) this.#stdoutController.close();
+    if (!this.#stderrCanceled) this.#stderrController.close();
     this.#completion.resolve({ exitCode: code });
   }
 
@@ -637,8 +664,8 @@ export class NativeSpawnedProcess implements SpawnedProcess, ProcessSink {
     if (this.#settled) return;
     this.#settled = true;
     this.#cleanup();
-    this.#stdoutController.error(error);
-    this.#stderrController.error(error);
+    if (!this.#stdoutCanceled) this.#stdoutController.error(error);
+    if (!this.#stderrCanceled) this.#stderrController.error(error);
     this.#completion.reject(error);
   }
 
@@ -653,7 +680,7 @@ export class NativeSpawnedProcess implements SpawnedProcess, ProcessSink {
   }
 
   #enqueueOutput(stream: ProcessOutput, data: Uint8Array): void {
-    if (this.#settled) return;
+    if (this.#settled || this.#outputCanceled(stream)) return;
     const controller = stream === "stdout" ? this.#stdoutController : this.#stderrController;
     controller.enqueue(data);
     if ((controller.desiredSize ?? 0) > 0) return;
@@ -668,7 +695,7 @@ export class NativeSpawnedProcess implements SpawnedProcess, ProcessSink {
   }
 
   #resumeOutput(stream: ProcessOutput): void {
-    if (this.#settled) return;
+    if (this.#settled || this.#outputCanceled(stream)) return;
     if (stream === "stdout") {
       if (!this.#stdoutPaused) return;
       this.#stdoutPaused = false;
@@ -677,6 +704,22 @@ export class NativeSpawnedProcess implements SpawnedProcess, ProcessSink {
       this.#stderrPaused = false;
     }
     this.#relay?.resumeProcessOutput(this.#id, stream);
+  }
+
+  #cancelOutput(stream: ProcessOutput): void {
+    if (this.#settled || this.#outputCanceled(stream)) return;
+    if (stream === "stdout") {
+      this.#stdoutCanceled = true;
+      this.#stdoutPaused = false;
+    } else {
+      this.#stderrCanceled = true;
+      this.#stderrPaused = false;
+    }
+    this.#relay?.discardProcessOutput(this.#id, stream);
+  }
+
+  #outputCanceled(stream: ProcessOutput): boolean {
+    return stream === "stdout" ? this.#stdoutCanceled : this.#stderrCanceled;
   }
 
   #cleanup(): void {

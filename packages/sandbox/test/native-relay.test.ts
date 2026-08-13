@@ -259,6 +259,83 @@ describe("native workspace relay", () => {
     await expect(process.wait()).resolves.toEqual({ exitCode: 0 });
   });
 
+  it("settles normally after a caller cancels one process stream", async () => {
+    type Sink = {
+      onStarted(pid: number): void;
+      onStdout(data: Uint8Array): void;
+      onStderr(data: Uint8Array): void;
+      onExit(code: number): void;
+      onError(error: Error): void;
+    };
+    let sink!: Sink;
+    const flow: string[] = [];
+    const relay = {
+      startProcess: (_id: string, _options: unknown, processSink: Sink) => {
+        sink = processSink;
+      },
+      pauseProcessOutput: (_id: string, stream: string) => flow.push(`pause:${stream}`),
+      resumeProcessOutput: (_id: string, stream: string) => flow.push(`resume:${stream}`),
+      discardProcessOutput: (_id: string, stream: string) => flow.push(`discard:${stream}`),
+      unregisterProcess: () => {},
+      killProcess: () => {},
+    } as unknown as NativeRelay;
+    const process = new NativeSpawnedProcess(
+      Promise.resolve(relay),
+      { workspace: "ws", command: "ignored" },
+      false,
+    );
+    await Promise.resolve();
+
+    sink.onStdout(Buffer.from("queued"));
+    await process.stdout.cancel();
+    expect(flow).toEqual(["pause:stdout", "discard:stdout"]);
+    expect(() => sink.onStdout(Buffer.from("late"))).not.toThrow();
+
+    const stderrReader = process.stderr.getReader();
+    sink.onStderr(Buffer.from("err"));
+    await expect(stderrReader.read()).resolves.toMatchObject({ value: Buffer.from("err") });
+    expect(() => sink.onExit(0)).not.toThrow();
+    await expect(stderrReader.read()).resolves.toEqual({ done: true, value: undefined });
+    await expect(process.wait()).resolves.toEqual({ exitCode: 0 });
+  });
+
+  it("discards canceled output inside the workspace relay", async () => {
+    const relay = new RelayHarness();
+    harnesses.push(relay);
+    await relay.next((message) => message.type === "ready");
+    relay.send({
+      type: "start",
+      id: "process-discard",
+      command: "kill -STOP $$; printf dropped; printf kept >&2; kill -STOP $$",
+      loginShell: false,
+    });
+    await relay.next((message) => message.type === "started" && message.id === "process-discard");
+    relay.send({ type: "proc-discard", id: "process-discard", stream: "stdout" });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    relay.send({ type: "kill", id: "process-discard", signal: "SIGCONT" });
+    expect(
+      Buffer.from(
+        (
+          await relay.next(
+            (message) => message.type === "stderr" && message.id === "process-discard",
+          )
+        ).data ?? "",
+        "base64",
+      ).toString(),
+    ).toBe("kept");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(
+      relay.messages.some(
+        (message) => message.type === "stdout" && message.id === "process-discard",
+      ),
+    ).toBe(false);
+    relay.send({ type: "kill", id: "process-discard", signal: "SIGCONT" });
+    expect(
+      (await relay.next((message) => message.type === "exit" && message.id === "process-discard"))
+        .code,
+    ).toBe(0);
+  });
+
   it("terminates a spawned process group", async () => {
     const relay = new RelayHarness();
     harnesses.push(relay);

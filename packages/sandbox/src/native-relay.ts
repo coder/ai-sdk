@@ -43,6 +43,7 @@ const processInputPauses = new Set();
 const sockets = new Map();
 const socketOutputPauses = new Map();
 const signalNumbers = os.constants.signals;
+const childShutdownGraceMs = 500;
 let outputCarrierPaused = false;
 function resolveExecutable(name) {
   for (const directory of String(process.env.PATH || '/usr/local/bin:/usr/bin:/bin').split(path.delimiter)) {
@@ -204,14 +205,21 @@ function processStdinEnd(message) {
   if (!child || child.stdin.destroyed || child.stdin.writableEnded) return;
   try { child.stdin.end(); } catch (_) {}
 }
+function signalProcessGroup(pid, signal) {
+  try {
+    process.kill(process.platform !== 'win32' ? -pid : pid, signal);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+function processGroupAlive(pid) {
+  return signalProcessGroup(pid, 0);
+}
 function terminate(child, signal) {
   if (!child || !child.pid) return;
-  try {
-    if (process.platform !== 'win32') process.kill(-child.pid, signal);
-    else child.kill(signal);
-  } catch (_) {
-    try { child.kill(signal); } catch (_) {}
-  }
+  if (signalProcessGroup(child.pid, signal)) return;
+  try { child.kill(signal); } catch (_) {}
 }
 function discardProcessOutput(id, streamName) {
   const child = processes.get(id);
@@ -293,20 +301,46 @@ function receive(line) {
   }
 }
 let shuttingDown = false;
-function cleanup() {
+function shutdown(exitCode) {
   if (shuttingDown) return;
   shuttingDown = true;
-  for (const child of processes.values()) terminate(child, 'SIGTERM');
+  const groupPids = [];
+  for (const [id, child] of processes) {
+    discardProcessOutput(id, 'stdout');
+    discardProcessOutput(id, 'stderr');
+    if (child.pid) groupPids.push(child.pid);
+    terminate(child, 'SIGTERM');
+  }
   for (const socket of sockets.values()) socket.destroy();
+  if (groupPids.length === 0) {
+    process.exit(exitCode);
+    return;
+  }
+  let pollTimer;
+  let forceTimer;
+  const finish = () => {
+    if (pollTimer) clearInterval(pollTimer);
+    if (forceTimer) clearTimeout(forceTimer);
+    process.exit(exitCode);
+  };
+  pollTimer = setInterval(() => {
+    if (groupPids.every((pid) => !processGroupAlive(pid))) finish();
+  }, 10);
+  forceTimer = setTimeout(() => {
+    for (const pid of groupPids) signalProcessGroup(pid, 'SIGKILL');
+    finish();
+  }, childShutdownGraceMs);
 }
 const input = readline.createInterface({ input: process.stdin, crlfDelay: Infinity, terminal: false });
 process.stdout.on('drain', resumeOutputCarrier);
 input.on('line', receive);
-input.once('close', () => { cleanup(); process.exit(0); });
+input.once('close', () => shutdown(0));
 for (const signal of ['SIGHUP', 'SIGINT', 'SIGQUIT', 'SIGTERM']) {
-  process.once(signal, () => { cleanup(); process.exit(processExitCode(null, signal)); });
+  process.once(signal, () => shutdown(processExitCode(null, signal)));
 }
-process.once('exit', cleanup);
+process.once('exit', () => {
+  for (const child of processes.values()) terminate(child, 'SIGKILL');
+});
 emit({ type: 'ready', protocol: 1, pid: process.pid });
 `;
 

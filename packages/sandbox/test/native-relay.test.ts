@@ -886,6 +886,45 @@ describe("native workspace relay", () => {
     }
   });
 
+  it("force-kills TERM-resistant process groups before the relay exits", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "coder-native-relay-force-cleanup-"));
+    tempDirs.push(dir);
+    const startedPath = path.join(dir, "started");
+    const terminatedPath = path.join(dir, "terminated");
+    const descendantSource =
+      `const fs = require('node:fs'); ` +
+      `fs.writeFileSync(${JSON.stringify(startedPath)}, String(process.pid)); ` +
+      `process.on('SIGTERM', () => fs.writeFileSync(${JSON.stringify(terminatedPath)}, 'yes')); ` +
+      `setInterval(() => {}, 1000);`;
+    const relay = new RelayHarness();
+    harnesses.push(relay);
+    let descendantPid: number | undefined;
+    try {
+      await relay.next((message) => message.type === "ready");
+      relay.send({
+        type: "start",
+        id: "process-relay-force-exit",
+        command: `${shellQuote(process.execPath)} -e ${shellQuote(descendantSource)} & wait`,
+        loginShell: false,
+      });
+      await relay.next(
+        (message) => message.type === "started" && message.id === "process-relay-force-exit",
+      );
+      descendantPid = Number(await waitForFile(startedPath));
+      const closed = once(relay.child, "close");
+      relay.close();
+      await closed;
+      expect(await waitForFile(terminatedPath)).toBe("yes");
+      await waitForProcessExit(descendantPid);
+    } finally {
+      if (descendantPid !== undefined) {
+        try {
+          process.kill(descendantPid, "SIGKILL");
+        } catch {}
+      }
+    }
+  });
+
   it("opens a binary-safe TCP channel", async () => {
     const upstream = net.createServer((socket) => {
       socket.write(Buffer.from([0, 255, 1]));
@@ -1222,6 +1261,20 @@ async function waitForFile(file: string): Promise<string> {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
     if (Date.now() >= deadline) throw new Error(`timed out waiting for ${file}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+async function waitForProcessExit(pid: number): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  for (;;) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+      throw error;
+    }
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for process ${pid} to exit`);
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }

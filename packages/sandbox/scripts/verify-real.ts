@@ -3,8 +3,10 @@
  *
  *   npx tsx scripts/verify-real.ts [workspace]   (default: aisdk-sandbox-test)
  *
- * Requires the `coder` CLI on PATH and logged in. Exercises the actual
- * CoderCliTransport + createCoderWorkspace: exec, exit codes, env, cwd, stdin,
+ * By default, requires the `coder` CLI on PATH and logged in. Set
+ * `CODER_TRANSPORT=native`, `CODER_URL`, and `CODER_SESSION_TOKEN` to exercise
+ * CoderNativeTransport without invoking the CLI from the transport. Exercises
+ * createCoderWorkspace: exec, exit codes, env, cwd, stdin,
  * base64 file round-trips, spawn streaming, and — the bridge's critical path —
  * a real WebSocket upgrade tunneled through OpenSSH `-L` forwarding.
  */
@@ -12,10 +14,11 @@
 import crypto from "node:crypto";
 import net from "node:net";
 import { CoderCliTransport } from "../src/cli-transport.js";
+import { CoderNativeTransport } from "../src/native-transport.js";
 import * as fileIo from "../src/file-io.js";
 import { createCoderWorkspace } from "../src/index.js";
 
-const WS = process.argv[2] ?? "aisdk-sandbox-test";
+const WS = process.argv.slice(2).find((argument) => argument !== "--") ?? "aisdk-sandbox-test";
 const PORT = 4000;
 
 let passed = 0;
@@ -129,8 +132,9 @@ while True:
 `;
 
 async function main(): Promise<void> {
-  const transport = new CoderCliTransport({});
-  console.log(`\n# Verifying against workspace "${WS}"\n`);
+  const native = process.env.CODER_TRANSPORT === "native";
+  const transport = native ? new CoderNativeTransport({}) : new CoderCliTransport({});
+  console.log(`\n# Verifying ${native ? "native" : "CLI"} transport against workspace "${WS}"\n`);
 
   console.log("## exec");
   const echo = await transport.exec({ workspace: WS, command: "echo hello" });
@@ -162,7 +166,7 @@ async function main(): Promise<void> {
     JSON.stringify(errSep),
   );
 
-  console.log("## file I/O (base64 over ssh)");
+  console.log("## file I/O (base64 over transport exec)");
   const dir = `/tmp/aisdk-verify-${Date.now()}`;
   const ctx: fileIo.FileIoContext = { transport, workspace: WS, defaultWorkingDirectory: dir };
   await fileIo.writeTextFile(ctx, { path: `${dir}/notes.txt`, content: "hello\nworld" });
@@ -196,7 +200,7 @@ async function main(): Promise<void> {
   check("spawn wait exit code", wr.exitCode === 0);
 
   console.log("## provider + session (public API)");
-  const provider = createCoderWorkspace({ workspace: WS });
+  const provider = createCoderWorkspace({ workspace: WS, transport });
   const session = await provider.createSession();
   check("session.id = workspace", session.id === WS);
   check(
@@ -207,7 +211,7 @@ async function main(): Promise<void> {
   const runRes = await session.run({ command: "echo via-session" });
   check("session.run", runRes.stdout.trim() === "via-session" && runRes.exitCode === 0);
 
-  console.log("## getPortUrl + WebSocket over ssh -L (the bridge path)");
+  console.log("## getPortUrl + WebSocket over the transport's local forward");
   const serverPath = `${dir}/ws_server.py`;
   await session.writeTextFile({ path: serverPath, content: WS_SERVER_PY });
   const serverProc = await session.spawn({ command: `python3 ${serverPath} ${PORT}` });
@@ -245,6 +249,7 @@ async function main(): Promise<void> {
   await Promise.resolve(serverProc.kill()).catch(() => {});
   await session.stop();
   await transport.exec({ workspace: WS, command: `rm -rf ${dir}` }).catch(() => {});
+  if (transport instanceof CoderNativeTransport) await transport.close();
   check("session.stop() + cleanup", true);
 
   console.log(`\n# Result: ${passed} passed, ${failed} failed\n`);

@@ -1,4 +1,6 @@
 export { CoderCliTransport, type CoderCliTransportOptions } from "./cli-transport.js";
+export { CoderNativeTransport, type CoderNativeTransportOptions } from "./native-transport.js";
+export { CoderNativeApiError } from "./native-api.js";
 export {
   CODER_WORKSPACE_PROVIDER_ID,
   type CoderCreateSettings,

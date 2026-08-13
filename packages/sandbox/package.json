@@ -48,8 +48,13 @@
     "test:coverage": "vitest run --coverage",
     "attw": "attw --pack --ignore-rules cjs-resolves-to-esm",
     "verify:real": "tsx scripts/verify-real.ts",
+    "verify:native": "CODER_TRANSPORT=native tsx scripts/verify-real.ts",
     "verify:create": "tsx scripts/verify-create.ts",
     "prepublishOnly": "pnpm run build && pnpm run typecheck && pnpm test && publint && pnpm run attw"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@ai-sdk/harness": "^1.0.23",
@@ -58,6 +63,7 @@
     "@ai-sdk/tui": "^1.0.19",
     "@arethetypeswrong/cli": "^0.18.0",
     "@types/node": "^22",
+    "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "^4.1.9",
     "publint": "^0.3.0",
     "tsup": "^8.5.1",

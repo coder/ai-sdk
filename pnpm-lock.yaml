@@ -128,6 +128,13 @@ importers:
         version: 4.1.9(@opentelemetry/api@1.9.1)(@types/node@25.9.3)(@vitest/coverage-v8@4.1.9)(vite@8.0.16(@types/node@25.9.3)(esbuild@0.28.1)(tsx@4.22.4)(yaml@2.9.0))
 
   packages/sandbox:
+    dependencies:
+      ws:
+        specifier: ^8.18.0
+        version: 8.21.0
+      yaml:
+        specifier: ^2.9.0
+        version: 2.9.0
     devDependencies:
       '@ai-sdk/harness':
         specifier: ^1.0.23
@@ -147,6 +154,9 @@ importers:
       '@types/node':
         specifier: ^22
         version: 22.19.21
+      '@types/ws':
+        specifier: ^8.18.1
+        version: 8.18.1
       '@vitest/coverage-v8':
         specifier: ^4.1.9
         version: 4.1.9(vitest@4.1.9)

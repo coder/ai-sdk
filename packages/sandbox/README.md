@@ -19,12 +19,14 @@ you pass it as the `sandbox` to a `HarnessAgent` exactly like
 npm add @coder/ai-sdk-sandbox @ai-sdk/harness @ai-sdk/harness-claude-code @ai-sdk/provider-utils
 ```
 
-On the host you also need:
+Choose one host transport:
 
-- the [`coder` CLI](https://coder.com/docs/install) on PATH and authenticated
-  (`coder login`); for non-ambient auth, configure the transport explicitly with
-  `new CoderCliTransport({ url, token })` (see [Settings](#settings));
-- an **OpenSSH client** (`ssh`) on PATH — exec runs through it (see "How it works").
+- `CoderNativeTransport` connects directly to Coderd and requires no `coder` or
+  `ssh` binary on the host. Pass a deployment URL and token (see
+  [Native transport](#native-transport)).
+- The default `CoderCliTransport` requires the
+  [`coder` CLI](https://coder.com/docs/install), an authenticated `coder login`,
+  and an OpenSSH client (`ssh`) on PATH.
 
 ## Quick start
 
@@ -54,6 +56,33 @@ try {
 ```
 
 See [`examples/claude-code.ts`](./examples/claude-code.ts) for a runnable version.
+
+### Native transport
+
+Use `CoderNativeTransport` when the host should not depend on the Coder CLI or
+OpenSSH:
+
+```ts
+import { CoderNativeTransport, createCoderWorkspace } from "@coder/ai-sdk-sandbox";
+
+const transport = new CoderNativeTransport({
+  url: process.env.CODER_URL!,
+  token: process.env.CODER_SESSION_TOKEN!,
+});
+
+const sandbox = createCoderWorkspace({
+  workspace: "my-dev-workspace",
+  transport,
+});
+
+// When the application shuts down, close cached relay WebSockets:
+await transport.close();
+```
+
+The constructor falls back to `CODER_URL` and `CODER_SESSION_TOKEN`, so
+`new CoderNativeTransport()` is sufficient when both are set. The token is sent
+only to Coderd in the `Coder-Session-Token` header; it is never copied into the
+workspace.
 
 ## Creating workspaces on demand
 
@@ -233,7 +262,11 @@ Because the bridge runs inside the workspace, the workspace image must have:
 [Creating workspaces on demand](#creating-workspaces-on-demand)).
 
 ```ts
-import { createCoderWorkspace, CoderCliTransport } from "@coder/ai-sdk-sandbox";
+import {
+  createCoderWorkspace,
+  CoderCliTransport,
+  CoderNativeTransport,
+} from "@coder/ai-sdk-sandbox";
 
 createCoderWorkspace({
   // One of these is required (TypeScript enforces it):
@@ -254,6 +287,12 @@ createCoderWorkspace({
     // url: process.env.CODER_URL, token: process.env.CODER_SESSION_TOKEN,
     // env: {}, loginShell: true, waitMode: 'no',
   }),
+
+  // Or connect directly to Coderd with no host CLI/OpenSSH dependency:
+  // transport: new CoderNativeTransport({
+  //   url: process.env.CODER_URL,
+  //   token: process.env.CODER_SESSION_TOKEN,
+  // }),
 });
 ```
 
@@ -276,10 +315,11 @@ createCoderWorkspace({
 
 The adapter binds its bridge to a port and resolves it from
 `createClaudeCode({ port })` or, by default, `sandbox.ports[0]`. Expose that port
-via `ports` (default `[4000]`); `getPortUrl` opens an OpenSSH `-L` local forward
-(over the same `coder ssh --stdio` ProxyCommand) to it on demand and returns a
-loopback `ws://` URL. The forward is plaintext on loopback, so `https`/`wss`
-requests resolve to their `http`/`ws` loopback equivalent.
+via `ports` (default `[4000]`); `getPortUrl` asks the configured transport for a
+local TCP forward and returns a loopback `ws://` URL. The CLI transport uses
+OpenSSH `-L`; the native transport multiplexes TCP over its Coderd WebSocket.
+The forward is plaintext on loopback, so `https`/`wss` requests resolve to their
+`http`/`ws` loopback equivalent.
 
 ## How it works
 
@@ -290,14 +330,13 @@ bridge runs the vendor SDK in-workspace and streams events back to the host.
 
 This provider maps that contract onto Coder primitives:
 
-| Harness contract                            | Coder implementation                                                                        |
-| ------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `run` / `spawn`                             | OpenSSH `bash -lc '…'` over a `coder ssh --stdio` ProxyCommand                              |
-| `readFile` / `writeFile` / `read*`/`write*` | base64 piped over the SSH connection (binary-safe)                                          |
-| `getPortUrl({ port, protocol })`            | OpenSSH `-L <local>:127.0.0.1:<port>` over the same ProxyCommand → `ws://127.0.0.1:<local>` |
-| `ports` / `setPorts`                        | the workspace's exposed port set                                                            |
-| `createSession` / `resumeSession` / `id`    | attach to a workspace by name                                                               |
-| `stop` / `destroy`                          | `coder stop` / `coder delete` (only when it owns the lifecycle)                             |
+| Harness contract                            | CLI transport                                      | Native transport                                          |
+| ------------------------------------------- | -------------------------------------------------- | --------------------------------------------------------- |
+| `run` / `spawn`                             | OpenSSH over `coder ssh --stdio`                   | versioned process relay over Coderd's agent PTY WebSocket |
+| `readFile` / `writeFile` / `read*`/`write*` | base64 over SSH                                    | base64 over the native process relay                      |
+| `getPortUrl({ port, protocol })`            | OpenSSH `-L`                                       | multiplexed TCP channels over the relay                   |
+| `createSession` / `resumeSession` / `id`    | CLI workspace lookup                               | Coderd v2 REST API                                        |
+| `stop` / `destroy`                          | `coder stop` / `coder delete` when lifecycle-owned | Coderd workspace-build transitions                        |
 
 **Why OpenSSH and not `coder ssh <ws> -- cmd`?** `coder ssh` allocates a PTY for
 the command, which rewrites newlines to CRLF, merges stdout and stderr onto one
@@ -307,6 +346,15 @@ use and for the bridge's stdout parsing. `coder ssh`'s own help recommends
 provider does the programmatic equivalent, running real OpenSSH over a
 `coder ssh --stdio` ProxyCommand. That yields clean, separated streams and
 correct exit codes (verified against a live workspace).
+
+**How the native relay stays byte-clean.** Coderd's browser-terminal endpoint
+is a PTY, which by itself merges stdout/stderr and has no process exit-code
+channel. The native transport uses it only as a carrier: it bootstraps a small,
+dependency-free Node relay, switches the PTY to raw/no-echo mode, and exchanges
+versioned newline-delimited frames with base64 byte payloads. The relay launches
+commands with separate pipes and also opens TCP sockets for `getPortUrl`. It
+does not bind a workspace port or persist credentials/files; one relay is cached
+per selected workspace agent and `transport.close()` tears it down.
 
 The WebSocket the harness opens against `getPortUrl(...)` is the critical path,
 and it needs no wildcard access URLs — the host running `HarnessAgent` is already
@@ -326,6 +374,11 @@ and a full Claude Code turn with tool use (`scripts/e2e-claude.ts`).
   workspace per session rather than leasing ports from a shared sandbox.
 - File reads buffer the whole file (binary content moves as base64). Fine for
   bootstrap-sized files; not intended for streaming very large files.
+- `CoderNativeTransport` currently targets POSIX workspaces with `bash`, `stty`,
+  `base64`, and Node.js. Its default relay executable is `node`; override
+  `relayNodeCommand` when Node lives at a fixed nonstandard path.
+- A workspace with multiple agents must be selected as `workspace.agent`; the
+  native transport refuses to guess.
 - `@ai-sdk/sandbox-just-bash` cannot expose ports and is rejected by bridge-backed
   adapters — this provider exists precisely to provide that port.
 - To run Claude Code / Codex, the **workspace** image needs Node.js (the adapter
@@ -347,6 +400,12 @@ npm run check       # biome check .            (format + lint, read-only; for CI
 
 # End-to-end against a real workspace (needs the coder CLI + a running workspace):
 npm run verify:real -- my-ws
+
+# The same contract through Coderd directly. The CLI is used only to retrieve
+# the already-authenticated token for this shell; CoderNativeTransport never invokes it:
+CODER_URL=https://coder.example.com \
+  CODER_SESSION_TOKEN="$(coder login token)" \
+  npm run verify:native -- my-ws
 
 # End-to-end of create mode (creates a throwaway workspace, then deletes it):
 npm run verify:create -- docker

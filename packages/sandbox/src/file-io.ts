@@ -4,8 +4,8 @@ import type { CoderTransport } from "./transport.js";
 
 /**
  * File I/O for {@link CoderWorkspaceSession}, implemented over the
- * transport's `exec`. Binary payloads cross the `coder ssh` boundary as base64
- * to stay byte-clean regardless of PTY/encoding behavior: reads run `base64
+ * transport's `exec`. Binary payloads cross the transport boundary as base64 to
+ * stay byte-clean regardless of PTY/encoding behavior: reads run `base64
  * <file>` remotely and decode on the host; writes pipe host-encoded base64 to a
  * remote `base64 -d > <file>`.
  */

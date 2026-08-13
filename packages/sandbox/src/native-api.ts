@@ -321,12 +321,13 @@ export class CoderApiClient {
           )
         ).id
       : template.active_version_id;
-    const presets =
-      options.preset !== undefined && options.preset !== "none"
-        ? await this.#presets(versionId, options.abortSignal)
-        : [];
-    const preset = presets.find((candidate) => presetName(candidate) === options.preset);
-    if (options.preset !== undefined && options.preset !== "none" && preset === undefined) {
+    const noPreset = options.preset?.toLowerCase() === "none";
+    const presets = noPreset ? [] : await this.#presets(versionId, options.abortSignal);
+    const preset =
+      options.preset === undefined
+        ? presets.find(presetDefault)
+        : presets.find((candidate) => presetName(candidate) === options.preset);
+    if (options.preset !== undefined && !noPreset && preset === undefined) {
       throw new Error(
         `preset "${options.preset}" not found for template "${options.template}"; ` +
           `available presets: ${presets.map(presetName).join(", ") || "none"}`,
@@ -551,6 +552,10 @@ function presetId(preset: ApiPreset): string {
   const id = preset.ID ?? preset.id;
   if (!id) throw new Error(`Coder preset "${presetName(preset)}" has no id`);
   return id;
+}
+
+function presetDefault(preset: ApiPreset): boolean {
+  return preset.Default ?? preset.default ?? false;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

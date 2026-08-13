@@ -1,11 +1,11 @@
-import { spawn } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { NATIVE_RELAY_SOURCE } from "../src/native-relay.js";
+import { NativeRelay, NATIVE_RELAY_SOURCE, openNativePortForward } from "../src/native-relay.js";
 import { shellQuote } from "../src/shell.js";
 
 interface Message {
@@ -19,14 +19,16 @@ interface Message {
 }
 
 class RelayHarness {
-  readonly child = spawn(process.execPath, ["-e", NATIVE_RELAY_SOURCE], {
-    stdio: ["pipe", "pipe", "pipe"],
-  });
+  readonly child: ChildProcessWithoutNullStreams;
   readonly messages: Message[] = [];
   readonly waiters = new Set<() => void>();
   #buffer = "";
 
-  constructor() {
+  constructor(options: { env?: NodeJS.ProcessEnv } = {}) {
+    this.child = spawn(process.execPath, ["-e", NATIVE_RELAY_SOURCE], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: options.env,
+    });
     this.child.stdout.setEncoding("utf8");
     this.child.stdout.on("data", (chunk: string) => {
       this.#buffer += chunk;
@@ -103,6 +105,43 @@ describe("native workspace relay", () => {
       ).toString(),
     ).toBe("err");
     expect((await relay.next((message) => message.type === "exit")).code).toBe(7);
+  });
+
+  it("applies command environment after login profile initialization", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "coder-native-relay-env-"));
+    tempDirs.push(dir);
+    const bash = path.join(dir, "bash");
+    await writeFile(
+      bash,
+      '#!/bin/sh\nif [ "$1" = "-lc" ]; then export CODER_RELAY_ENV_ORDER=profile; fi\nexec /bin/bash "$@"\n',
+    );
+    await chmod(bash, 0o755);
+    const relay = new RelayHarness({
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH ?? ""}` },
+    });
+    harnesses.push(relay);
+    await relay.next((message) => message.type === "ready");
+    relay.send({
+      type: "start",
+      id: "process-env-order",
+      command: 'printf %s "$CODER_RELAY_ENV_ORDER"',
+      loginShell: true,
+      env: { CODER_RELAY_ENV_ORDER: `caller ' "$PATH"` },
+    });
+    expect(
+      Buffer.from(
+        (
+          await relay.next(
+            (message) => message.type === "stdout" && message.id === "process-env-order",
+          )
+        ).data ?? "",
+        "base64",
+      ).toString(),
+    ).toBe(`caller ' "$PATH"`);
+    expect(
+      (await relay.next((message) => message.type === "exit" && message.id === "process-env-order"))
+        .code,
+    ).toBe(0);
   });
 
   it("terminates a spawned process group", async () => {
@@ -217,6 +256,57 @@ describe("native workspace relay", () => {
       ).toBe("ping");
     } finally {
       upstream.close();
+    }
+  });
+
+  it("flushes queued TCP data before a graceful remote close", async () => {
+    type Sink = {
+      opened(): void;
+      data(data: Uint8Array): void;
+      end(): void;
+      close(): void;
+      error(error: Error): void;
+    };
+    let resolveSink!: (sink: Sink) => void;
+    const sinkReady = new Promise<Sink>((resolve) => {
+      resolveSink = resolve;
+    });
+    const relay = {
+      closed: false,
+      onClose: () => () => {},
+      openTcp: (_id: string, _port: number, sink: Sink) => {
+        resolveSink(sink);
+        sink.opened();
+      },
+      tcpData: () => {},
+      tcpEnd: () => {},
+      closeTcp: () => {},
+    } as unknown as NativeRelay;
+    const forward = await openNativePortForward(relay, { workspace: "ws", remotePort: 4444 });
+    try {
+      const payload = Buffer.alloc(1024 * 1024, 0x5a);
+      const received: Buffer[] = [];
+      let socketError: Error | undefined;
+      const socket = net.connect(forward.localPort, forward.localHost);
+      socket.on("data", (data) => received.push(data));
+      socket.on("error", (error) => {
+        socketError = error;
+      });
+      socket.pause();
+      await once(socket, "connect");
+      const sink = await sinkReady;
+      sink.data(payload);
+      sink.end();
+      sink.close();
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      socket.resume();
+      await once(socket, "close");
+      expect(socketError).toBeUndefined();
+      const result = Buffer.concat(received);
+      expect(result.length).toBe(payload.length);
+      expect(result.equals(payload)).toBe(true);
+    } finally {
+      await forward.close();
     }
   });
 });

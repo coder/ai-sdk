@@ -182,6 +182,58 @@ describe("CoderApiClient", () => {
     ]);
   });
 
+  it("selects the default preset only when preset is omitted", async () => {
+    const createBodies: Record<string, unknown>[] = [];
+    let presetRequests = 0;
+    const client = new CoderApiClient({
+      url: "https://coder.example.test",
+      token: "secret",
+      buildPollIntervalMs: 1,
+      fetch: async (input, init) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/api/v2/templates") {
+          return json([
+            {
+              id: "template-id",
+              name: "docker",
+              organization_id: "org-id",
+              organization_name: "default",
+              active_version_id: "version-id",
+            },
+          ]);
+        }
+        if (url.pathname === "/api/v2/templateversions/version-id/presets") {
+          presetRequests++;
+          return json([
+            { ID: "other-preset-id", Name: "Other", Default: false },
+            { ID: "default-preset-id", Name: "Default", Default: true },
+          ]);
+        }
+        if (url.pathname === "/api/v2/users/me/workspaces") {
+          createBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+          return json(workspace({ latest_build: { id: "new-build" } }), { status: 201 });
+        }
+        if (url.pathname === "/api/v2/workspacebuilds/new-build") {
+          return json({ id: "new-build", transition: "start", job: { status: "succeeded" } });
+        }
+        return json({ message: "unexpected route", detail: url.pathname }, { status: 500 });
+      },
+    });
+
+    await client.create({ workspace: "default-ws", template: "docker" });
+    await client.create({ workspace: "no-preset-ws", template: "docker", preset: "none" });
+
+    expect(presetRequests).toBe(1);
+    expect(createBodies[0]).toMatchObject({
+      name: "default-ws",
+      template_version_preset_id: "default-preset-id",
+    });
+    expect(createBodies[1]).toEqual({
+      name: "no-preset-ws",
+      template_version_id: "version-id",
+    });
+  });
+
   it("starts with the prior version and waits for the provisioner job", async () => {
     const requests: { method: string; pathname: string; body?: unknown }[] = [];
     const client = new CoderApiClient({

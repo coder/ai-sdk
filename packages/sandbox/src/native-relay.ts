@@ -34,6 +34,15 @@ function emit(message) {
 function bytes(value) {
   return Buffer.from(value || '', 'base64');
 }
+function shellQuote(value) {
+  return "'" + String(value).replace(/'/g, "'\\''") + "'";
+}
+function commandScript(message) {
+  const entries = Object.entries(message.env || {});
+  if (entries.length === 0) return message.command;
+  const assignments = entries.map(([key, value]) => shellQuote(key + '=' + String(value))).join(' ');
+  return 'exec env ' + assignments + ' bash -c ' + shellQuote(message.command);
+}
 function processExitCode(code, signal) {
   if (typeof code === 'number') return code;
   return 128 + (signalNumbers[signal] || 0);
@@ -43,13 +52,12 @@ function start(message) {
     emit({ type: 'proc-error', id: message.id, message: 'duplicate process id' });
     return;
   }
-  const env = Object.assign({}, process.env, message.env || {});
-  const args = [message.loginShell === false ? '-c' : '-lc', message.command];
+  const args = [message.loginShell === false ? '-c' : '-lc', commandScript(message)];
   let child;
   try {
     child = childProcess.spawn('bash', args, {
       cwd: message.cwd || undefined,
-      env,
+      env: process.env,
       detached: process.platform !== 'win32',
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -609,6 +617,7 @@ export async function openNativePortForward(
     sockets.add(socket);
     socket.pause();
     let remoteClosed = false;
+    let remoteEnded = false;
     const closeRemote = () => {
       if (remoteClosed) return;
       remoteClosed = true;
@@ -627,10 +636,13 @@ export async function openNativePortForward(
         data: (data) => {
           if (!socket.destroyed) socket.write(data);
         },
-        end: () => socket.end(),
+        end: () => {
+          remoteEnded = true;
+          socket.end();
+        },
         close: () => {
           remoteClosed = true;
-          if (!socket.destroyed) socket.destroy();
+          if (!remoteEnded && !socket.destroyed) socket.destroy();
         },
         error: (error) => {
           remoteClosed = true;

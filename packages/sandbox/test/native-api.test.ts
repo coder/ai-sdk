@@ -515,6 +515,63 @@ describe("CoderApiClient", () => {
     });
   });
 
+  it("waits for an in-flight stop before creating a start build", async () => {
+    const events: string[] = [];
+    let workspaceRequests = 0;
+    const client = new CoderApiClient({
+      url: "https://coder.example.test",
+      token: "secret",
+      buildPollIntervalMs: 1,
+      fetch: async (input, init) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/api/v2/users/me/workspace/ws") {
+          workspaceRequests += 1;
+          const status = workspaceRequests === 1 ? "stopping" : "stopped";
+          events.push(`workspace:${status}`);
+          return json(
+            workspace({
+              latest_build: {
+                id: "stop-build",
+                template_version_id: "version-current",
+                transition: "stop",
+                status,
+                job: { status: workspaceRequests === 1 ? "running" : "succeeded" },
+                resources: [],
+              },
+            }),
+          );
+        }
+        if (url.pathname === "/api/v2/workspacebuilds/stop-build") {
+          events.push("poll:stop");
+          return json({ id: "stop-build", transition: "stop", job: { status: "succeeded" } });
+        }
+        if (url.pathname === "/api/v2/workspaces/workspace-id/builds") {
+          events.push("post:start");
+          expect(init?.method).toBe("POST");
+          expect(JSON.parse(String(init?.body))).toMatchObject({ transition: "start" });
+          return json(
+            { id: "start-build", transition: "start", job: { status: "pending" } },
+            { status: 201 },
+          );
+        }
+        if (url.pathname === "/api/v2/workspacebuilds/start-build") {
+          events.push("poll:start");
+          return json({ id: "start-build", transition: "start", job: { status: "succeeded" } });
+        }
+        return json({ message: "unexpected route", detail: url.pathname }, { status: 500 });
+      },
+    });
+
+    await client.start("ws");
+    expect(events).toEqual([
+      "workspace:stopping",
+      "poll:stop",
+      "workspace:stopped",
+      "post:start",
+      "poll:start",
+    ]);
+  });
+
   it("enforces the build deadline while a status request is stalled", async () => {
     let pollSignal: AbortSignal | null | undefined;
     const client = new CoderApiClient({

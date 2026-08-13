@@ -264,13 +264,25 @@ export class CoderApiClient {
   async start(ref: string, options?: LifecycleOptions): Promise<void> {
     const signal = options?.abortSignal;
     let workspace = await this.requireWorkspace(ref, signal);
-    if (workspace.latest_build.status === "running") return;
-    if (
-      workspace.latest_build.transition === "start" &&
-      (workspace.latest_build.status === "pending" || workspace.latest_build.status === "starting")
-    ) {
+    for (;;) {
+      if (workspace.latest_build.status === "running") return;
+      if (
+        workspace.latest_build.transition === "start" &&
+        (workspace.latest_build.status === "pending" ||
+          workspace.latest_build.status === "starting")
+      ) {
+        await this.#waitForBuild(workspace.latest_build.id, signal);
+        return;
+      }
+      if (
+        workspace.latest_build.transition !== "stop" ||
+        (workspace.latest_build.status !== "pending" &&
+          workspace.latest_build.status !== "stopping")
+      ) {
+        break;
+      }
       await this.#waitForBuild(workspace.latest_build.id, signal);
-      return;
+      workspace = await this.requireWorkspace(ref, signal);
     }
     if (
       workspace.latest_build.status === "failed" &&

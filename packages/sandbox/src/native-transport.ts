@@ -124,6 +124,7 @@ export class CoderNativeTransport implements CoderTransport {
       workspace,
       current?.id,
       current?.owner_name,
+      current?.owner_id,
       options?.abortSignal,
     );
     await this.#api.start(workspace, options);
@@ -135,6 +136,7 @@ export class CoderNativeTransport implements CoderTransport {
       workspace,
       current?.id,
       current?.owner_name,
+      current?.owner_id,
       options?.abortSignal,
     );
     await this.#api.stop(workspace, options);
@@ -146,6 +148,7 @@ export class CoderNativeTransport implements CoderTransport {
       workspace,
       current?.id,
       current?.owner_name,
+      current?.owner_id,
       options?.abortSignal,
     );
     await this.#api.destroy(workspace, options);
@@ -233,14 +236,28 @@ export class CoderNativeTransport implements CoderTransport {
     workspace: string,
     workspaceId?: string,
     workspaceOwner?: string,
+    workspaceOwnerId?: string,
     signal?: AbortSignal,
   ): Promise<void> {
+    const parsedWorkspace = parseNativeWorkspaceRef(workspace);
     const requestedWorkspaceKey = canonicalWorkspaceKey(workspace);
     const workspaceKey = canonicalWorkspaceKey(workspace, workspaceOwner);
+    const workspaceKeys = new Set([requestedWorkspaceKey, workspaceKey]);
+    const meWorkspaceKey = `me/${parsedWorkspace.name}`;
+    const hasUnresolvedMeSetup = [...this.#relays.values()].some(
+      (setup) => setup.workspaceId === undefined && setup.workspaceKey === meWorkspaceKey,
+    );
+    if (
+      parsedWorkspace.owner !== "me" &&
+      workspaceOwnerId !== undefined &&
+      hasUnresolvedMeSetup &&
+      (await this.#api.currentUserId(signal)) === workspaceOwnerId
+    ) {
+      workspaceKeys.add(meWorkspaceKey);
+    }
     const entries = [...this.#relays.entries()].filter(
       ([, setup]) =>
-        setup.workspaceKey === workspaceKey ||
-        setup.workspaceKey === requestedWorkspaceKey ||
+        workspaceKeys.has(setup.workspaceKey) ||
         (workspaceId !== undefined && setup.workspaceId === workspaceId),
     );
     const error = new Error(`Coder native relay closed for workspace "${workspace}" lifecycle`);

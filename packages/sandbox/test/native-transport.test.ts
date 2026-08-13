@@ -19,7 +19,13 @@ afterEach(async () => {
 });
 
 async function fakeCoderd(
-  options: { bootstrapPrefix?: string; ownerName?: string; ptyRedirect?: string } = {},
+  options: {
+    bootstrapPrefix?: string;
+    currentUserId?: string;
+    ownerId?: string;
+    ownerName?: string;
+    ptyRedirect?: string;
+  } = {},
 ): Promise<{
   url: string;
   requests: RelayRequest[];
@@ -42,11 +48,20 @@ async function fakeCoderd(
       response.end(JSON.stringify({ message: "unauthorized" }));
       return;
     }
-    if (request.url === "/api/v2/users/me/workspace/ws") {
+    if (request.url === "/api/v2/users/me") {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ id: options.currentUserId ?? options.ownerId ?? "user-id" }));
+      return;
+    }
+    if (
+      request.url === "/api/v2/users/me/workspace/ws" ||
+      request.url === `/api/v2/users/${options.ownerName ?? "me"}/workspace/ws`
+    ) {
       response.writeHead(200, { "Content-Type": "application/json" });
       response.end(
         JSON.stringify({
           id: "workspace-id",
+          owner_id: options.ownerId ?? "user-id",
           owner_name: options.ownerName ?? "me",
           name: "ws",
           latest_build: {
@@ -331,6 +346,30 @@ describe("CoderNativeTransport", () => {
     });
   });
 
+  it("recognizes a bootstrap marker split across bounded chunks", async () => {
+    const coderd = await fakeCoderd();
+    const transport = new CoderNativeTransport({
+      url: coderd.url,
+      token: "test-token",
+      relayConnectTimeoutMs: 2_000,
+    });
+    cleanups.push(() => transport.close());
+
+    const execution = transport.exec({ workspace: "ws", command: "ignored", stdin: "ready" });
+    await coderd.ptyConnected;
+    const split = NATIVE_RELAY_BOOTSTRAP_MARKER.length - 7;
+    coderd.sendBootstrapChunk(
+      `${"profile-output".repeat(8_192)}${NATIVE_RELAY_BOOTSTRAP_MARKER.slice(0, split)}`,
+    );
+    coderd.sendBootstrapChunk(`${NATIVE_RELAY_BOOTSTRAP_MARKER.slice(split)}\n`);
+
+    await expect(execution).resolves.toEqual({
+      exitCode: 7,
+      stdout: "ready",
+      stderr: "separate-error",
+    });
+  });
+
   it("bounds diagnostic output while waiting for the bootstrap marker", async () => {
     const coderd = await fakeCoderd();
     const transport = new CoderNativeTransport({
@@ -494,7 +533,52 @@ describe("CoderNativeTransport", () => {
     void execution.catch(() => {});
     await setupFetchStarted;
 
-    await transport.stop("ws");
-    await expect(execution).rejects.toThrow(/workspace "ws" lifecycle/);
+    await transport.stop("alice/ws");
+    await expect(execution).rejects.toThrow(/workspace "alice\/ws" lifecycle/);
+  });
+
+  it("does not conflate an unresolved me setup with another owner's workspace", async () => {
+    const coderd = await fakeCoderd({
+      currentUserId: "alice-id",
+      ownerId: "bob-id",
+      ownerName: "bob",
+    });
+    let resolveSetupFetchStarted!: () => void;
+    const setupFetchStarted = new Promise<void>((resolve) => {
+      resolveSetupFetchStarted = resolve;
+    });
+    let stallNextWorkspaceLookup = true;
+    const transport = new CoderNativeTransport({
+      url: coderd.url,
+      token: "test-token",
+      buildPollIntervalMs: 1,
+      fetch: async (input, init) => {
+        const path = new URL(String(input)).pathname;
+        if (path === "/api/v2/users/me/workspace/ws" && stallNextWorkspaceLookup) {
+          stallNextWorkspaceLookup = false;
+          resolveSetupFetchStarted();
+          return await new Promise<Response>(() => {});
+        }
+        return await fetch(input, init);
+      },
+    });
+    cleanups.push(() => transport.close());
+
+    let executionSettled = false;
+    const execution = transport.exec({ workspace: "ws", command: "ignored" });
+    void execution.then(
+      () => {
+        executionSettled = true;
+      },
+      () => {
+        executionSettled = true;
+      },
+    );
+    await setupFetchStarted;
+
+    await transport.stop("bob/ws");
+    expect(executionSettled).toBe(false);
+    await transport.close();
+    await expect(execution).rejects.toThrow("Coder native transport closed");
   });
 });

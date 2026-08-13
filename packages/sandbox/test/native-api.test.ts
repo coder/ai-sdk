@@ -21,6 +21,7 @@ function json(body: unknown, init: ResponseInit = {}): Response {
 function workspace(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     id: "workspace-id",
+    owner_id: "user-id",
     owner_name: "me",
     name: "ws",
     template_active_version_id: "version-active",

@@ -34,6 +34,7 @@ export interface ApiWorkspaceAgent {
 
 export interface ApiWorkspace {
   id: string;
+  owner_id: string;
   owner_name: string;
   name: string;
   template_active_version_id?: string;
@@ -211,6 +212,11 @@ export class CoderApiClient {
       if (error instanceof CoderNativeApiError && error.status === 404) return null;
       throw error;
     }
+  }
+
+  async currentUserId(signal?: AbortSignal): Promise<string> {
+    const user = await this.request<ApiUser>("GET", "/api/v2/users/me", undefined, signal);
+    return user.id;
   }
 
   async requireWorkspace(ref: string, signal?: AbortSignal): Promise<ApiWorkspace> {

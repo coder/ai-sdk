@@ -526,7 +526,7 @@ describe("CoderApiClient", () => {
         const url = new URL(String(input));
         if (url.pathname === "/api/v2/users/me/workspace/ws") {
           workspaceRequests += 1;
-          const status = workspaceRequests === 1 ? "stopping" : "stopped";
+          const status = workspaceRequests <= 2 ? "stopping" : "stopped";
           events.push(`workspace:${status}`);
           return json(
             workspace({
@@ -535,7 +535,7 @@ describe("CoderApiClient", () => {
                 template_version_id: "version-current",
                 transition: "stop",
                 status,
-                job: { status: workspaceRequests === 1 ? "running" : "succeeded" },
+                job: { status: workspaceRequests <= 2 ? "running" : "succeeded" },
                 resources: [],
               },
             }),
@@ -565,6 +565,7 @@ describe("CoderApiClient", () => {
     await client.start("ws");
     expect(events).toEqual([
       "workspace:stopping",
+      "workspace:stopping",
       "poll:stop",
       "workspace:stopped",
       "post:start",
@@ -583,7 +584,7 @@ describe("CoderApiClient", () => {
         const url = new URL(String(input));
         if (url.pathname === "/api/v2/users/me/workspace/ws") {
           workspaceRequests += 1;
-          const status = workspaceRequests === 1 ? "starting" : "running";
+          const status = workspaceRequests <= 2 ? "starting" : "running";
           events.push(`workspace:${status}`);
           return json(
             workspace({
@@ -591,7 +592,7 @@ describe("CoderApiClient", () => {
                 id: "start-build",
                 transition: "start",
                 status,
-                job: { status: workspaceRequests === 1 ? "running" : "succeeded" },
+                job: { status: workspaceRequests <= 2 ? "running" : "succeeded" },
                 resources: [],
               },
             }),
@@ -621,6 +622,7 @@ describe("CoderApiClient", () => {
     await client.stop("ws");
     expect(events).toEqual([
       "workspace:starting",
+      "workspace:starting",
       "poll:start",
       "workspace:running",
       "post:stop",
@@ -639,7 +641,7 @@ describe("CoderApiClient", () => {
         const url = new URL(String(input));
         if (url.pathname === "/api/v2/users/me/workspace/ws") {
           workspaceRequests += 1;
-          const status = workspaceRequests === 1 ? "stopping" : "stopped";
+          const status = workspaceRequests <= 2 ? "stopping" : "stopped";
           events.push(`workspace:${status}`);
           return json(
             workspace({
@@ -647,7 +649,7 @@ describe("CoderApiClient", () => {
                 id: "stop-build",
                 transition: "stop",
                 status,
-                job: { status: workspaceRequests === 1 ? "running" : "succeeded" },
+                job: { status: workspaceRequests <= 2 ? "running" : "succeeded" },
                 resources: [],
               },
             }),
@@ -677,11 +679,162 @@ describe("CoderApiClient", () => {
     await client.destroy("ws");
     expect(events).toEqual([
       "workspace:stopping",
+      "workspace:stopping",
       "poll:stop",
       "workspace:stopped",
       "post:delete",
       "poll:delete",
     ]);
+  });
+
+  it("waits for a canceling build before creating the next transition", async () => {
+    const events: string[] = [];
+    let canceled = false;
+    const client = new CoderApiClient({
+      url: "https://coder.example.test",
+      token: "secret",
+      buildPollIntervalMs: 1,
+      fetch: async (input, init) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/api/v2/users/me/workspace/ws") {
+          const status = canceled ? "stopped" : "canceling";
+          events.push(`workspace:${status}`);
+          return json(
+            workspace({
+              latest_build: {
+                id: "canceled-start",
+                template_version_id: "version-current",
+                transition: "start",
+                status,
+                job: { status: canceled ? "canceled" : "canceling" },
+                resources: [],
+              },
+            }),
+          );
+        }
+        if (url.pathname === "/api/v2/workspacebuilds/canceled-start") {
+          events.push("poll:canceled-start");
+          canceled = true;
+          return json({ id: "canceled-start", transition: "start", job: { status: "canceled" } });
+        }
+        if (url.pathname === "/api/v2/workspaces/workspace-id/builds") {
+          events.push("post:start");
+          expect(init?.method).toBe("POST");
+          expect(JSON.parse(String(init?.body))).toMatchObject({ transition: "start" });
+          return json(
+            { id: "start-build", transition: "start", job: { status: "pending" } },
+            { status: 201 },
+          );
+        }
+        if (url.pathname === "/api/v2/workspacebuilds/start-build") {
+          events.push("poll:start");
+          return json({ id: "start-build", transition: "start", job: { status: "succeeded" } });
+        }
+        return json({ message: "unexpected route", detail: url.pathname }, { status: 500 });
+      },
+    });
+
+    await client.start("ws");
+    expect(events).toEqual([
+      "workspace:canceling",
+      "workspace:canceling",
+      "poll:canceled-start",
+      "workspace:stopped",
+      "post:start",
+      "poll:start",
+    ]);
+  });
+
+  it("serializes concurrent lifecycle calls by workspace identity", async () => {
+    const scenarios = [
+      {
+        transition: "start",
+        initialStatus: "stopped",
+        initialTransition: "stop",
+        finalStatus: "running",
+        invoke: (client: CoderApiClient, ref: string) => client.start(ref),
+      },
+      {
+        transition: "stop",
+        initialStatus: "running",
+        initialTransition: "start",
+        finalStatus: "stopped",
+        invoke: (client: CoderApiClient, ref: string) => client.stop(ref),
+      },
+      {
+        transition: "delete",
+        initialStatus: "stopped",
+        initialTransition: "stop",
+        finalStatus: "deleted",
+        invoke: (client: CoderApiClient, ref: string) => client.destroy(ref),
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      let releaseInitialLookups!: () => void;
+      const initialLookupsReady = new Promise<void>((resolve) => {
+        releaseInitialLookups = resolve;
+      });
+      let workspaceRequests = 0;
+      let status = scenario.initialStatus;
+      let transition = scenario.initialTransition;
+      let buildPosts = 0;
+      const buildId = `${scenario.transition}-build`;
+      const client = new CoderApiClient({
+        url: "https://coder.example.test",
+        token: "secret",
+        buildPollIntervalMs: 1,
+        fetch: async (input, init) => {
+          const url = new URL(String(input));
+          if (url.pathname === "/api/v2/users/me/workspace/ws") {
+            workspaceRequests += 1;
+            if (workspaceRequests <= 2) {
+              if (workspaceRequests === 2) releaseInitialLookups();
+              await initialLookupsReady;
+            }
+            return json(
+              workspace({
+                latest_build: {
+                  id: status === scenario.initialStatus ? "previous-build" : buildId,
+                  template_version_id: "version-current",
+                  transition,
+                  status,
+                  job: { status: "succeeded" },
+                  resources: [],
+                },
+              }),
+            );
+          }
+          if (url.pathname === "/api/v2/workspaces/workspace-id/builds") {
+            buildPosts += 1;
+            expect(init?.method).toBe("POST");
+            expect(JSON.parse(String(init?.body))).toMatchObject({
+              transition: scenario.transition,
+            });
+            return json(
+              { id: buildId, transition: scenario.transition, job: { status: "pending" } },
+              { status: 201 },
+            );
+          }
+          if (url.pathname === `/api/v2/workspacebuilds/${buildId}`) {
+            status = scenario.finalStatus;
+            transition = scenario.transition;
+            return json({
+              id: buildId,
+              transition: scenario.transition,
+              job: { status: "succeeded" },
+            });
+          }
+          return json({ message: "unexpected route", detail: url.pathname }, { status: 500 });
+        },
+      });
+
+      await Promise.all([scenario.invoke(client, "ws"), scenario.invoke(client, "me/ws")]);
+      expect({ transition: scenario.transition, buildPosts }).toEqual({
+        transition: scenario.transition,
+        buildPosts: 1,
+      });
+    }
   });
 
   it("enforces the build deadline while a status request is stalled", async () => {

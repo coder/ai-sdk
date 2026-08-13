@@ -174,6 +174,7 @@ export class CoderApiClient {
   readonly #fetch: typeof globalThis.fetch;
   readonly #buildPollIntervalMs: number;
   readonly #buildTimeoutMs: number;
+  readonly #lifecycleTails = new Map<string, Promise<void>>();
 
   constructor(options: CoderApiClientOptions) {
     const parsed = new URL(options.url);
@@ -263,74 +264,94 @@ export class CoderApiClient {
 
   async start(ref: string, options?: LifecycleOptions): Promise<void> {
     const signal = options?.abortSignal;
-    let workspace = await this.requireWorkspace(ref, signal);
-    for (;;) {
-      if (workspace.latest_build.status === "running") return;
-      if (!isWorkspaceBuildInFlight(workspace.latest_build)) break;
-      const transition = workspace.latest_build.transition;
-      await this.#waitForBuild(workspace.latest_build.id, signal);
-      if (transition === "start") return;
-      workspace = await this.requireWorkspace(ref, signal);
-    }
-    if (
-      workspace.latest_build.status === "failed" &&
-      workspace.latest_build.transition === "start"
-    ) {
-      const cleanup = await this.#createBuild(workspace.id, { transition: "stop" }, signal);
-      await this.#waitForBuild(cleanup.id, signal);
-      workspace = await this.requireWorkspace(ref, signal);
-    }
-    if (workspace.dormant_at) {
-      await this.request(
-        "PUT",
-        `/api/v2/workspaces/${workspace.id}/dormant`,
-        { dormant: false },
-        signal,
-      );
-    }
-    const templateVersionId =
-      workspace.automatic_updates === "always" || workspace.template_require_active_version
-        ? workspace.template_active_version_id
-        : workspace.latest_build.template_version_id;
-    const build = await this.#createBuild(
-      workspace.id,
-      {
-        transition: "start",
-        ...(templateVersionId ? { template_version_id: templateVersionId } : {}),
-      },
-      signal,
-    );
-    await this.#waitForBuild(build.id, signal);
+    const initial = await this.requireWorkspace(ref, signal);
+    await this.#withLifecycleLock(initial.id, signal, async () => {
+      let workspace = await this.requireWorkspace(ref, signal);
+      for (;;) {
+        if (workspace.latest_build.status === "running") return;
+        if (isWorkspaceBuildInFlight(workspace.latest_build)) {
+          const transition = workspace.latest_build.transition;
+          const completed = await this.#waitForBuild(workspace.latest_build.id, signal, true);
+          if (transition === "start" && completed.job?.status === "succeeded") return;
+          workspace = await this.requireWorkspace(ref, signal);
+          continue;
+        }
+        if (
+          workspace.latest_build.status === "failed" &&
+          workspace.latest_build.transition === "start"
+        ) {
+          const cleanup = await this.#createBuild(workspace.id, { transition: "stop" }, signal);
+          await this.#waitForBuild(cleanup.id, signal);
+          workspace = await this.requireWorkspace(ref, signal);
+          continue;
+        }
+        if (workspace.dormant_at) {
+          await this.request(
+            "PUT",
+            `/api/v2/workspaces/${workspace.id}/dormant`,
+            { dormant: false },
+            signal,
+          );
+        }
+        const templateVersionId =
+          workspace.automatic_updates === "always" || workspace.template_require_active_version
+            ? workspace.template_active_version_id
+            : workspace.latest_build.template_version_id;
+        const build = await this.#createBuild(
+          workspace.id,
+          {
+            transition: "start",
+            ...(templateVersionId ? { template_version_id: templateVersionId } : {}),
+          },
+          signal,
+        );
+        await this.#waitForBuild(build.id, signal);
+        return;
+      }
+    });
   }
 
   async stop(ref: string, options?: LifecycleOptions): Promise<void> {
     const signal = options?.abortSignal;
-    let workspace = await this.requireWorkspace(ref, signal);
-    for (;;) {
-      if (workspace.latest_build.status === "stopped") return;
-      if (!isWorkspaceBuildInFlight(workspace.latest_build)) break;
-      const transition = workspace.latest_build.transition;
-      await this.#waitForBuild(workspace.latest_build.id, signal);
-      if (transition === "stop") return;
-      workspace = await this.requireWorkspace(ref, signal);
-    }
-    const build = await this.#createBuild(workspace.id, { transition: "stop" }, signal);
-    await this.#waitForBuild(build.id, signal);
+    const initial = await this.requireWorkspace(ref, signal);
+    await this.#withLifecycleLock(initial.id, signal, async () => {
+      let workspace = await this.requireWorkspace(ref, signal);
+      for (;;) {
+        if (workspace.latest_build.status === "stopped") return;
+        if (isWorkspaceBuildInFlight(workspace.latest_build)) {
+          const transition = workspace.latest_build.transition;
+          const completed = await this.#waitForBuild(workspace.latest_build.id, signal, true);
+          if (transition === "stop" && completed.job?.status === "succeeded") return;
+          workspace = await this.requireWorkspace(ref, signal);
+          continue;
+        }
+        const build = await this.#createBuild(workspace.id, { transition: "stop" }, signal);
+        await this.#waitForBuild(build.id, signal);
+        return;
+      }
+    });
   }
 
   async destroy(ref: string, options?: LifecycleOptions): Promise<void> {
     const signal = options?.abortSignal;
-    let workspace = await this.workspace(ref, signal);
-    for (;;) {
-      if (workspace === null || workspace.latest_build.status === "deleted") return;
-      if (!isWorkspaceBuildInFlight(workspace.latest_build)) break;
-      const transition = workspace.latest_build.transition;
-      await this.#waitForBuild(workspace.latest_build.id, signal);
-      if (transition === "delete") return;
-      workspace = await this.workspace(ref, signal);
-    }
-    const build = await this.#createBuild(workspace.id, { transition: "delete" }, signal);
-    await this.#waitForBuild(build.id, signal);
+    const initial = await this.workspace(ref, signal);
+    if (initial === null) return;
+    await this.#withLifecycleLock(initial.id, signal, async () => {
+      let workspace = await this.workspace(ref, signal);
+      for (;;) {
+        if (workspace === null || workspace.latest_build.status === "deleted") return;
+        if (isWorkspaceBuildInFlight(workspace.latest_build)) {
+          const transition = workspace.latest_build.transition;
+          const completed = await this.#waitForBuild(workspace.latest_build.id, signal, true);
+          if (transition === "delete" && completed.job?.status === "succeeded") return;
+          workspace = await this.workspace(ref, signal);
+          continue;
+        }
+        const build = await this.#createBuild(workspace.id, { transition: "delete" }, signal);
+        await this.#waitForBuild(build.id, signal);
+        return;
+      }
+    });
   }
 
   async create(options: CreateWorkspaceOptions): Promise<void> {
@@ -535,7 +556,36 @@ export class CoderApiClient {
     );
   }
 
-  async #waitForBuild(buildId: string, signal?: AbortSignal): Promise<ApiWorkspaceBuild> {
+  async #withLifecycleLock<T>(
+    workspaceId: string,
+    signal: AbortSignal | undefined,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this.#lifecycleTails.get(workspaceId) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => gate);
+    this.#lifecycleTails.set(workspaceId, tail);
+    void tail.then(() => {
+      if (this.#lifecycleTails.get(workspaceId) === tail) {
+        this.#lifecycleTails.delete(workspaceId);
+      }
+    });
+    try {
+      await waitWithAbort(previous, signal);
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+
+  async #waitForBuild(
+    buildId: string,
+    signal?: AbortSignal,
+    allowCanceled = false,
+  ): Promise<ApiWorkspaceBuild> {
     if (signal?.aborted) throw abortReason(signal);
     const deadline = Date.now() + this.#buildTimeoutMs;
     const timeoutError = () =>
@@ -577,6 +627,7 @@ export class CoderApiClient {
       }
       const jobStatus = build.job?.status;
       if (jobStatus === "succeeded") return build;
+      if (jobStatus === "canceled" && allowCanceled) return build;
       if (jobStatus === "failed" || jobStatus === "canceled") {
         throw new Error(
           `Coder workspace ${build.transition} build ${buildId} ${jobStatus}` +
@@ -772,7 +823,8 @@ function isWorkspaceBuildInFlight(build: ApiWorkspaceBuild): boolean {
     build.status === "pending" ||
     build.status === "starting" ||
     build.status === "stopping" ||
-    build.status === "deleting"
+    build.status === "deleting" ||
+    build.status === "canceling"
   );
 }
 
@@ -791,6 +843,21 @@ function deleteRequestBodyHeaders(headers: Record<string, string>): void {
 function abortReason(signal?: AbortSignal): Error {
   if (signal?.reason instanceof Error) return signal.reason;
   return new DOMException("The operation was aborted", "AbortError");
+}
+
+async function waitWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (signal === undefined) return await promise;
+  if (signal.aborted) throw abortReason(signal);
+  let onAbort!: () => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(abortReason(signal));
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([promise, aborted]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
 }
 
 async function readParameterFile(path: string): Promise<Record<string, string>> {

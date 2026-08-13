@@ -557,6 +557,7 @@ describe("native workspace relay", () => {
     const sinkReady = new Promise<Sink>((resolve) => {
       resolveSink = resolve;
     });
+    const forwarded: Buffer[] = [];
     const relay = {
       closed: false,
       onClose: () => () => {},
@@ -564,7 +565,7 @@ describe("native workspace relay", () => {
         resolveSink(sink);
         sink.opened();
       },
-      tcpData: () => {},
+      tcpData: (_id: string, data: Uint8Array) => forwarded.push(Buffer.from(data)),
       tcpEnd: () => {},
       pauseTcp: () => {},
       resumeTcp: () => {},
@@ -575,12 +576,17 @@ describe("native workspace relay", () => {
       const payload = Buffer.alloc(1024 * 1024, 0x5a);
       const received: Buffer[] = [];
       let socketError: Error | undefined;
-      const socket = net.connect(forward.localPort, forward.localHost);
+      const socket = net.connect({
+        port: forward.localPort,
+        host: forward.localHost,
+        allowHalfOpen: true,
+      });
       socket.on("data", (data) => received.push(data));
       socket.on("error", (error) => {
         socketError = error;
       });
       const socketClosed = once(socket, "close");
+      const socketEnded = once(socket, "end");
       socket.pause();
       await once(socket, "connect");
       const sink = await sinkReady;
@@ -589,11 +595,16 @@ describe("native workspace relay", () => {
       sink.close();
       await new Promise((resolve) => setTimeout(resolve, 25));
       socket.resume();
-      await socketClosed;
+      await socketEnded;
       expect(socketError).toBeUndefined();
       const result = Buffer.concat(received);
       expect(result.length).toBe(payload.length);
       expect(result.equals(payload)).toBe(true);
+      socket.write("stale-after-close");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(forwarded).toHaveLength(0);
+      socket.destroy();
+      await socketClosed;
     } finally {
       await forward.close();
     }

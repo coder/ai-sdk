@@ -758,8 +758,12 @@ export async function openNativePortForward(
       remoteClosed = true;
       relay.closeTcp(id);
     };
-    socket.on("data", (data) => relay.tcpData(id, data));
-    socket.on("end", () => relay.tcpEnd(id));
+    socket.on("data", (data) => {
+      if (!remoteClosed) relay.tcpData(id, data);
+    });
+    socket.on("end", () => {
+      if (!remoteClosed) relay.tcpEnd(id);
+    });
     socket.on("drain", () => {
       if (remoteClosed || !remotePaused) return;
       remotePaused = false;
@@ -789,7 +793,9 @@ export async function openNativePortForward(
         },
         close: () => {
           remoteClosed = true;
-          if (!remoteEnded && !socket.destroyed) socket.destroy();
+          if (socket.destroyed) return;
+          if (remoteEnded) socket.destroySoon();
+          else socket.destroy();
         },
         error: (error) => {
           remoteClosed = true;

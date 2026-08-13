@@ -786,4 +786,30 @@ describe("CoderNativeTransport", () => {
     await transport.close();
     await expect(execution).rejects.toThrow("Coder native transport closed");
   });
+
+  it("cancels stalled initial lifecycle lookups when custom fetch ignores its signal", async () => {
+    const lifecycleMethods = ["start", "stop", "destroy"] as const;
+    for (const method of lifecycleMethods) {
+      let resolveFetchStarted!: () => void;
+      const fetchStarted = new Promise<void>((resolve) => {
+        resolveFetchStarted = resolve;
+      });
+      const transport = new CoderNativeTransport({
+        url: "https://coder.example.test",
+        token: "test-token",
+        fetch: async () => {
+          resolveFetchStarted();
+          return await new Promise<Response>(() => {});
+        },
+      });
+      cleanups.push(() => transport.close());
+      const controller = new AbortController();
+      const lifecycle = transport[method]("ws", { abortSignal: controller.signal });
+      await fetchStarted;
+
+      const reason = new Error(`cancel ${method} lookup`);
+      controller.abort(reason);
+      await expect(lifecycle).rejects.toBe(reason);
+    }
+  });
 });

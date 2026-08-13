@@ -478,13 +478,16 @@ export class CoderApiClient {
     let redirectCount = 0;
     let response: Response;
     for (;;) {
-      response = await this.#fetch(requestUrl, {
-        method: requestMethod,
-        headers: requestHeaders,
-        body: requestBody,
+      response = await waitWithAbort(
+        this.#fetch(requestUrl, {
+          method: requestMethod,
+          headers: requestHeaders,
+          body: requestBody,
+          signal,
+          redirect: "manual",
+        }),
         signal,
-        redirect: "manual",
-      });
+      );
       const location = response.headers.get("location");
       if (!isRedirectStatus(response.status) || location === null) break;
       redirectCount += 1;

@@ -2,8 +2,7 @@
  * Transport abstraction over a Coder workspace. The sandbox session talks to a
  * workspace exclusively through this interface, which keeps the harness-facing
  * session decoupled from *how* we reach Coder (the default is the `coder` CLI;
- * tests inject a mock, and a future implementation could use the Coder REST API
- * or a persistent SSH/SFTP connection).
+ * {@link CoderNativeTransport} uses Coderd directly, and tests inject mocks).
  */
 export interface CoderTransport {
   /** Run a command to completion, buffering stdout/stderr into strings. */

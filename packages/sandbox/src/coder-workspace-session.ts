@@ -34,11 +34,10 @@ export interface CoderWorkspaceSessionConfig {
 /**
  * A {@link HarnessV1NetworkSandboxSession} backed by a Coder workspace.
  *
- * Exec maps to `coder ssh`, file I/O to base64-over-`coder ssh`, and
- * `getPortUrl` to an OpenSSH `-L` local forward over a `coder ssh --stdio`
- * ProxyCommand, exposed as a local `ws://127.0.0.1:<port>` URL — which is what
- * bridge-backed harness adapters (Claude Code, Codex) open their WebSocket
- * against.
+ * The configured {@link CoderTransport} supplies process execution, lifecycle,
+ * and TCP forwarding. `getPortUrl` exposes a forwarded port as a local
+ * `ws://127.0.0.1:<port>` URL, which is what bridge-backed harness adapters
+ * (Claude Code, Codex) open their WebSocket against.
  */
 export class CoderWorkspaceSession implements HarnessV1NetworkSandboxSession {
   readonly id: string;
@@ -62,8 +61,7 @@ export class CoderWorkspaceSession implements HarnessV1NetworkSandboxSession {
     this.description =
       `Coder workspace "${config.workspace}". ` +
       `Default working directory: ${config.defaultWorkingDirectory}. ` +
-      `Exposed ports: ${this.#ports.length > 0 ? this.#ports.join(", ") : "none"}. ` +
-      `Commands run inside the workspace via 'coder ssh'.`;
+      `Exposed ports: ${this.#ports.length > 0 ? this.#ports.join(", ") : "none"}.`;
   }
 
   get ports(): ReadonlyArray<number> {
@@ -205,7 +203,7 @@ export class CoderWorkspaceSession implements HarnessV1NetworkSandboxSession {
 }
 
 /**
- * The OpenSSH `-L` local forward is plaintext on the loopback interface, so
+ * The transport's local forward is plaintext on the loopback interface, so
  * secure schemes collapse to their plaintext local equivalent. Bridge adapters
  * request `ws`, which is the common case.
  */

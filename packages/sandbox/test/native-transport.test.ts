@@ -26,6 +26,7 @@ async function fakeCoderd(
   bootstrapSource: () => string;
   ptyConnected: Promise<void>;
   releaseBootstrap: () => void;
+  sendBootstrapChunk: (data: string) => void;
 }> {
   let bootstrap = "";
   let releaseRequested = false;
@@ -177,6 +178,7 @@ async function fakeCoderd(
         Buffer.from(`${options.bootstrapPrefix ?? ""}${NATIVE_RELAY_BOOTSTRAP_MARKER}\n`),
       );
     },
+    sendBootstrapChunk: (data) => ptyWebsocket?.send(Buffer.from(data)),
   };
 }
 
@@ -329,6 +331,28 @@ describe("CoderNativeTransport", () => {
     });
   });
 
+  it("bounds diagnostic output while waiting for the bootstrap marker", async () => {
+    const coderd = await fakeCoderd();
+    const transport = new CoderNativeTransport({
+      url: coderd.url,
+      token: "test-token",
+      relayConnectTimeoutMs: 500,
+    });
+    cleanups.push(() => transport.close());
+
+    const execution = transport.exec({ workspace: "ws", command: "ignored" });
+    await coderd.ptyConnected;
+    coderd.sendBootstrapChunk(`discard-me-${"x".repeat(64 * 1024)}diagnostic-tail`);
+
+    const error = await execution.catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(Error);
+    const message = (error as Error).message;
+    expect(message).toContain("PTY output:");
+    expect(message).toContain("diagnostic-tail");
+    expect(message).not.toContain("discard-me");
+    expect(message.length).toBeLessThan(700);
+  });
+
   it("cancels pending relay setup when the transport closes", async () => {
     let resolveFetchStarted!: () => void;
     const fetchStarted = new Promise<void>((resolve) => {
@@ -443,8 +467,8 @@ describe("CoderNativeTransport", () => {
     await expect(outcome).resolves.toMatch(/workspace "me\/ws" lifecycle/);
   });
 
-  it("cancels target relay setup before a lifecycle transition", async () => {
-    const coderd = await fakeCoderd();
+  it("cancels an unresolved me relay setup before a lifecycle transition", async () => {
+    const coderd = await fakeCoderd({ ownerName: "alice" });
     let resolveSetupFetchStarted!: () => void;
     const setupFetchStarted = new Promise<void>((resolve) => {
       resolveSetupFetchStarted = resolve;

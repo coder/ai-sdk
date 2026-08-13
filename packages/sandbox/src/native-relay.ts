@@ -16,6 +16,7 @@ const CARRIER_LOW_WATER_MARK = 256 * 1024;
 const CARRIER_DRAIN_POLL_INTERVAL_MS = 10;
 const RELAY_CLOSE_GRACE_MS = 1_000;
 export const NATIVE_RELAY_BOOTSTRAP_MARKER = "__CODER_AI_SDK_RELAY_BOOTSTRAP_READY_V1__";
+const BOOTSTRAP_DIAGNOSTIC_LIMIT = 500;
 
 /**
  * Dependency-free relay executed inside the workspace. It deliberately emits
@@ -548,7 +549,11 @@ export class NativeRelay {
         : !this.#bootstrapReadySeen
           ? "waiting for the remote PTY bootstrap"
           : "starting the workspace relay";
-    const output = this.#bootstrapOutput.trim();
+    const output = (
+      this.#bootstrapReadySeen
+        ? this.#bootstrapOutput
+        : `${this.#bootstrapOutput}${this.#buffer}`.slice(-BOOTSTRAP_DIAGNOSTIC_LIMIT)
+    ).trim();
     return new Error(
       `timed out after ${timeoutMs}ms ${phase}${output ? `; PTY output: ${output}` : ""}`,
     );
@@ -561,13 +566,24 @@ export class NativeRelay {
       const marker = this.#buffer.indexOf(NATIVE_RELAY_BOOTSTRAP_MARKER);
       if (marker !== -1) {
         this.#bootstrapOutput = `${this.#bootstrapOutput}${this.#buffer.slice(0, marker)}`.slice(
-          -500,
+          -BOOTSTRAP_DIAGNOSTIC_LIMIT,
         );
         this.#buffer = this.#buffer.slice(marker + NATIVE_RELAY_BOOTSTRAP_MARKER.length);
         if (this.#buffer.startsWith("\r\n")) this.#buffer = this.#buffer.slice(2);
         else if (this.#buffer.startsWith("\n")) this.#buffer = this.#buffer.slice(1);
         this.#bootstrapReadySeen = true;
         this.#bootstrapReady.resolve();
+      } else {
+        const markerOverlap = NATIVE_RELAY_BOOTSTRAP_MARKER.length - 1;
+        const consumedLength = Math.max(0, this.#buffer.length - markerOverlap);
+        if (consumedLength > 0) {
+          this.#bootstrapOutput = `${this.#bootstrapOutput}${this.#buffer.slice(
+            0,
+            consumedLength,
+          )}`.slice(-BOOTSTRAP_DIAGNOSTIC_LIMIT);
+          this.#buffer = this.#buffer.slice(consumedLength);
+        }
+        return;
       }
     }
     for (;;) {
@@ -580,7 +596,9 @@ export class NativeRelay {
         message = JSON.parse(line) as RelayMessage;
       } catch {
         if (!this.#readySeen) {
-          this.#bootstrapOutput = `${this.#bootstrapOutput}${line}\n`.slice(-500);
+          this.#bootstrapOutput = `${this.#bootstrapOutput}${line}\n`.slice(
+            -BOOTSTRAP_DIAGNOSTIC_LIMIT,
+          );
           continue;
         }
         this.#fail(new Error(`invalid data from Coder native relay: ${line.slice(0, 200)}`));

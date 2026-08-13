@@ -235,10 +235,12 @@ export class CoderNativeTransport implements CoderTransport {
     workspaceOwner?: string,
     signal?: AbortSignal,
   ): Promise<void> {
+    const requestedWorkspaceKey = canonicalWorkspaceKey(workspace);
     const workspaceKey = canonicalWorkspaceKey(workspace, workspaceOwner);
     const entries = [...this.#relays.entries()].filter(
       ([, setup]) =>
         setup.workspaceKey === workspaceKey ||
+        setup.workspaceKey === requestedWorkspaceKey ||
         (workspaceId !== undefined && setup.workspaceId === workspaceId),
     );
     const error = new Error(`Coder native relay closed for workspace "${workspace}" lifecycle`);

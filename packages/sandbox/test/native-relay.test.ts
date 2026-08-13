@@ -292,6 +292,7 @@ describe("native workspace relay", () => {
       socket.on("error", (error) => {
         socketError = error;
       });
+      const socketClosed = once(socket, "close");
       socket.pause();
       await once(socket, "connect");
       const sink = await sinkReady;
@@ -300,7 +301,7 @@ describe("native workspace relay", () => {
       sink.close();
       await new Promise((resolve) => setTimeout(resolve, 25));
       socket.resume();
-      await once(socket, "close");
+      await socketClosed;
       expect(socketError).toBeUndefined();
       const result = Buffer.concat(received);
       expect(result.length).toBe(payload.length);

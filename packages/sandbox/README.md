@@ -125,12 +125,13 @@ createCoderWorkspace({
 
 **Parameters vs. presets.** A preset's parameter values take precedence over an
 overlapping `parameters` entry of the same name (this is Coder's behavior), so
-set a given value via the preset _or_ `parameters`, not both. Required
-parameters (those without a template default) must be supplied via `parameters`,
-`parameterFile`, a `preset`, or `useParameterDefaults` — otherwise creation
-fails (it can't prompt non-interactively). If you set a `preset`, the provider
-preflight-validates the name against the template's presets and fails fast with
-the available names (set `validate: false` to skip).
+set a given value via the preset _or_ `parameters`, not both. Every unset
+non-ephemeral parameter must be supplied via `parameters`, `parameterFile`, or a
+`preset`, unless `useParameterDefaults` accepts its template default. Parameters
+marked required have no usable default and must always be supplied; otherwise
+creation fails because it cannot prompt non-interactively. If you set a `preset`,
+the provider preflight-validates the name against the template's presets and
+fails fast with the available names (set `validate: false` to skip).
 
 ### Create settings
 

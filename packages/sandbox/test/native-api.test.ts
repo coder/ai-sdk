@@ -113,6 +113,7 @@ describe("CoderApiClient", () => {
               organization_id: "org-id",
               organization_name: "default",
               active_version_id: "version-id",
+              use_classic_parameter_flow: true,
             },
           ]);
         }
@@ -142,11 +143,19 @@ describe("CoderApiClient", () => {
               organization_id: "org-id",
               organization_name: "default",
               active_version_id: "version-id",
+              use_classic_parameter_flow: true,
             },
           ]);
         }
         if (url.pathname === "/api/v2/templateversions/version-id/presets") {
           return json([{ ID: "preset-id", Name: "Standard", Default: true }]);
+        }
+        if (url.pathname === "/api/v2/templateversions/version-id/rich-parameters") {
+          return json([
+            { name: "cpus", default_value: "2", required: false, ephemeral: false },
+            { name: "regions", default_value: "[]", required: false, ephemeral: false },
+            { name: "one_time", default_value: "", required: false, ephemeral: true },
+          ]);
         }
         if (url.pathname === "/api/v2/users/me/workspaces") {
           createBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -182,6 +191,175 @@ describe("CoderApiClient", () => {
     ]);
   });
 
+  it("requires opt-in before resolving classic parameter defaults", async () => {
+    let createBody: Record<string, unknown> | undefined;
+    let createRequests = 0;
+    const client = new CoderApiClient({
+      url: "https://coder.example.test",
+      token: "secret",
+      buildPollIntervalMs: 1,
+      fetch: async (input, init) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/api/v2/templates") {
+          return json([
+            {
+              id: "template-id",
+              name: "docker",
+              organization_id: "org-id",
+              organization_name: "default",
+              active_version_id: "version-id",
+              use_classic_parameter_flow: true,
+            },
+          ]);
+        }
+        if (url.pathname === "/api/v2/templateversions/version-id/rich-parameters") {
+          return json([
+            {
+              name: "token",
+              display_name: "API token",
+              default_value: "",
+              required: true,
+              ephemeral: false,
+            },
+            {
+              name: "region",
+              display_name: "Region",
+              default_value: "us-central",
+              required: false,
+              ephemeral: false,
+            },
+            {
+              name: "one_time",
+              default_value: "temporary",
+              required: false,
+              ephemeral: true,
+            },
+          ]);
+        }
+        if (url.pathname === "/api/v2/users/me/workspaces") {
+          createRequests++;
+          createBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          return json(workspace({ latest_build: { id: "new-build" } }), { status: 201 });
+        }
+        if (url.pathname === "/api/v2/workspacebuilds/new-build") {
+          return json({ id: "new-build", transition: "start", job: { status: "succeeded" } });
+        }
+        return json({ message: "unexpected route", detail: url.pathname }, { status: 500 });
+      },
+    });
+
+    await expect(
+      client.create({ workspace: "ws", template: "docker", preset: "none" }),
+    ).rejects.toThrow(/required Coder workspace parameters.*API token/);
+    await expect(
+      client.create({
+        workspace: "ws",
+        template: "docker",
+        preset: "none",
+        parameters: { token: "secret-value" },
+      }),
+    ).rejects.toThrow(/explicit values.*Region.*useParameterDefaults/);
+    await client.create({
+      workspace: "ws",
+      template: "docker",
+      preset: "none",
+      parameters: { token: "secret-value" },
+      useParameterDefaults: true,
+    });
+
+    expect(createRequests).toBe(1);
+    expect(createBody?.rich_parameter_values).toEqual([
+      { name: "token", value: "secret-value" },
+      { name: "region", value: "us-central" },
+    ]);
+  });
+
+  it("evaluates dynamic parameters with owner and preset inputs", async () => {
+    let evaluationBody: Record<string, unknown> | undefined;
+    let createBody: Record<string, unknown> | undefined;
+    const client = new CoderApiClient({
+      url: "https://coder.example.test",
+      token: "secret",
+      buildPollIntervalMs: 1,
+      fetch: async (input, init) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/api/v2/templates") {
+          return json([
+            {
+              id: "template-id",
+              name: "docker",
+              organization_id: "org-id",
+              organization_name: "default",
+              active_version_id: "version-id",
+              use_classic_parameter_flow: false,
+            },
+          ]);
+        }
+        if (url.pathname === "/api/v2/templateversions/version-id/presets") {
+          return json([
+            {
+              ID: "preset-id",
+              Name: "Large",
+              Default: true,
+              Parameters: [{ Name: "size", Value: "large" }],
+            },
+          ]);
+        }
+        if (url.pathname === "/api/v2/users/alice") return json({ id: "alice-id" });
+        if (url.pathname === "/api/v2/templateversions/version-id/dynamic-parameters/evaluate") {
+          evaluationBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          return json({
+            parameters: [
+              {
+                name: "size",
+                default_value: { value: "small", valid: true },
+                required: false,
+                ephemeral: false,
+              },
+              {
+                name: "region",
+                default_value: { value: "us-central", valid: true },
+                required: false,
+                ephemeral: false,
+              },
+              {
+                name: "rebuild",
+                default_value: { value: "false", valid: true },
+                required: false,
+                ephemeral: true,
+              },
+            ],
+          });
+        }
+        if (url.pathname === "/api/v2/users/alice/workspaces") {
+          createBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          return json(workspace({ latest_build: { id: "new-build" } }), { status: 201 });
+        }
+        if (url.pathname === "/api/v2/workspacebuilds/new-build") {
+          return json({ id: "new-build", transition: "start", job: { status: "succeeded" } });
+        }
+        return json({ message: "unexpected route", detail: url.pathname }, { status: 500 });
+      },
+    });
+
+    await client.create({
+      workspace: "alice/ws",
+      template: "docker",
+      useParameterDefaults: true,
+    });
+
+    expect(evaluationBody).toEqual({ id: 0, inputs: { size: "large" }, owner_id: "alice-id" });
+    expect(createBody).toMatchObject({
+      name: "ws",
+      template_version_id: "version-id",
+      template_version_preset_id: "preset-id",
+      rich_parameter_values: [
+        { name: "size", value: "large" },
+        { name: "region", value: "us-central" },
+      ],
+    });
+  });
+
   it("selects the default preset only when preset is omitted", async () => {
     const createBodies: Record<string, unknown>[] = [];
     let presetRequests = 0;
@@ -199,6 +377,7 @@ describe("CoderApiClient", () => {
               organization_id: "org-id",
               organization_name: "default",
               active_version_id: "version-id",
+              use_classic_parameter_flow: true,
             },
           ]);
         }
@@ -208,6 +387,9 @@ describe("CoderApiClient", () => {
             { ID: "other-preset-id", Name: "Other", Default: false },
             { ID: "default-preset-id", Name: "Default", Default: true },
           ]);
+        }
+        if (url.pathname === "/api/v2/templateversions/version-id/rich-parameters") {
+          return json([]);
         }
         if (url.pathname === "/api/v2/users/me/workspaces") {
           createBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);

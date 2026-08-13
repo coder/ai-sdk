@@ -64,6 +64,7 @@ interface ApiTemplate {
   organization_id: string;
   organization_name: string;
   active_version_id: string;
+  use_classic_parameter_flow?: boolean;
 }
 
 interface ApiTemplateVersion {
@@ -82,6 +83,30 @@ interface ApiPreset {
   default?: boolean;
   description?: string;
   parameters?: { Name?: string; Value?: string; name?: string; value?: string }[];
+}
+
+interface ApiTemplateVersionParameter {
+  name: string;
+  display_name?: string;
+  default_value: string;
+  required: boolean;
+  ephemeral: boolean;
+}
+
+interface ApiDynamicTemplateVersionParameter {
+  name: string;
+  display_name?: string;
+  default_value?: { value?: string; valid?: boolean };
+  required?: boolean;
+  ephemeral?: boolean;
+}
+
+interface ApiDynamicParametersResponse {
+  parameters?: ApiDynamicTemplateVersionParameter[];
+}
+
+interface ApiUser {
+  id: string;
 }
 
 interface ApiErrorBody {
@@ -340,14 +365,27 @@ export class CoderApiClient {
       ...fileParameters,
       ...options.parameters,
       ...options.ephemeralParameters,
+      ...(preset ? presetParameterValues(preset) : {}),
     };
+    const templateParameters = await this.#templateParameters(
+      template,
+      versionId,
+      ref.owner,
+      parameterValues,
+      options.abortSignal,
+    );
+    const resolvedParameterValues = resolveCreateParameterValues(
+      templateParameters,
+      parameterValues,
+      options.useParameterDefaults === true,
+    );
     const body = {
       template_version_id: versionId,
       name: ref.name,
       ...(options.stopAfter ? { ttl_ms: parseDurationMillis(options.stopAfter) } : {}),
-      ...(Object.keys(parameterValues).length > 0
+      ...(Object.keys(resolvedParameterValues).length > 0
         ? {
-            rich_parameter_values: Object.entries(parameterValues).map(([name, value]) => ({
+            rich_parameter_values: Object.entries(resolvedParameterValues).map(([name, value]) => ({
               name,
               value,
             })),
@@ -524,6 +562,52 @@ export class CoderApiClient {
     );
     return Array.isArray(presets) ? presets : [];
   }
+
+  async #templateParameters(
+    template: ApiTemplate,
+    versionId: string,
+    owner: string,
+    initialValues: Record<string, string>,
+    signal?: AbortSignal,
+  ): Promise<ApiTemplateVersionParameter[]> {
+    if (template.use_classic_parameter_flow !== false) {
+      const parameters = await this.request<ApiTemplateVersionParameter[]>(
+        "GET",
+        `/api/v2/templateversions/${versionId}/rich-parameters`,
+        undefined,
+        signal,
+      );
+      return Array.isArray(parameters) ? parameters : [];
+    }
+    const ownerId =
+      owner === "me"
+        ? undefined
+        : (
+            await this.request<ApiUser>(
+              "GET",
+              `/api/v2/users/${encodeURIComponent(owner)}`,
+              undefined,
+              signal,
+            )
+          ).id;
+    const evaluation = await this.request<ApiDynamicParametersResponse>(
+      "POST",
+      `/api/v2/templateversions/${versionId}/dynamic-parameters/evaluate`,
+      {
+        id: 0,
+        inputs: initialValues,
+        ...(ownerId ? { owner_id: ownerId } : {}),
+      },
+      signal,
+    );
+    return (evaluation.parameters ?? []).map((parameter) => ({
+      name: parameter.name,
+      ...(parameter.display_name ? { display_name: parameter.display_name } : {}),
+      default_value: parameter.default_value?.value ?? "",
+      required: parameter.required ?? false,
+      ephemeral: parameter.ephemeral ?? false,
+    }));
+  }
 }
 
 function toWorkspaceStatus(workspace: ApiWorkspace): WorkspaceStatus {
@@ -556,6 +640,53 @@ function presetId(preset: ApiPreset): string {
 
 function presetDefault(preset: ApiPreset): boolean {
   return preset.Default ?? preset.default ?? false;
+}
+
+function presetParameterValues(preset: ApiPreset): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const parameter of preset.Parameters ?? preset.parameters ?? []) {
+    const name = parameter.Name ?? parameter.name;
+    const value = parameter.Value ?? parameter.value;
+    if (name !== undefined && value !== undefined) result[name] = value;
+  }
+  return result;
+}
+
+function resolveCreateParameterValues(
+  parameters: ApiTemplateVersionParameter[],
+  supplied: Record<string, string>,
+  useDefaults: boolean,
+): Record<string, string> {
+  const resolved = { ...supplied };
+  const required: string[] = [];
+  const awaitingDefaults: string[] = [];
+  for (const parameter of parameters) {
+    if (Object.hasOwn(resolved, parameter.name)) continue;
+    if (parameter.ephemeral && !parameter.required) continue;
+    const name = parameter.display_name || parameter.name;
+    if (parameter.required) {
+      required.push(name);
+    } else if (useDefaults) {
+      resolved[parameter.name] = parameter.default_value;
+    } else {
+      awaitingDefaults.push(name);
+    }
+  }
+  if (required.length > 0) {
+    const names = required.map((name) => `"${name}"`).join(", ");
+    throw new Error(
+      `required Coder workspace parameters have no defaults: ${names}; ` +
+        "supply values with parameters, parameterFile, or a preset",
+    );
+  }
+  if (awaitingDefaults.length > 0) {
+    const names = awaitingDefaults.map((name) => `"${name}"`).join(", ");
+    throw new Error(
+      `Coder workspace parameters require explicit values: ${names}; ` +
+        "supply values with parameters, parameterFile, or a preset, or set useParameterDefaults: true",
+    );
+  }
+  return resolved;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

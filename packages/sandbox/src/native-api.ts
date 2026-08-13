@@ -638,7 +638,12 @@ export class CoderApiClient {
       }
       const wait = Math.min(this.#buildPollIntervalMs, Math.max(0, deadline - Date.now()));
       if (wait <= 0) throw timeoutError();
-      await delay(wait, undefined, { signal });
+      try {
+        await delay(wait, undefined, { signal });
+      } catch (error) {
+        if (signal?.aborted) throw abortReason(signal);
+        throw error;
+      }
     }
   }
 

@@ -936,4 +936,34 @@ describe("CoderApiClient", () => {
     expect(Date.now() - startedAt).toBeLessThan(1_000);
     expect(pollSignal?.aborted).toBe(true);
   });
+
+  it("preserves the caller abort reason between build polls", async () => {
+    const signal = AbortSignal.timeout(25);
+    const client = new CoderApiClient({
+      url: "https://coder.example.test",
+      token: "secret",
+      buildPollIntervalMs: 1_000,
+      fetch: async (input) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/api/v2/users/me/workspace/ws") return json(workspace());
+        if (url.pathname === "/api/v2/workspaces/workspace-id/builds") {
+          return json(
+            { id: "pending-build", transition: "stop", job: { status: "pending" } },
+            { status: 201 },
+          );
+        }
+        if (url.pathname === "/api/v2/workspacebuilds/pending-build") {
+          return json({ id: "pending-build", transition: "stop", job: { status: "pending" } });
+        }
+        return json({ message: "unexpected route", detail: url.pathname }, { status: 500 });
+      },
+    });
+
+    const error = await client
+      .stop("ws", { abortSignal: signal })
+      .catch((reason: unknown) => reason);
+    expect(signal.aborted).toBe(true);
+    expect(error).toBe(signal.reason);
+    expect(error).toMatchObject({ name: "TimeoutError" });
+  });
 });

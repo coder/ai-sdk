@@ -412,7 +412,14 @@ describe("native workspace relay", () => {
   });
 
   it("signals backpressure while upstream TCP writes are queued", async () => {
-    const upstream = net.createServer((socket) => socket.pause());
+    let resolveUpstream!: (socket: net.Socket) => void;
+    const upstreamConnected = new Promise<net.Socket>((resolve) => {
+      resolveUpstream = resolve;
+    });
+    const upstream = net.createServer((socket) => {
+      socket.pause();
+      resolveUpstream(socket);
+    });
     await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
     const address = upstream.address();
     if (address === null || typeof address === "string") throw new Error("no upstream address");
@@ -424,11 +431,19 @@ describe("native workspace relay", () => {
       await relay.next(
         (message) => message.type === "tcp-opened" && message.id === "socket-backpressure",
       );
-      relay.send({
-        type: "tcp-data",
-        id: "socket-backpressure",
-        data: Buffer.alloc(1024 * 1024, 0x31).toString("base64"),
-      });
+      const upstreamSocket = await upstreamConnected;
+      const data = Buffer.alloc(128 * 1024, 0x31).toString("base64");
+      for (let index = 0; index < 128; index += 1) {
+        relay.send({ type: "tcp-data", id: "socket-backpressure", data });
+        await new Promise((resolve) => setImmediate(resolve));
+        if (
+          relay.messages.some(
+            (message) => message.type === "tcp-pause" && message.id === "socket-backpressure",
+          )
+        ) {
+          break;
+        }
+      }
       expect(
         (
           await relay.next(
@@ -436,6 +451,7 @@ describe("native workspace relay", () => {
           )
         ).type,
       ).toBe("tcp-pause");
+      upstreamSocket.resume();
       expect(
         (
           await relay.next(
@@ -444,6 +460,9 @@ describe("native workspace relay", () => {
         ).type,
       ).toBe("tcp-resume");
       relay.send({ type: "tcp-close", id: "socket-backpressure" });
+      await relay.next(
+        (message) => message.type === "tcp-close" && message.id === "socket-backpressure",
+      );
     } finally {
       upstream.close();
     }
@@ -562,6 +581,7 @@ describe("native workspace relay", () => {
     const paused = new Promise<void>((resolve) => {
       resolvePaused = resolve;
     });
+    let pauseCount = 0;
     let resolveResumed!: () => void;
     const resumed = new Promise<void>((resolve) => {
       resolveResumed = resolve;
@@ -575,13 +595,17 @@ describe("native workspace relay", () => {
       },
       tcpData: () => {},
       tcpEnd: () => {},
-      pauseTcp: () => resolvePaused(),
+      pauseTcp: () => {
+        pauseCount += 1;
+        resolvePaused();
+      },
       resumeTcp: () => resolveResumed(),
       closeTcp: () => {},
     } as unknown as NativeRelay;
     const forward = await openNativePortForward(relay, { workspace: "ws", remotePort: 4444 });
     try {
-      const payload = Buffer.alloc(1024 * 1024, 0x42);
+      const payload: Buffer[] = [];
+      const chunk = Buffer.alloc(128 * 1024, 0x42);
       const received: Buffer[] = [];
       const socket = net.connect(forward.localPort, forward.localHost);
       socket.on("data", (data) => received.push(data));
@@ -589,14 +613,19 @@ describe("native workspace relay", () => {
       socket.pause();
       await once(socket, "connect");
       const sink = await sinkReady;
-      sink.data(payload);
+      for (let index = 0; index < 128 && pauseCount === 0; index += 1) {
+        payload.push(chunk);
+        sink.data(chunk);
+        await new Promise((resolve) => setImmediate(resolve));
+      }
       await paused;
+      expect(pauseCount).toBe(1);
       socket.resume();
       await resumed;
       sink.end();
       sink.close();
       await socketClosed;
-      expect(Buffer.concat(received).equals(payload)).toBe(true);
+      expect(Buffer.concat(received).equals(Buffer.concat(payload))).toBe(true);
     } finally {
       await forward.close();
     }

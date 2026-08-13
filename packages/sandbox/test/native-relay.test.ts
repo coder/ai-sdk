@@ -1,7 +1,12 @@
 import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import net from "node:net";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { NATIVE_RELAY_SOURCE } from "../src/native-relay.js";
+import { shellQuote } from "../src/shell.js";
 
 interface Message {
   v?: number;
@@ -65,9 +70,11 @@ class RelayHarness {
 }
 
 const harnesses: RelayHarness[] = [];
+const tempDirs: string[] = [];
 
-afterEach(() => {
+afterEach(async () => {
   for (const harness of harnesses.splice(0)) harness.close();
+  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
 describe("native workspace relay", () => {
@@ -116,6 +123,61 @@ describe("native workspace relay", () => {
     ).toBe(143);
   });
 
+  it("maps signals outside the common termination set to conventional exit codes", async () => {
+    const relay = new RelayHarness();
+    harnesses.push(relay);
+    await relay.next((message) => message.type === "ready");
+    relay.send({
+      type: "start",
+      id: "process-signal",
+      command: "kill -USR1 $$",
+      loginShell: false,
+    });
+    expect(
+      (await relay.next((message) => message.type === "exit" && message.id === "process-signal"))
+        .code,
+    ).toBe(128 + os.constants.signals.SIGUSR1);
+  });
+
+  it("terminates descendant processes when the relay exits", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "coder-native-relay-cleanup-"));
+    tempDirs.push(dir);
+    const startedPath = path.join(dir, "started");
+    const terminatedPath = path.join(dir, "terminated");
+    const descendantSource =
+      `const fs = require('node:fs'); ` +
+      `fs.writeFileSync(${JSON.stringify(startedPath)}, String(process.pid)); ` +
+      `process.once('SIGTERM', () => { ` +
+      `fs.writeFileSync(${JSON.stringify(terminatedPath)}, 'yes'); process.exit(0); ` +
+      `}); setInterval(() => {}, 1000);`;
+    const relay = new RelayHarness();
+    harnesses.push(relay);
+    let descendantPid: number | undefined;
+    try {
+      await relay.next((message) => message.type === "ready");
+      relay.send({
+        type: "start",
+        id: "process-relay-exit",
+        command: `${shellQuote(process.execPath)} -e ${shellQuote(descendantSource)} & wait`,
+        loginShell: false,
+      });
+      await relay.next(
+        (message) => message.type === "started" && message.id === "process-relay-exit",
+      );
+      descendantPid = Number(await waitForFile(startedPath));
+      const closed = once(relay.child, "close");
+      relay.close();
+      await closed;
+      expect(await waitForFile(terminatedPath)).toBe("yes");
+    } finally {
+      if (descendantPid !== undefined) {
+        try {
+          process.kill(descendantPid, "SIGKILL");
+        } catch {}
+      }
+    }
+  });
+
   it("opens a binary-safe TCP channel", async () => {
     const upstream = net.createServer((socket) => {
       socket.write(Buffer.from([0, 255, 1]));
@@ -158,3 +220,16 @@ describe("native workspace relay", () => {
     }
   });
 });
+
+async function waitForFile(file: string): Promise<string> {
+  const deadline = Date.now() + 5_000;
+  for (;;) {
+    try {
+      return await readFile(file, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${file}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}

@@ -196,4 +196,36 @@ describe("CoderNativeTransport", () => {
       await forward.close();
     }
   });
+
+  it("isolates shared relay setup from one caller's cancellation", async () => {
+    const coderd = await fakeCoderd();
+    const transport = new CoderNativeTransport({
+      url: coderd.url,
+      token: "test-token",
+      loginShell: false,
+      relayConnectTimeoutMs: 2_000,
+    });
+    cleanups.push(() => transport.close());
+
+    const controller = new AbortController();
+    const canceled = transport.exec({
+      workspace: "ws",
+      command: "first",
+      abortSignal: controller.signal,
+    });
+    await coderd.ptyConnected;
+    const survivor = transport.exec({ workspace: "ws", command: "second", stdin: "still-running" });
+
+    controller.abort(new Error("cancel only the first caller"));
+    await expect(canceled).rejects.toThrow("cancel only the first caller");
+    expect(coderd.bootstrapSource()).toBe("");
+
+    coderd.releaseBootstrap();
+    await expect(survivor).resolves.toEqual({
+      exitCode: 7,
+      stdout: "still-running",
+      stderr: "separate-error",
+    });
+    expect(coderd.requests.filter((request) => request.type === "start")).toHaveLength(1);
+  });
 });

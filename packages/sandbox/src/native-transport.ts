@@ -148,44 +148,44 @@ export class CoderNativeTransport implements CoderTransport {
   }
 
   async #relayFor(workspace: string, signal?: AbortSignal): Promise<NativeRelay> {
+    if (signal?.aborted) throw abortError(signal);
     const existing = this.#relays.get(workspace);
     if (existing !== undefined) {
-      const entry = await existing;
+      const entry = await waitWithAbort(existing, signal);
       if (!entry.relay.closed) return entry.relay;
-      this.#relays.delete(workspace);
+      if (this.#relays.get(workspace) === existing) this.#relays.delete(workspace);
     }
     let pending!: Promise<RelayEntry>;
     pending = (async () => {
-      const resolved = await this.#api.resolveAgent(workspace, signal);
-      if (resolved.workspace.latest_build.status !== "running") {
-        throw new Error(
-          `Coder workspace "${workspace}" is ${resolved.workspace.latest_build.status}; start it before connecting`,
-        );
-      }
-      if (resolved.agent.status !== "connected") {
-        throw new Error(
-          `Coder workspace agent "${resolved.agent.name}" is ${resolved.agent.status}; wait for it to connect`,
-        );
-      }
-      const relay = await NativeRelay.connect({
-        api: this.#api,
-        agentId: resolved.agent.id,
-        nodeCommand: this.#relayNodeCommand,
-        connectTimeoutMs: this.#relayConnectTimeoutMs,
-        signal,
-      });
-      relay.onClose(() => {
+      try {
+        const resolved = await this.#api.resolveAgent(workspace);
+        if (resolved.workspace.latest_build.status !== "running") {
+          throw new Error(
+            `Coder workspace "${workspace}" is ${resolved.workspace.latest_build.status}; start it before connecting`,
+          );
+        }
+        if (resolved.agent.status !== "connected") {
+          throw new Error(
+            `Coder workspace agent "${resolved.agent.name}" is ${resolved.agent.status}; wait for it to connect`,
+          );
+        }
+        const relay = await NativeRelay.connect({
+          api: this.#api,
+          agentId: resolved.agent.id,
+          nodeCommand: this.#relayNodeCommand,
+          connectTimeoutMs: this.#relayConnectTimeoutMs,
+        });
+        relay.onClose(() => {
+          if (this.#relays.get(workspace) === pending) this.#relays.delete(workspace);
+        });
+        return { workspaceId: resolved.workspace.id, relay };
+      } catch (error) {
         if (this.#relays.get(workspace) === pending) this.#relays.delete(workspace);
-      });
-      return { workspaceId: resolved.workspace.id, relay };
+        throw error;
+      }
     })();
     this.#relays.set(workspace, pending);
-    try {
-      return (await pending).relay;
-    } catch (error) {
-      if (this.#relays.get(workspace) === pending) this.#relays.delete(workspace);
-      throw error;
-    }
+    return (await waitWithAbort(pending, signal)).relay;
   }
 
   async #closeWorkspaceRelays(workspace: string, signal?: AbortSignal): Promise<void> {
@@ -212,4 +212,24 @@ async function drain(stream: ReadableStream<Uint8Array>): Promise<string> {
     if (value !== undefined) chunks.push(value);
   }
   return Buffer.concat(chunks).toString("utf8");
+}
+
+async function waitWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (signal === undefined) return await promise;
+  if (signal.aborted) throw abortError(signal);
+  let onAbort!: () => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(abortError(signal));
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([promise, aborted]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
+function abortError(signal: AbortSignal): Error {
+  if (signal.reason instanceof Error) return signal.reason;
+  return new DOMException("The operation was aborted", "AbortError");
 }

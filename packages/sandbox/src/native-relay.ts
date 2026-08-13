@@ -23,10 +23,11 @@ export const NATIVE_RELAY_BOOTSTRAP_MARKER = "__CODER_AI_SDK_RELAY_BOOTSTRAP_REA
 export const NATIVE_RELAY_SOURCE = String.raw`'use strict';
 const childProcess = require('node:child_process');
 const net = require('node:net');
+const os = require('node:os');
 const readline = require('node:readline');
 const processes = new Map();
 const sockets = new Map();
-const signalNumbers = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGKILL: 9, SIGTERM: 15 };
+const signalNumbers = os.constants.signals;
 function emit(message) {
   process.stdout.write(JSON.stringify(Object.assign({ v: 1 }, message)) + '\n');
 }
@@ -71,16 +72,17 @@ function start(message) {
   if (message.stdin) child.stdin.write(bytes(message.stdin));
   child.stdin.end();
 }
-function kill(message) {
-  const child = processes.get(message.id);
+function terminate(child, signal) {
   if (!child || !child.pid) return;
-  const signal = message.signal || 'SIGTERM';
   try {
     if (process.platform !== 'win32') process.kill(-child.pid, signal);
     else child.kill(signal);
   } catch (_) {
     try { child.kill(signal); } catch (_) {}
   }
+}
+function kill(message) {
+  terminate(processes.get(message.id), message.signal || 'SIGTERM');
 }
 function tcpOpen(message) {
   if (sockets.has(message.id)) {
@@ -121,11 +123,20 @@ function receive(line) {
     default: emit({ type: 'error', id: message.id, message: 'unknown message type: ' + message.type });
   }
 }
-readline.createInterface({ input: process.stdin, crlfDelay: Infinity, terminal: false }).on('line', receive);
-process.once('exit', () => {
-  for (const child of processes.values()) { try { child.kill('SIGTERM'); } catch (_) {} }
+let shuttingDown = false;
+function cleanup() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  for (const child of processes.values()) terminate(child, 'SIGTERM');
   for (const socket of sockets.values()) socket.destroy();
-});
+}
+const input = readline.createInterface({ input: process.stdin, crlfDelay: Infinity, terminal: false });
+input.on('line', receive);
+input.once('close', () => { cleanup(); process.exit(0); });
+for (const signal of ['SIGHUP', 'SIGINT', 'SIGQUIT', 'SIGTERM']) {
+  process.once(signal, () => { cleanup(); process.exit(processExitCode(null, signal)); });
+}
+process.once('exit', cleanup);
 emit({ type: 'ready', protocol: 1, pid: process.pid });
 `;
 

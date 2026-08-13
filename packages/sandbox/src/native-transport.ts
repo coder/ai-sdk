@@ -251,7 +251,7 @@ export class CoderNativeTransport implements CoderTransport {
       parsedWorkspace.owner !== "me" &&
       workspaceOwnerId !== undefined &&
       hasUnresolvedMeSetup &&
-      (await this.#api.currentUserId(signal)) === workspaceOwnerId
+      (await waitWithAbort(this.#api.currentUserId(signal), signal)) === workspaceOwnerId
     ) {
       workspaceKeys.add(meWorkspaceKey);
     }

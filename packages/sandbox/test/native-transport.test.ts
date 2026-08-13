@@ -581,4 +581,48 @@ describe("CoderNativeTransport", () => {
     await transport.close();
     await expect(execution).rejects.toThrow("Coder native transport closed");
   });
+
+  it("cancels a stalled owner-alias lookup with the lifecycle signal", async () => {
+    const coderd = await fakeCoderd({ ownerName: "alice" });
+    let resolveSetupFetchStarted!: () => void;
+    const setupFetchStarted = new Promise<void>((resolve) => {
+      resolveSetupFetchStarted = resolve;
+    });
+    let resolveOwnerFetchStarted!: () => void;
+    const ownerFetchStarted = new Promise<void>((resolve) => {
+      resolveOwnerFetchStarted = resolve;
+    });
+    let stallNextWorkspaceLookup = true;
+    const transport = new CoderNativeTransport({
+      url: coderd.url,
+      token: "test-token",
+      buildPollIntervalMs: 1,
+      fetch: async (input, init) => {
+        const path = new URL(String(input)).pathname;
+        if (path === "/api/v2/users/me/workspace/ws" && stallNextWorkspaceLookup) {
+          stallNextWorkspaceLookup = false;
+          resolveSetupFetchStarted();
+          return await new Promise<Response>(() => {});
+        }
+        if (path === "/api/v2/users/me") {
+          resolveOwnerFetchStarted();
+          return await new Promise<Response>(() => {});
+        }
+        return await fetch(input, init);
+      },
+    });
+    cleanups.push(() => transport.close());
+
+    const execution = transport.exec({ workspace: "ws", command: "ignored" });
+    void execution.catch(() => {});
+    await setupFetchStarted;
+    const controller = new AbortController();
+    const stopping = transport.stop("alice/ws", { abortSignal: controller.signal });
+    await ownerFetchStarted;
+
+    controller.abort(new Error("cancel lifecycle identity lookup"));
+    await expect(stopping).rejects.toThrow("cancel lifecycle identity lookup");
+    await transport.close();
+    await expect(execution).rejects.toThrow("Coder native transport closed");
+  });
 });

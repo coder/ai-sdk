@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.3.1](https://github.com/coder/ai-sdk/compare/provider-v0.3.0...provider-v0.3.1) (2026-08-18)
+
+A maintenance release with no user-facing changes.
+
 ## [0.3.0](https://github.com/coder/ai-sdk/compare/provider-v0.2.0...provider-v0.3.0) (2026-07-14)
 
 This release upgrades the provider to AI SDK v7 stable. This is a breaking change and requires updating your dependencies accordingly.

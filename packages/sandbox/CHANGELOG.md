@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/coder/ai-sdk/compare/sandbox-v0.3.0...sandbox-v0.4.0) (2026-08-18)
+
+Adds a native Coder transport to the sandbox package, expanding how sandboxes can connect and run.
+
+### Highlights
+
+- Introduces a native Coder transport for sandboxes. ([#33](https://github.com/coder/ai-sdk/pull/33))
+
+### Features
+
+* **sandbox:** add native Coder transport ([#33](https://github.com/coder/ai-sdk/issues/33)) ([c684683](https://github.com/coder/ai-sdk/commit/c684683b0113b4dd68cade78b6fdea940941e039))
+
 ## [0.3.0](https://github.com/coder/ai-sdk/compare/sandbox-v0.2.0...sandbox-v0.3.0) (2026-07-14)
 
 Upgrades all packages to AI SDK v7 stable, which is a breaking change requiring consumers to migrate to the new SDK version.

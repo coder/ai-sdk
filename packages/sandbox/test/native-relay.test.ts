@@ -973,7 +973,7 @@ describe("native workspace relay", () => {
       resolveRequest = resolve;
     });
     const upstream = net.createServer({ allowHalfOpen: true }, (socket) => {
-      socket.on("data", (data) => {
+      socket.on("data", (data: Buffer) => {
         resolveRequest(data);
         socket.destroy();
       });
@@ -1097,7 +1097,7 @@ describe("native workspace relay", () => {
         host: forward.localHost,
         allowHalfOpen: true,
       });
-      socket.on("data", (data) => received.push(data));
+      socket.on("data", (data: Buffer) => received.push(data));
       socket.on("error", (error) => {
         socketError = error;
       });
@@ -1157,7 +1157,7 @@ describe("native workspace relay", () => {
     try {
       const response: Buffer[] = [];
       const socket = net.connect(forward.localPort, forward.localHost);
-      socket.on("data", (data) => response.push(data));
+      socket.on("data", (data: Buffer) => response.push(data));
       const socketClosed = once(socket, "close");
       await once(socket, "connect");
       socket.end("request-before-eof");
@@ -1212,7 +1212,7 @@ describe("native workspace relay", () => {
       const chunk = Buffer.alloc(128 * 1024, 0x42);
       const received: Buffer[] = [];
       const socket = net.connect(forward.localPort, forward.localHost);
-      socket.on("data", (data) => received.push(data));
+      socket.on("data", (data: Buffer) => received.push(data));
       const socketClosed = once(socket, "close");
       socket.pause();
       await once(socket, "connect");

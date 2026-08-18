@@ -1109,7 +1109,7 @@ export async function openNativePortForward(
       remoteClosed = true;
       relay.closeTcp(id);
     };
-    socket.on("data", (data) => {
+    socket.on("data", (data: Buffer) => {
       if (!remoteClosed) relay.tcpData(id, data);
     });
     socket.on("end", () => {

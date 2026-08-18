@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.4.1](https://github.com/coder/ai-sdk/compare/agent-v0.4.0...agent-v0.4.1) (2026-08-18)
+
+A maintenance release with no documented user-facing changes. Refer to the structured changelog below for details.
+
 ## [0.4.0](https://github.com/coder/ai-sdk/compare/agent-v0.3.0...agent-v0.4.0) (2026-07-14)
 
 Upgrades the agent package to AI SDK v7 stable. This is a breaking change that requires consumers to migrate to the v7 AI SDK APIs.

@@ -6,6 +6,7 @@
     "**/coverage",
     "**/*-lock.yaml",
     "**/mise.lock",
-    "**/CHANGELOG.md"
+    "**/CHANGELOG.md",
+    "tools/oxlint/anti-slop/**"
   ]
 }

@@ -28,6 +28,7 @@
     "attw": "pnpm --filter @coder/ai-sdk-sandbox --filter @coder/ai-sdk-provider attw"
   },
   "devDependencies": {
+    "@oxlint/plugins": "^1.78.0",
     "oxfmt": "^0.63.0",
     "oxlint": "^1.78.0"
   },

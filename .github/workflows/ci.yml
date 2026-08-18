@@ -25,11 +25,11 @@ jobs:
       fail-fast: false
       matrix:
         # sandbox engines.node >=22 is the binding floor; agent (>=20) runs fine
-        # on these. 26.3.0 matches the version pinned in mise.toml.
-        node: ["22", "24", "26.3.0"]
+        # on these. 26.7.0 matches the version pinned in mise.toml.
+        node: ["22", "24", "26.7.0"]
     env:
       # Override the node version per matrix cell. MISE_LOCKFILE=false disables
-      # mise's locked mode for this job: mise.lock only pins node 26.3.0, so the
+      # mise's locked mode for this job: mise.lock only pins node 26.7.0, so the
       # 22/24 cells aren't in the lock and locked mode would refuse them. Tool
       # versions still come from mise.toml; the lock stays authoritative for local
       # dev and the (un-overridden) lint-workflows job below.
@@ -37,12 +37,12 @@ jobs:
       MISE_LOCKFILE: "false"
     steps:
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up mise
-        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
+        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
         with:
           # Don't auto-install: the action force-adds `--locked` when a lockfile
           # is present, which fails for matrix node versions not in the lock.
@@ -55,7 +55,7 @@ jobs:
         run: echo "STORE_PATH=$(pnpm store path --silent)" >> "$GITHUB_ENV"
 
       - name: Cache pnpm store
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.STORE_PATH }}
           key: ${{ runner.os }}-node${{ matrix.node }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
@@ -93,12 +93,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Install tools via mise
-        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
+        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
 
       - name: actionlint
         run: actionlint

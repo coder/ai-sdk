@@ -25,11 +25,11 @@ jobs:
       agent_released: ${{ steps.release.outputs['packages/agent--release_created'] }}
       provider_released: ${{ steps.release.outputs['packages/provider--release_created'] }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install node and pnpm via mise
-        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
+        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
       - run: pnpm install --frozen-lockfile
       # Runs release-please as a library with our AI changelog-notes hook
       # registered (changelog-type: "ai" in the config). release-please itself
@@ -55,11 +55,11 @@ jobs:
       contents: read # checkout only
       id-token: write # OIDC: trusted-publishing auth + provenance
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install node and pnpm via mise
-        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
+        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @coder/ai-sdk-sandbox build
       - name: Publish @coder/ai-sdk-sandbox
@@ -73,11 +73,11 @@ jobs:
       contents: read # checkout only
       id-token: write # OIDC: trusted-publishing auth + provenance
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install node and pnpm via mise
-        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
+        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @coder/ai-sdk-agent build
       - name: Publish @coder/ai-sdk-agent
@@ -91,11 +91,11 @@ jobs:
       contents: read # checkout only
       id-token: write # OIDC: trusted-publishing auth + provenance
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install node and pnpm via mise
-        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
+        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @coder/ai-sdk-provider build
       - name: Publish @coder/ai-sdk-provider

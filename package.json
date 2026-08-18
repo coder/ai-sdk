@@ -28,11 +28,11 @@
     "attw": "pnpm --filter @coder/ai-sdk-sandbox --filter @coder/ai-sdk-provider attw"
   },
   "devDependencies": {
-    "oxfmt": "^0.55.0",
-    "oxlint": "^1.70.0"
+    "oxfmt": "^0.63.0",
+    "oxlint": "^1.78.0"
   },
   "engines": {
     "node": ">=22"
   },
-  "packageManager": "pnpm@11.7.0"
+  "packageManager": "pnpm@11.22.0"
 }

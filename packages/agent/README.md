@@ -328,9 +328,7 @@ To make cleanup ride scope exit instead of a `finally` you have to remember, the
 agent is an **async disposable**:
 
 ```ts
-await using agent = new CoderAgent({
-  /* … */
-});
+await using agent = new CoderAgent({/* … */});
 const { text } = await agent.generate({ prompt: "…" });
 // agent.interrupt() + agent.archive() run automatically when the scope exits.
 ```

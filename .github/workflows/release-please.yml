@@ -3,6 +3,15 @@ name: release-please
 on:
   push:
     branches: [main]
+  # Recovery lever for a release that was tagged on GitHub but never reached
+  # npm (e.g. the release run died between tagging and emitting its outputs).
+  # Trusted publishing authorizes it because it runs from this same workflow file.
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing release tag to publish to npm (e.g. sandbox-v0.4.0)"
+        required: true
+        type: string
 
 # Only one release run at a time; never cancel an in-progress publish.
 concurrency:
@@ -13,6 +22,7 @@ permissions: {}
 
 jobs:
   release-please:
+    if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
     permissions:
       actions: write # restart checks after GITHUB_TOKEN updates release PR branches
@@ -47,9 +57,13 @@ jobs:
   # Publish jobs authenticate to npm via OIDC trusted publishing (no NPM_TOKEN).
   # Requires a trusted publisher configured per package on npmjs.com pointing at
   # this repo + workflow file. Provenance is attested via the OIDC id-token.
+  # The publish conditions use !cancelled() so an emitted release still publishes
+  # even if the release-please job later failed on housekeeping: its outputs are
+  # written the moment releases are tagged, and a tagged release only publishes
+  # from this run (re-runs see it as already tagged and skip it).
   publish-sandbox:
     needs: release-please
-    if: ${{ needs.release-please.outputs.sandbox_released == 'true' }}
+    if: ${{ !cancelled() && needs.release-please.outputs.sandbox_released == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read # checkout only
@@ -67,7 +81,7 @@ jobs:
 
   publish-agent:
     needs: release-please
-    if: ${{ needs.release-please.outputs.agent_released == 'true' }}
+    if: ${{ !cancelled() && needs.release-please.outputs.agent_released == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read # checkout only
@@ -85,7 +99,7 @@ jobs:
 
   publish-provider:
     needs: release-please
-    if: ${{ needs.release-please.outputs.provider_released == 'true' }}
+    if: ${{ !cancelled() && needs.release-please.outputs.provider_released == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read # checkout only
@@ -100,3 +114,50 @@ jobs:
       - run: pnpm --filter @coder/ai-sdk-provider build
       - name: Publish @coder/ai-sdk-provider
         run: pnpm --filter @coder/ai-sdk-provider publish --provenance --access public --no-git-checks
+
+  # Manual recovery (workflow_dispatch): publish an already-tagged release whose
+  # npm publish never ran. Builds the tag's checkout and refuses to run if the
+  # tag doesn't match the package.json version or the version is already on npm.
+  publish-recovery:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # checkout only
+      id-token: write # OIDC: trusted-publishing auth + provenance
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.release_tag }}
+          persist-credentials: false
+      - name: Install node and pnpm via mise
+        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+      - name: Resolve package from tag
+        id: pkg
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          case "$RELEASE_TAG" in
+            sandbox-v*) name="@coder/ai-sdk-sandbox" path="packages/sandbox" ;;
+            agent-v*) name="@coder/ai-sdk-agent" path="packages/agent" ;;
+            provider-v*) name="@coder/ai-sdk-provider" path="packages/provider" ;;
+            *) echo "unrecognized release tag: $RELEASE_TAG" >&2; exit 1 ;;
+          esac
+          version="${RELEASE_TAG#*-v}"
+          manifest_version="$(jq -r .version "$path/package.json")"
+          if [ "$manifest_version" != "$version" ]; then
+            echo "tag version $version does not match $path/package.json version $manifest_version" >&2
+            exit 1
+          fi
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "$name@$version is already published" >&2
+            exit 1
+          fi
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter "$PACKAGE_NAME" build
+        env:
+          PACKAGE_NAME: ${{ steps.pkg.outputs.name }}
+      - name: Publish ${{ inputs.release_tag }}
+        run: pnpm --filter "$PACKAGE_NAME" publish --provenance --access public --no-git-checks
+        env:
+          PACKAGE_NAME: ${{ steps.pkg.outputs.name }}

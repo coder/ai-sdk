@@ -34,19 +34,30 @@ async function main(): Promise<void> {
   registerAiChangelogNotes();
 
   const github = await GitHub.create({ owner, repo, token, defaultBranch: targetBranch });
-  const result = await runReleasePlease(() =>
-    Manifest.fromManifest(github, targetBranch, configFile, manifestFile),
+  const result = await runReleasePlease(
+    () => Manifest.fromManifest(github, targetBranch, configFile, manifestFile),
+    emitReleaseOutputs,
   );
-  const rerunCount = await rerunActionRequiredChecks(
-    github.getGitHubApi().octokit,
-    { owner, repo },
-    result.pullRequests,
-  );
-  if (rerunCount > 0) {
-    process.stderr.write(`release-please: restarted ${rerunCount} release PR check run(s)\n`);
+  emitPullRequestOutputs(result.pullRequests.length);
+  if (result.pullRequestError) {
+    warnNonFatal(
+      "Refreshing release PRs failed; releases were already tagged and their outputs emitted. The next push to main retries the refresh.",
+      result.pullRequestError,
+    );
+    return;
   }
-
-  emitOutputs(result.pullRequests.length, result.releases);
+  try {
+    const rerunCount = await rerunActionRequiredChecks(
+      github.getGitHubApi().octokit,
+      { owner, repo },
+      result.pullRequests,
+    );
+    if (rerunCount > 0) {
+      process.stderr.write(`release-please: restarted ${rerunCount} release PR check run(s)\n`);
+    }
+  } catch (error) {
+    warnNonFatal("Restarting release PR check runs failed.", error);
+  }
 }
 
 interface ReleasePleaseManifest {
@@ -56,25 +67,37 @@ interface ReleasePleaseManifest {
 
 export async function runReleasePlease(
   loadManifest: () => Promise<ReleasePleaseManifest>,
-): Promise<{ pullRequests: PullRequest[]; releases: CreatedRelease[] }> {
+  onReleasesCreated?: (releases: CreatedRelease[]) => void,
+): Promise<{
+  pullRequests: PullRequest[];
+  releases: CreatedRelease[];
+  pullRequestError?: unknown;
+}> {
   const releaseManifest = await loadManifest();
   const releases = (await releaseManifest.createReleases()).filter(
     (release): release is CreatedRelease => Boolean(release),
   );
+  // Report releases before touching release PRs: a created release can only be
+  // published from this run's outputs (re-runs see it as already tagged), so a
+  // PR-refresh failure past this point must not swallow them.
+  onReleasesCreated?.(releases);
 
-  // Reload after tagging merged releases. Otherwise createPullRequests sees the
-  // just-merged release PR as untagged and aborts before refreshing sibling PRs.
-  const pullRequestManifest = await loadManifest();
-  const pullRequests = (await pullRequestManifest.createPullRequests()).filter(
-    (pullRequest): pullRequest is PullRequest => Boolean(pullRequest),
-  );
-
-  return { pullRequests, releases };
+  try {
+    // Reload after tagging merged releases. Otherwise createPullRequests sees the
+    // just-merged release PR as untagged and aborts before refreshing sibling PRs.
+    const pullRequestManifest = await loadManifest();
+    const pullRequests = (await pullRequestManifest.createPullRequests()).filter(
+      (pullRequest): pullRequest is PullRequest => Boolean(pullRequest),
+    );
+    return { pullRequests, releases };
+  } catch (error) {
+    return { pullRequests: [], releases, pullRequestError: error };
+  }
 }
 
 /** Write GitHub Actions step outputs (mirrors googleapis/release-please-action). */
-function emitOutputs(prCount: number, releases: CreatedRelease[]): void {
-  const lines = [`releases_created=${releases.length > 0}`, `prs_created=${prCount > 0}`];
+function emitReleaseOutputs(releases: CreatedRelease[]): void {
+  const lines = [`releases_created=${releases.length > 0}`];
   for (const r of releases) {
     lines.push(
       `${r.path}--release_created=true`,
@@ -82,14 +105,27 @@ function emitOutputs(prCount: number, releases: CreatedRelease[]): void {
       `${r.path}--version=${r.version}`,
     );
   }
-  const text = `${lines.join("\n")}\n`;
+  writeOutputs(`release-please: ${releases.length} release(s) created`, lines);
+}
 
+function emitPullRequestOutputs(prCount: number): void {
+  writeOutputs(`release-please: ${prCount} PR(s) opened/updated`, [`prs_created=${prCount > 0}`]);
+}
+
+function writeOutputs(summary: string, lines: string[]): void {
+  const text = `${lines.join("\n")}\n`;
   const outputFile = process.env.GITHUB_OUTPUT;
   if (outputFile) {
     appendFileSync(outputFile, text);
   }
+  process.stderr.write(`${summary}\n${text}`);
+}
+
+/** Surface a housekeeping failure as a workflow warning annotation without failing the job. */
+function warnNonFatal(message: string, error: unknown): void {
+  process.stdout.write(`::warning title=release-please::${message}\n`);
   process.stderr.write(
-    `release-please: ${releases.length} release(s) created, ${prCount} PR(s) opened/updated\n${text}`,
+    `${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,
   );
 }
 

@@ -53,23 +53,23 @@
     "prepublishOnly": "pnpm run build && pnpm run typecheck && pnpm test && publint && pnpm run attw"
   },
   "dependencies": {
-    "ws": "^8.18.0",
+    "ws": "^8.21.3",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
-    "@ai-sdk/harness": "^1.0.23",
-    "@ai-sdk/harness-claude-code": "^1.0.23",
-    "@ai-sdk/provider-utils": "^5.0.7",
-    "@ai-sdk/tui": "^1.0.19",
-    "@arethetypeswrong/cli": "^0.18.0",
-    "@types/node": "^22",
+    "@ai-sdk/harness": "^1.0.73",
+    "@ai-sdk/harness-claude-code": "^1.0.76",
+    "@ai-sdk/provider-utils": "^5.0.27",
+    "@ai-sdk/tui": "^1.0.67",
+    "@arethetypeswrong/cli": "^0.18.5",
+    "@types/node": "^26.2.0",
     "@types/ws": "^8.18.1",
-    "@vitest/coverage-v8": "^4.1.9",
-    "publint": "^0.3.0",
+    "@vitest/coverage-v8": "^4.1.10",
+    "publint": "^0.3.23",
     "tsup": "^8.5.1",
-    "tsx": "^4.22.4",
+    "tsx": "^4.23.12",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.9",
+    "vitest": "^4.1.10",
     "zod": "4.4.3"
   },
   "peerDependencies": {

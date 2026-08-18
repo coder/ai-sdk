@@ -1,4 +1,4 @@
-import type { HarnessV1NetworkSandboxSession } from "@ai-sdk/harness";
+import type { HarnessV1NetworkSandboxSession, HarnessV1PortEndpoint } from "@ai-sdk/harness";
 import type { Experimental_SandboxSession } from "@ai-sdk/provider-utils";
 import * as fileIo from "./file-io.js";
 import type {
@@ -35,7 +35,7 @@ export interface CoderWorkspaceSessionConfig {
  * A {@link HarnessV1NetworkSandboxSession} backed by a Coder workspace.
  *
  * The configured {@link CoderTransport} supplies process execution, lifecycle,
- * and TCP forwarding. `getPortUrl` exposes a forwarded port as a local
+ * and TCP forwarding. `getPortEndpoint` exposes a forwarded port as a local
  * `ws://127.0.0.1:<port>` URL, which is what bridge-backed harness adapters
  * (Claude Code, Codex) open their WebSocket against.
  */
@@ -116,10 +116,10 @@ export class CoderWorkspaceSession implements HarnessV1NetworkSandboxSession {
 
   // --- network surface ------------------------------------------------------
 
-  readonly getPortUrl = async (options: {
+  readonly getPortEndpoint = async (options: {
     port: number;
     protocol?: "http" | "https" | "ws";
-  }): Promise<string> => {
+  }): Promise<HarnessV1PortEndpoint> => {
     if (this.#stopped) {
       throw new Error("cannot resolve a port URL: the sandbox session is stopped");
     }
@@ -145,8 +145,15 @@ export class CoderWorkspaceSession implements HarnessV1NetworkSandboxSession {
     }
     const resolved = await forward;
     const scheme = localScheme(options.protocol ?? "ws");
-    return `${scheme}://${resolved.localHost}:${resolved.localPort}`;
+    // The local tunnel needs no auth headers; the URL alone is the endpoint.
+    return { url: `${scheme}://${resolved.localHost}:${resolved.localPort}` };
   };
+
+  /** @deprecated Kept for the `HarnessV1NetworkSandboxSession` contract; use `getPortEndpoint`. */
+  readonly getPortUrl = async (options: {
+    port: number;
+    protocol?: "http" | "https" | "ws";
+  }): Promise<string> => (await this.getPortEndpoint(options)).url;
 
   readonly setPorts = async (
     ports: ReadonlyArray<number>,

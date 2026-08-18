@@ -8,10 +8,32 @@
     "es2024": true,
     "node": true
   },
-  "ignorePatterns": ["**/dist", "**/node_modules", "**/coverage"],
+  "ignorePatterns": [
+    "**/dist",
+    "**/node_modules",
+    "**/coverage",
+    ".claude/**",
+    "tools/oxlint/anti-slop/**"
+  ],
+  "jsPlugins": ["./tools/oxlint/anti-slop/index.ts"],
   "rules": {
     "typescript/no-explicit-any": "error",
-    "typescript/no-non-null-assertion": "error"
+    "typescript/no-non-null-assertion": "error",
+    "anti-slop/no-chained-type-assertions": "error",
+    "anti-slop/no-conditional-empty-object-spread": "error",
+    "anti-slop/no-known-value-widening": "error",
+    "anti-slop/no-module-mocking": "error",
+    "anti-slop/no-object-parameters": "error",
+    "anti-slop/no-reflect-apply": "error",
+    "anti-slop/no-reflect-get": "error",
+    "anti-slop/no-runtime-typeof": "error",
+    "anti-slop/no-shape-in-symbol-names": "error",
+    "anti-slop/no-unknown-parameters": "error",
+    "anti-slop/no-unknown-returns": "error",
+    "anti-slop/no-unknown-type-aliases": "error",
+    "anti-slop/no-unsafe-dictionary-type": "error",
+    "anti-slop/no-widen-then-assert": "error",
+    "anti-slop/require-safety-comment-for-type-assertion": "error"
   },
   "overrides": [
     {
@@ -20,13 +42,145 @@
       "rules": {
         "vitest/no-conditional-expect": "off",
         "vitest/require-mock-type-parameters": "off",
-        "vitest/require-to-throw-message": "off"
+        "vitest/require-to-throw-message": "off",
+        "anti-slop/no-chained-type-assertions": "off",
+        "anti-slop/no-known-value-widening": "off",
+        "anti-slop/no-unknown-parameters": "off",
+        "anti-slop/no-unsafe-dictionary-type": "off",
+        "anti-slop/require-safety-comment-for-type-assertion": "off"
       }
     },
     {
       "files": ["**/test/**", "**/scripts/**"],
       "rules": {
         "typescript/no-non-null-assertion": "off"
+      }
+    },
+    // Ratchet for pre-existing anti-slop violations: these files predate the
+    // plugin. Remove a file from a list once it is cleaned up; new files get
+    // full enforcement. See CONTRIBUTING.md.
+    {
+      "files": ["packages/agent/src/coder/ws.ts", "packages/agent/src/model/translate.ts"],
+      "rules": {
+        "anti-slop/no-chained-type-assertions": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/agent/src/agent/coder-agent.ts",
+        "packages/agent/src/model/history.ts",
+        "packages/agent/src/model/language-model.ts",
+        "packages/agent/src/model/translate.ts",
+        "packages/agent/test/unit/agent.test.ts",
+        "packages/provider/src/provider.ts",
+        "packages/sandbox/scripts/e2e-claude.ts",
+        "packages/sandbox/src/cli-transport.ts",
+        "packages/sandbox/src/native-api.ts",
+        "packages/sandbox/src/native-relay.ts",
+        "packages/sandbox/test/native-api.test.ts",
+        "packages/sandbox/test/native-relay.test.ts",
+        "packages/sandbox/test/provider.test.ts"
+      ],
+      "rules": {
+        "anti-slop/no-conditional-empty-object-spread": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/agent/examples/05-file-upload.ts",
+        "packages/agent/src/agent/coder-agent.ts",
+        "packages/agent/src/coder/client.ts",
+        "packages/agent/src/coder/workspaces.ts",
+        "packages/agent/src/model/prompt.ts",
+        "packages/provider/src/provider.ts",
+        "packages/sandbox/src/cli-transport.ts",
+        "packages/sandbox/src/native-api.ts"
+      ],
+      "rules": {
+        "anti-slop/no-known-value-widening": "off"
+      }
+    },
+    {
+      "files": ["packages/release-please-ai/test/unit/changelog-notes.test.ts"],
+      "rules": {
+        "anti-slop/no-module-mocking": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/agent/examples/06-structured-output.ts",
+        "packages/agent/src/ai-version.ts",
+        "packages/agent/src/coder/client.ts",
+        "packages/agent/src/coder/ws.ts",
+        "packages/agent/src/files.ts",
+        "packages/agent/src/model/history.ts",
+        "packages/agent/src/model/prompt.ts",
+        "packages/agent/src/model/translate.ts",
+        "packages/agent/test/unit/client.test.ts",
+        "packages/provider/test/provider.test.ts",
+        "packages/release-please-ai/test/e2e/generate.e2e.test.ts",
+        "packages/sandbox/src/cli-transport.ts",
+        "packages/sandbox/src/coder-workspace-provider.ts",
+        "packages/sandbox/src/native-api.ts",
+        "packages/sandbox/src/native-relay.ts",
+        "packages/sandbox/test/integration-local.test.ts",
+        "packages/sandbox/test/native-relay.test.ts",
+        "packages/sandbox/test/native-transport.test.ts",
+        "packages/sandbox/test/provider.test.ts",
+        "packages/sandbox/test/session.test.ts"
+      ],
+      "rules": {
+        "anti-slop/no-runtime-typeof": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/agent/examples/06-structured-output.ts",
+        "packages/agent/src/coder/client.ts",
+        "packages/agent/src/coder/workspaces.ts",
+        "packages/agent/src/coder/ws.ts",
+        "packages/agent/src/files.ts",
+        "packages/agent/src/model/history.ts",
+        "packages/agent/src/model/prompt.ts",
+        "packages/agent/src/model/translate.ts",
+        "packages/release-please-ai/src/cli.ts",
+        "packages/sandbox/src/cli-transport.ts",
+        "packages/sandbox/src/native-api.ts",
+        "packages/sandbox/src/native-relay.ts"
+      ],
+      "rules": {
+        "anti-slop/no-unknown-parameters": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/sandbox/src/cli-transport.ts",
+        "packages/sandbox/src/native-api.ts",
+        "packages/sandbox/src/native-relay.ts"
+      ],
+      "rules": {
+        "anti-slop/no-unsafe-dictionary-type": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/agent/examples/_shared.ts",
+        "packages/agent/src/agent/coder-agent.ts",
+        "packages/agent/src/ai-version.ts",
+        "packages/agent/src/coder/client.ts",
+        "packages/agent/src/coder/workspaces.ts",
+        "packages/agent/src/coder/ws.ts",
+        "packages/agent/src/files.ts",
+        "packages/agent/src/model/language-model.ts",
+        "packages/agent/src/model/prompt.ts",
+        "packages/agent/src/model/translate.ts",
+        "packages/provider/src/provider.ts",
+        "packages/sandbox/src/cli-transport.ts",
+        "packages/sandbox/src/native-api.ts",
+        "packages/sandbox/src/native-relay.ts"
+      ],
+      "rules": {
+        "anti-slop/require-safety-comment-for-type-assertion": "off"
       }
     }
   ]

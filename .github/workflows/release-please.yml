@@ -154,6 +154,10 @@ jobs:
           fi
           echo "name=$name" >> "$GITHUB_OUTPUT"
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter ${{ steps.pkg.outputs.name }} build
+      - run: pnpm --filter "$PACKAGE_NAME" build
+        env:
+          PACKAGE_NAME: ${{ steps.pkg.outputs.name }}
       - name: Publish ${{ inputs.release_tag }}
-        run: pnpm --filter ${{ steps.pkg.outputs.name }} publish --provenance --access public --no-git-checks
+        run: pnpm --filter "$PACKAGE_NAME" publish --provenance --access public --no-git-checks
+        env:
+          PACKAGE_NAME: ${{ steps.pkg.outputs.name }}

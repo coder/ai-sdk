@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.2](https://github.com/coder/ai-sdk/compare/agent-v0.4.1...agent-v0.4.2) (2026-08-20)
+
+Token consumption reporting now accounts for the entire turn rather than only the last step's uncached slice, giving accurate usage metrics.
+
+### Highlights
+
+- Fixed token consumption reporting to reflect the whole turn instead of just the last step's uncached slice. ([#40](https://github.com/coder/ai-sdk/pull/40))
+
+### Bug Fixes
+
+* **agent:** report the whole turn's token consumption, not the last step's uncached slice ([#40](https://github.com/coder/ai-sdk/issues/40)) ([1edacd3](https://github.com/coder/ai-sdk/commit/1edacd3aab52e2a4893ce51c648441120bea4a9d))
+
 ## [0.4.1](https://github.com/coder/ai-sdk/compare/agent-v0.4.0...agent-v0.4.1) (2026-08-18)
 
 A maintenance release with no documented user-facing changes. Refer to the structured changelog below for details.

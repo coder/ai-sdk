@@ -21,6 +21,27 @@ function addDefined(a: number | undefined, b: number | undefined): number | unde
   return (a ?? 0) + b;
 }
 
+/**
+ * How each known wire usage field aggregates across a segment's steps:
+ * counters sum; `context_limit` is a property of the model rather than a
+ * counter, so the newest step's value wins. Typed against
+ * {@link ChatMessageUsage} so adding a wire field without classifying it
+ * fails the build instead of silently vanishing from the totals. Fields this
+ * SDK doesn't know yet (newer servers) pass through with newest-wins
+ * semantics so `usage.raw` stays the escape hatch for them.
+ */
+const USAGE_FIELD_KINDS = {
+  input_tokens: "sum",
+  output_tokens: "sum",
+  total_tokens: "sum",
+  reasoning_tokens: "sum",
+  cache_creation_tokens: "sum",
+  cache_read_tokens: "sum",
+  total_cost_micros: "sum",
+  total_runtime_ms: "sum",
+  context_limit: "newest",
+} as const satisfies Record<keyof ChatMessageUsage, "sum" | "newest">;
+
 function mapUsage(u: ChatMessageUsage | undefined): LanguageModelV4Usage {
   // chatd normalizes provider usage so `input_tokens` counts only the UNCACHED
   // prompt tokens — cache reads/writes are reported separately (both Anthropic
@@ -49,39 +70,39 @@ function mapUsage(u: ChatMessageUsage | undefined): LanguageModelV4Usage {
 }
 
 /**
- * Sums per-message wire usage into turn totals. chatd attaches usage to every
- * assistant message it commits — one per internal model step — so a turn's
- * consumption is the sum over all of them, not the last message's. Counters
- * stay undefined unless at least one message reported them (old servers keep
- * looking unchanged); `context_limit` is a property of the model rather than a
- * counter, so the newest message's value wins.
+ * Sums per-message wire usage into segment totals. chatd attaches usage to
+ * every assistant message it commits — one per internal model step — so the
+ * segment's consumption is the sum over all of them, not the last message's
+ * (the AI SDK then sums segments into the turn total). Fields stay absent
+ * unless at least one message reported them (old servers keep looking
+ * unchanged); non-counter and unknown fields take the newest reporting
+ * message's value (see {@link USAGE_FIELD_KINDS}).
  */
 function accumulateUsage(
   byMessageId: ReadonlyMap<number, ChatMessageUsage>,
 ): ChatMessageUsage | undefined {
   if (byMessageId.size === 0) return undefined;
-  const total: ChatMessageUsage = {};
-  const set = (key: keyof ChatMessageUsage, value: number | undefined): void => {
-    if (value !== undefined) total[key] = value;
-  };
-  let contextLimitFromId = -1;
-  let contextLimit: number | undefined;
+  // Wire usage is parsed JSON; newer servers may send fields beyond
+  // ChatMessageUsage, so accumulate on the JSON shape and narrow at the end.
+  const total: JSONObject = {};
+  // Map insertion order is not id order after a revision re-set, so track the
+  // reporting message id per newest-wins key explicitly.
+  const newestIdByKey = new Map<string, number>();
   for (const [id, u] of byMessageId) {
-    set("input_tokens", addDefined(total.input_tokens, u.input_tokens));
-    set("output_tokens", addDefined(total.output_tokens, u.output_tokens));
-    set("total_tokens", addDefined(total.total_tokens, u.total_tokens));
-    set("reasoning_tokens", addDefined(total.reasoning_tokens, u.reasoning_tokens));
-    set("cache_creation_tokens", addDefined(total.cache_creation_tokens, u.cache_creation_tokens));
-    set("cache_read_tokens", addDefined(total.cache_read_tokens, u.cache_read_tokens));
-    set("total_cost_micros", addDefined(total.total_cost_micros, u.total_cost_micros));
-    set("total_runtime_ms", addDefined(total.total_runtime_ms, u.total_runtime_ms));
-    if (u.context_limit !== undefined && id > contextLimitFromId) {
-      contextLimitFromId = id;
-      contextLimit = u.context_limit;
+    for (const [key, value] of Object.entries(u)) {
+      if (value === undefined) continue;
+      if (USAGE_FIELD_KINDS[key as keyof ChatMessageUsage] === "sum" && typeof value === "number") {
+        total[key] = ((total[key] as number | undefined) ?? 0) + value;
+      } else if (id > (newestIdByKey.get(key) ?? -1)) {
+        // `context_limit`, malformed counters, and any field this SDK doesn't
+        // know yet: not summable — the newest reporting message's value wins,
+        // which keeps `usage.raw` a forward-compatible escape hatch.
+        newestIdByKey.set(key, id);
+        total[key] = value;
+      }
     }
   }
-  set("context_limit", contextLimit);
-  return total;
+  return total as ChatMessageUsage;
 }
 
 function jsonResult(value: unknown): NonNullable<unknown> {
@@ -135,15 +156,17 @@ export class TurnTranslator {
   #maxMessageId = 0;
 
   /**
-   * Messages with an id at or below this cursor don't count toward the turn's
-   * usage. Set it to the turn's starting message id so replays of earlier
-   * turns (the initial sync when resuming a chat, or a mid-turn
-   * `history_reset` re-send) can't inflate this turn's totals.
+   * Messages with an id at or below this cursor belong to earlier turns (or
+   * to a segment that already streamed) — they arrive only as replays: the
+   * initial sync when resuming a chat, or a mid-turn `history_reset` re-send
+   * of the full history. Ingest skips them entirely so a replay can neither
+   * re-emit earlier turns' content nor inflate this turn's usage.
    */
-  usageCursor = 0;
+  readonly #turnCursor: number;
 
-  constructor(opts: { dynamicToolNames: ReadonlySet<string> }) {
+  constructor(opts: { dynamicToolNames: ReadonlySet<string>; turnCursor?: number }) {
     this.#dynamicToolNames = opts.dynamicToolNames;
+    this.#turnCursor = opts.turnCursor ?? 0;
   }
 
   get terminalStatus(): ChatStatus | undefined {
@@ -386,11 +409,16 @@ export class TurnTranslator {
 
   #ingestMessage(out: LanguageModelV4StreamPart[], message: ChatMessage): void {
     if (message.id > this.#maxMessageId) this.#maxMessageId = message.id;
-    if (
-      message.usage &&
-      (message.role === "assistant" || message.role === "tool") &&
-      message.id > this.usageCursor
-    ) {
+    // Replay of an earlier turn (or an already-streamed segment): skip it
+    // entirely — see #turnCursor. In the normal path the server-side
+    // `after_id` filter means such ids never arrive, so this only bites on
+    // replays, where processing them would re-emit old content as this
+    // turn's output and double-count its usage.
+    if (message.id <= this.#turnCursor) return;
+    // chatd attaches usage to the assistant messages it commits (one per
+    // internal model step); tool messages never carry usage, and under
+    // summing, accepting a hypothetical mirrored copy would double-count.
+    if (message.usage && message.role === "assistant") {
       this.#usageByMessageId.set(message.id, message.usage);
     }
     const content = message.content ?? [];
@@ -466,8 +494,11 @@ export class TurnTranslator {
     const usage = accumulateUsage(this.#usageByMessageId);
 
     // Surface server-side cost/runtime (sent by newer servers as extra usage
-    // fields), summed over the turn, under `providerMetadata.coder`. Omitted
-    // entirely when the server sent neither, so old servers look unchanged.
+    // fields), summed over the segment's steps, under `providerMetadata.coder`.
+    // Omitted entirely when the server sent neither, so old servers look
+    // unchanged. NOTE: the AI SDK propagates only the FINAL segment's
+    // providerMetadata to `result.providerMetadata` — whole-turn cost for a
+    // client-tool turn is the sum over `result.steps[*].providerMetadata`.
     const coder: JSONObject = {};
     if (usage?.total_cost_micros !== undefined) coder.total_cost_micros = usage.total_cost_micros;
     if (usage?.total_runtime_ms !== undefined) coder.total_runtime_ms = usage.total_runtime_ms;

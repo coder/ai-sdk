@@ -168,8 +168,9 @@ export class CoderLanguageModel implements LanguageModelV4 {
     const signal: AbortSignal | undefined =
       sources.length > 0 ? AbortSignal.any(sources) : undefined;
 
-    // Translator is hoisted so `finally` can read whether the turn settled.
-    const translator = new TurnTranslator({ dynamicToolNames: dynamicToolNames(options.tools) });
+    // Declared here so `finally` can read whether the turn settled; constructed
+    // only once the turn's starting message id is known (see `turnCursor`).
+    let translator: TurnTranslator | undefined;
 
     // Interrupting the *server* run (not just closing the WebSocket) is what frees
     // the chat's workspace/resources. Fire it at most once — on abort/timeout, and
@@ -231,6 +232,22 @@ export class CoderLanguageModel implements LanguageModelV4 {
 
       let afterId: number | undefined;
 
+      // A fresh instance resuming an existing chat (config.chatId) has no
+      // message cursor yet. Without one, a queued submission or a tool-result
+      // resume falls back to afterId 0: the server replays the chat's FULL
+      // history and this turn would absorb every earlier turn's content and
+      // usage. Seed the cursor from the chat's newest message instead (the
+      // messages endpoint pages newest-first; an empty chat has nothing to
+      // replay, so 0 stays correct there).
+      if (this.#chatId && this.#lastSeenMessageId === 0) {
+        const { messages } = await this.#config.client.getMessages(
+          this.#chatId,
+          { limit: 1 },
+          signal,
+        );
+        this.#lastSeenMessageId = messages[0]?.id ?? 0;
+      }
+
       if (action.kind === "new-turn") {
         // Resolve the model config and upload any file parts concurrently — they
         // are independent round-trips. (Uploads run before the chat exists and
@@ -282,10 +299,15 @@ export class CoderLanguageModel implements LanguageModelV4 {
       }
 
       const chatId = this.#chatId as string;
-      // Only messages past the turn's starting cursor count toward its usage —
-      // resuming a chat replays earlier turns' messages (usage included), and a
-      // mid-turn history reset re-sends them again.
-      translator.usageCursor = afterId ?? 0;
+      // Only messages past the turn's starting cursor belong to this turn —
+      // resuming a chat replays earlier turns' messages (usage included), and
+      // a mid-turn history reset re-sends them again. Constructing the
+      // translator with the cursor makes it impossible to ingest before the
+      // boundary is known.
+      translator = new TurnTranslator({
+        dynamicToolNames: dynamicToolNames(options.tools),
+        turnCursor: afterId ?? 0,
+      });
       // chatd emits the `requires_action` status BEFORE the `action_required`
       // event that carries the pending tool calls, so for that status we keep
       // reading until the client tool calls have actually been emitted (bounded
@@ -351,12 +373,14 @@ export class CoderLanguageModel implements LanguageModelV4 {
     } finally {
       // Advance the cursor on every exit (success, abort, error) so resuming the
       // same chat doesn't re-read messages already streamed this turn.
-      if (translator.maxMessageId > this.#lastSeenMessageId)
+      if (translator && translator.maxMessageId > this.#lastSeenMessageId)
         this.#lastSeenMessageId = translator.maxMessageId;
       signal?.removeEventListener("abort", interrupt);
       // Teardown of an unsettled turn — stream cancel(), premature close, or an
       // abort the listener didn't cover — interrupt the server so it stops.
-      if (!translator.terminalStatus) interrupt();
+      // (A turn that failed before streaming has no translator and never
+      // settled, so it interrupts too.)
+      if (!translator?.terminalStatus) interrupt();
       this.#inFlight = false;
     }
   }

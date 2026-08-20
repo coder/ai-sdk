@@ -130,6 +130,21 @@ suite("CoderAgent e2e (live Coder)", () => {
     expect(result.steps.flatMap((s) => s.toolCalls).some((c) => c.toolName === "lookup")).toBe(
       true,
     );
+    // Multi-segment usage: EVERY step reports consumption (the finish part of
+    // each segment carries summed usage; with prompt caching active the
+    // resumed step's uncached slice can be near zero, but the cache add-back
+    // keeps inputTokens at the full prompt size), and the turn total is at
+    // least each step's share.
+    for (const step of result.steps) {
+      expect(step.usage.inputTokens ?? 0).toBeGreaterThan(0);
+      expect(step.usage.outputTokens ?? 0).toBeGreaterThan(0);
+      expect(step.usage.inputTokens ?? 0).toBeGreaterThanOrEqual(
+        step.usage.inputTokenDetails?.cacheReadTokens ?? 0,
+      );
+    }
+    expect(result.usage.inputTokens ?? 0).toBeGreaterThanOrEqual(
+      Math.max(...result.steps.map((s) => s.usage.inputTokens ?? 0)),
+    );
   }, 180_000);
 
   it("uploads and downloads a chat file (round-trip)", async () => {

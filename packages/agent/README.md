@@ -371,21 +371,30 @@ retrying the whole step deliberately.
 
 ## Usage & cost
 
-Results carry normalized token usage in `usage`, plus the turn's snake_case
-wire usage in `usage.raw` for fields the normalized shape has no slot for
-(`context_limit`, cost, runtime, …). A chatd turn runs several model steps
-server‑side (one per server tool round), each reporting its own usage — the
-returned usage **sums every step of the turn**, so it reflects what the turn
-actually consumed. `inputTokens` is the full prompt size: Coder normalizes the
-wire `input_tokens` to the _uncached_ count (cache reads/writes are separate
-fields), so the SDK adds them back into the total and exposes the split via
-`inputTokenDetails` (`noCacheTokens`, `cacheReadTokens`, `cacheWriteTokens`).
-`usage.raw` keeps the wire convention (`input_tokens` = uncached only), with
-`context_limit` taken from the turn's newest step. When the server reports
-them, `total_cost_micros` (micro‑USD) and `total_runtime_ms` are also summed
-and mirrored under `providerMetadata.coder` on finish. Both are
-**absence‑tolerant mirrors**: on servers that don't send them (cost is
-otherwise only on the aggregate cost endpoints,
+Results carry normalized token usage in `usage`. A chatd turn runs several
+model steps server‑side (one per server tool round), each reporting its own
+usage — the SDK **sums every step**, and the AI SDK adds up the steps of a
+turn that paused for client tools, so `result.usage` reflects what the whole
+turn actually consumed. `inputTokens` is the full prompt size: Coder
+normalizes the wire `input_tokens` to the _uncached_ count (cache reads/writes
+are separate fields), so the SDK adds them back into the total and exposes the
+split via `inputTokenDetails` (`noCacheTokens`, `cacheReadTokens`,
+`cacheWriteTokens`).
+
+The snake_case wire usage lives **per step** at `result.steps[i].usage.raw`
+(the AI SDK does not carry `raw` onto the summed `result.usage`) for fields
+the normalized shape has no slot for (`context_limit`, cost, runtime, and any
+newer wire fields, which pass through newest‑value‑wins). `raw` keeps the wire
+convention (`input_tokens` = uncached only) with counters summed over that
+step's server‑side model steps and `context_limit` from the newest one — so
+don't divide `raw`'s summed counters by `context_limit` to estimate context
+fullness; they are turn consumption, not a prompt‑size snapshot. When the
+server reports them, `total_cost_micros` (micro‑USD) and `total_runtime_ms`
+are mirrored the same way under each step's `providerMetadata.coder`
+(`result.providerMetadata` reflects only the final step — sum
+`result.steps[*].providerMetadata.coder` for whole‑turn cost when client tools
+ran). Both are **absence‑tolerant mirrors**: on servers that don't send them
+(cost is otherwise only on the aggregate cost endpoints,
 `/api/experimental/chats/cost/*`), nothing is emitted.
 
 Forward usage to a UI via message metadata:

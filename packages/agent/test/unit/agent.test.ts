@@ -11,6 +11,9 @@ import { CoderAgentError, CoderApiError, CoderChatError } from "../../src/errors
 import { CoderLanguageModel } from "../../src/model/language-model.js";
 import type {
   Chat,
+  ChatMessage,
+  ChatMessagePart,
+  ChatMessagesResponse,
   ChatStreamEvent,
   CreateChatMessageResponse,
   CreateChatRequest,
@@ -69,6 +72,10 @@ class FakeClient {
     }
   }
 
+  async getMessages(): Promise<ChatMessagesResponse> {
+    return { messages: [], queued_messages: [], has_more: false };
+  }
+
   async archiveChat(_chatId: string, _signal?: AbortSignal): Promise<void> {}
   async interruptChat(_chatId: string, _signal?: AbortSignal): Promise<Chat> {
     throw new Error("not used");
@@ -77,13 +84,14 @@ class FakeClient {
 
 function msg(
   id: number,
-  role: "user" | "assistant" | "tool",
-  content: { type: string; text?: string }[],
+  role: ChatMessage["role"],
+  content: ChatMessagePart[],
+  usage?: ChatMessage["usage"],
 ): ChatStreamEvent {
   return {
     type: "message",
     chat_id: "chat-1",
-    message: { id, chat_id: "chat-1", role, created_at: "", content: content as never },
+    message: { id, chat_id: "chat-1", role, created_at: "", content, usage },
   };
 }
 function textPart(text: string): ChatStreamEvent {
@@ -256,6 +264,157 @@ describe("CoderAgent integration (mock client)", () => {
     for await (const delta of result.textStream) streamed += delta;
     expect(streamed).toBe("abc");
     expect(await result.text).toBe("abc");
+  });
+});
+
+describe("CoderAgent turn usage", () => {
+  const weatherTools = () => ({
+    getWeather: tool({
+      description: "Get weather",
+      inputSchema: z.object({ city: z.string() }),
+      execute: async () => ({ temp: 21 }),
+    }),
+  });
+
+  it("reports the whole turn's token consumption (all steps, cache included)", async () => {
+    // Mirrors the real protocol: every committed assistant message carries
+    // that step's usage, and chatd normalizes `input_tokens` to the UNCACHED
+    // count. A turn that pauses for a client tool spans two segments.
+    const fake = new FakeClient([
+      // Segment 1: a server-tool step, then a step requesting the client tool.
+      [
+        status("running"),
+        msg(1, "user", [{ type: "text", text: "hi" }]),
+        msg(
+          2,
+          "assistant",
+          [{ type: "tool-call", tool_call_id: "s1", tool_name: "web_search", args: { q: "x" } }],
+          { input_tokens: 1000, output_tokens: 50, cache_read_tokens: 800, total_cost_micros: 100 },
+        ),
+        msg(3, "tool", [
+          { type: "tool-result", tool_call_id: "s1", tool_name: "web_search", result: { hits: 1 } },
+        ]),
+        msg(
+          4,
+          "assistant",
+          [
+            {
+              type: "tool-call",
+              tool_call_id: "c1",
+              tool_name: "getWeather",
+              args: { city: "Paris" },
+            },
+          ],
+          { input_tokens: 1100, output_tokens: 40, total_cost_micros: 110 },
+        ),
+        status("requires_action"),
+        {
+          type: "action_required",
+          chat_id: "chat-1",
+          action_required: {
+            tool_calls: [{ tool_call_id: "c1", tool_name: "getWeather", args: '{"city":"Paris"}' }],
+          },
+        },
+      ],
+      // Segment 2 (resume after the tool result): the final text step.
+      [
+        status("running"),
+        msg(5, "tool", [
+          {
+            type: "tool-result",
+            tool_call_id: "c1",
+            tool_name: "getWeather",
+            result: { temp: 21 },
+          },
+        ]),
+        msg(6, "assistant", [{ type: "text", text: "It is 21C in Paris." }], {
+          input_tokens: 1200,
+          output_tokens: 30,
+          cache_read_tokens: 1000,
+          total_cost_micros: 120,
+          context_limit: 200000,
+        }),
+        status("waiting"),
+      ],
+    ]);
+    const agent = makeAgent(fake, weatherTools());
+
+    const result = await agent.generate({ prompt: "hi" });
+
+    expect(result.text).toBe("It is 21C in Paris.");
+    expect(result.finishReason).toBe("stop");
+    expect(result.steps).toHaveLength(2);
+
+    // Turn totals across all three model steps: full prompt size (uncached +
+    // cache reads), not the near-zero uncached count of the last step only.
+    expect(result.usage.inputTokens).toBe(1000 + 1100 + 1200 + 800 + 1000);
+    expect(result.usage.outputTokens).toBe(50 + 40 + 30);
+    expect(result.usage.inputTokenDetails.noCacheTokens).toBe(3300);
+    expect(result.usage.inputTokenDetails.cacheReadTokens).toBe(1800);
+
+    // Cost is mirrored per step (each step sums its segment's chatd steps:
+    // 100+110, then 120); whole-turn cost is the sum over the steps.
+    expect(result.steps.map((s) => s.providerMetadata?.coder)).toEqual([
+      { total_cost_micros: 210 },
+      { total_cost_micros: 120 },
+    ]);
+  });
+
+  it("resuming a chat does not absorb replayed history into the turn's usage or text", async () => {
+    // A fresh instance resuming an existing chat (config.chatId) whose
+    // submission gets QUEUED has no committed message id to anchor on; the
+    // turn boundary must come from the chat's newest message, and the
+    // full-history replay on the stream must not leak earlier turns' content
+    // or usage into this turn.
+    class ResumedChatClient extends FakeClient {
+      override async getMessages(): Promise<ChatMessagesResponse> {
+        // Newest-first, like the real endpoint's default paging.
+        return {
+          messages: [{ id: 40, chat_id: "chat-1", role: "assistant", created_at: "" }],
+          queued_messages: [],
+          has_more: false,
+        };
+      }
+      override async createChatMessage(): Promise<CreateChatMessageResponse> {
+        return { queued: true }; // busy chat: no committed message in the response
+      }
+    }
+    const fake = new ResumedChatClient([
+      [
+        status("running"),
+        // Initial sync replays the chat's history (ids at or below 40).
+        msg(38, "assistant", [{ type: "text", text: "old answer" }], {
+          input_tokens: 999,
+          output_tokens: 999,
+          total_cost_micros: 999,
+        }),
+        msg(40, "assistant", [{ type: "text", text: "older answer" }], {
+          input_tokens: 999,
+          output_tokens: 999,
+        }),
+        // The queued message commits, then the turn's real step.
+        msg(41, "user", [{ type: "text", text: "hi again" }]),
+        msg(42, "assistant", [{ type: "text", text: "Fresh answer." }], {
+          input_tokens: 100,
+          output_tokens: 10,
+        }),
+        status("waiting"),
+      ],
+    ]);
+    const agent = new CoderAgent({
+      client: fake as unknown as CoderChatClient,
+      organizationId: "org-1",
+      chatId: "chat-1",
+    });
+
+    const result = await agent.generate({ prompt: "hi again" });
+
+    // Only the turn's own step counts — not the replayed history.
+    expect(result.text).toBe("Fresh answer.");
+    expect(result.usage.inputTokens).toBe(100);
+    expect(result.usage.outputTokens).toBe(10);
+    // The replayed message's cost (999) must not surface either.
+    expect(result.steps[0]?.providerMetadata).toBeUndefined();
   });
 });
 

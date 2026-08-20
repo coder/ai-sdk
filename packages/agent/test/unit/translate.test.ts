@@ -21,8 +21,8 @@ function status(s: ChatStreamEvent["status"] extends infer _ ? string : never): 
   return { type: "status", chat_id: "c", status: { status: s as never } };
 }
 
-function run(events: ChatStreamEvent[], dynamicToolNames = new Set<string>()) {
-  const t = new TurnTranslator({ dynamicToolNames });
+function run(events: ChatStreamEvent[], dynamicToolNames = new Set<string>(), turnCursor = 0) {
+  const t = new TurnTranslator({ dynamicToolNames, turnCursor });
   const parts = [] as ReturnType<TurnTranslator["ingest"]>;
   for (const ev of events) {
     parts.push(...t.ingest(ev));
@@ -416,28 +416,73 @@ describe("TurnTranslator — usage accumulation", () => {
       status("waiting"),
     ]);
     const finish = parts.at(-1)!;
+    expect(finish.type).toBe("finish");
     if (finish.type !== "finish") return;
     expect(finish.usage.inputTokens.total).toBe(12);
     expect(finish.usage.outputTokens.total).toBe(4);
   });
 
-  it("ignores usage from messages at or below the usage cursor (replayed earlier turns)", () => {
-    const t = new TurnTranslator({ dynamicToolNames: new Set() });
-    t.usageCursor = 5;
-    const events: ChatStreamEvent[] = [
-      // Replay of a previous turn's message (id <= cursor) — must not count.
-      msg(4, "assistant", [{ type: "text", text: "old" }], {
-        input_tokens: 999,
-        output_tokens: 999,
-      }),
-      msg(6, "assistant", [{ type: "text", text: "new" }], { input_tokens: 10, output_tokens: 3 }),
-      status("waiting"),
-    ];
-    for (const ev of events) t.ingest(ev);
-    const finish = t.finish().at(-1)!;
+  it("skips messages at or below the turn cursor entirely (replayed earlier turns)", () => {
+    const { parts } = run(
+      [
+        // Replay of a previous turn's message (id <= cursor) — must count
+        // toward neither usage nor content (a mid-turn history_reset re-sends
+        // the FULL history, earlier turns included).
+        msg(4, "assistant", [{ type: "text", text: "old answer" }], {
+          input_tokens: 999,
+          output_tokens: 999,
+        }),
+        msg(6, "assistant", [{ type: "text", text: "new" }], {
+          input_tokens: 10,
+          output_tokens: 3,
+        }),
+        status("waiting"),
+      ],
+      new Set<string>(),
+      5,
+    );
+    const finish = parts.at(-1)!;
+    expect(finish.type).toBe("finish");
     if (finish.type !== "finish") return;
     expect(finish.usage.inputTokens.total).toBe(10);
     expect(finish.usage.outputTokens.total).toBe(3);
+    // The replayed message's text must not re-emit as this turn's output.
+    expect(textBlocks(parts)).toEqual(["new"]);
+  });
+
+  it("ignores usage on tool messages (chatd attaches usage to assistant steps only)", () => {
+    const { parts } = run([
+      msg(2, "assistant", [{ type: "text", text: "Hi" }], { input_tokens: 10, output_tokens: 3 }),
+      // A hypothetical server mirroring the step's usage onto the committed
+      // tool message must not double-count under summing.
+      msg(3, "tool", [], { input_tokens: 10, output_tokens: 3 }),
+      status("waiting"),
+    ]);
+    const finish = parts.at(-1)!;
+    expect(finish.type).toBe("finish");
+    if (finish.type !== "finish") return;
+    expect(finish.usage.inputTokens.total).toBe(10);
+    expect(finish.usage.outputTokens.total).toBe(3);
+  });
+
+  it("passes unknown wire usage fields through raw (newest message wins)", () => {
+    /** A newer server's usage payload with a field this SDK doesn't know yet. */
+    interface FutureUsage extends NonNullable<ChatMessage["usage"]> {
+      web_search_requests?: number;
+    }
+    const older: FutureUsage = { input_tokens: 10, web_search_requests: 2 };
+    const newer: FutureUsage = { input_tokens: 5, web_search_requests: 3 };
+    const { parts } = run([
+      msg(2, "assistant", [{ type: "text", text: "Hi" }], older),
+      msg(4, "assistant", [{ type: "text", text: "Bye" }], newer),
+      status("waiting"),
+    ]);
+    const finish = parts.at(-1)!;
+    expect(finish.type).toBe("finish");
+    if (finish.type !== "finish") return;
+    // Known counters sum; the field this SDK doesn't know keeps the newest
+    // message's value — `usage.raw` stays a forward-compatible escape hatch.
+    expect(finish.usage.raw).toEqual({ input_tokens: 15, web_search_requests: 3 });
   });
 
   it("adds cache write tokens into inputTokens.total alongside reads", () => {
@@ -451,6 +496,7 @@ describe("TurnTranslator — usage accumulation", () => {
       status("waiting"),
     ]);
     const finish = parts.at(-1)!;
+    expect(finish.type).toBe("finish");
     if (finish.type !== "finish") return;
     expect(finish.usage.inputTokens).toEqual({
       total: 1205,

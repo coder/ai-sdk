@@ -371,14 +371,22 @@ retrying the whole step deliberately.
 
 ## Usage & cost
 
-Results carry normalized token usage in `usage`, plus the verbatim snake_case
+Results carry normalized token usage in `usage`, plus the turn's snake_case
 wire usage in `usage.raw` for fields the normalized shape has no slot for
-(`context_limit`, cost, runtime, …). When the server reports them,
-`total_cost_micros` (micro‑USD) and `total_runtime_ms` are also mirrored under
-`providerMetadata.coder` on finish. Both are **absence‑tolerant mirrors**:
-today's Coder servers only expose cost on the aggregate cost endpoints
-(`/api/experimental/chats/cost/*`), so expect these fields to be absent —
-nothing is emitted when the server sends neither.
+(`context_limit`, cost, runtime, …). A chatd turn runs several model steps
+server‑side (one per server tool round), each reporting its own usage — the
+returned usage **sums every step of the turn**, so it reflects what the turn
+actually consumed. `inputTokens` is the full prompt size: Coder normalizes the
+wire `input_tokens` to the _uncached_ count (cache reads/writes are separate
+fields), so the SDK adds them back into the total and exposes the split via
+`inputTokenDetails` (`noCacheTokens`, `cacheReadTokens`, `cacheWriteTokens`).
+`usage.raw` keeps the wire convention (`input_tokens` = uncached only), with
+`context_limit` taken from the turn's newest step. When the server reports
+them, `total_cost_micros` (micro‑USD) and `total_runtime_ms` are also summed
+and mirrored under `providerMetadata.coder` on finish. Both are
+**absence‑tolerant mirrors**: on servers that don't send them (cost is
+otherwise only on the aggregate cost endpoints,
+`/api/experimental/chats/cost/*`), nothing is emitted.
 
 Forward usage to a UI via message metadata:
 

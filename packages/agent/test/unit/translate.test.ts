@@ -350,6 +350,117 @@ describe("TurnTranslator — source parts", () => {
   });
 });
 
+describe("TurnTranslator — usage accumulation", () => {
+  it("sums per-step usage across the turn's messages (chatd reports usage per committed step)", () => {
+    const { parts } = run([
+      msg(
+        2,
+        "assistant",
+        [{ type: "tool-call", tool_call_id: "s1", tool_name: "web_search", args: { q: "x" } }],
+        {
+          input_tokens: 1000,
+          output_tokens: 50,
+          cache_read_tokens: 800,
+          total_cost_micros: 100,
+          total_runtime_ms: 1500,
+        },
+      ),
+      msg(3, "tool", [
+        { type: "tool-result", tool_call_id: "s1", tool_name: "web_search", result: { hits: 1 } },
+      ]),
+      msg(4, "assistant", [{ type: "text", text: "Done" }], {
+        input_tokens: 1200,
+        output_tokens: 30,
+        cache_read_tokens: 1000,
+        reasoning_tokens: 7,
+        total_cost_micros: 120,
+        total_runtime_ms: 900,
+        context_limit: 200000,
+      }),
+      status("waiting"),
+    ]);
+    const finish = parts.at(-1)!;
+    expect(finish.type).toBe("finish");
+    if (finish.type !== "finish") return;
+    // Totals cover the WHOLE turn, and inputTokens.total is the full prompt
+    // size (uncached + cache reads/writes), not the near-zero uncached count.
+    expect(finish.usage.inputTokens).toEqual({
+      total: 2200 + 1800,
+      noCache: 2200,
+      cacheRead: 1800,
+      cacheWrite: undefined,
+    });
+    expect(finish.usage.outputTokens).toEqual({ total: 80, text: undefined, reasoning: 7 });
+    expect(finish.providerMetadata).toEqual({
+      coder: { total_cost_micros: 220, total_runtime_ms: 2400 },
+    });
+    // raw carries the turn-accumulated wire usage; context_limit is a model
+    // property, so the newest message's value wins rather than being summed.
+    expect(finish.usage.raw).toEqual({
+      input_tokens: 2200,
+      output_tokens: 80,
+      reasoning_tokens: 7,
+      cache_read_tokens: 1800,
+      total_cost_micros: 220,
+      total_runtime_ms: 2400,
+      context_limit: 200000,
+    });
+  });
+
+  it("counts a re-streamed revision of the same message once (latest revision wins)", () => {
+    const { parts } = run([
+      msg(2, "assistant", [{ type: "text", text: "Hi" }], { input_tokens: 10, output_tokens: 3 }),
+      // Same message re-sent (revision bump / history reset replay) with
+      // updated usage — must replace, not add.
+      msg(2, "assistant", [{ type: "text", text: "Hi" }], { input_tokens: 12, output_tokens: 4 }),
+      status("waiting"),
+    ]);
+    const finish = parts.at(-1)!;
+    if (finish.type !== "finish") return;
+    expect(finish.usage.inputTokens.total).toBe(12);
+    expect(finish.usage.outputTokens.total).toBe(4);
+  });
+
+  it("ignores usage from messages at or below the usage cursor (replayed earlier turns)", () => {
+    const t = new TurnTranslator({ dynamicToolNames: new Set() });
+    t.usageCursor = 5;
+    const events: ChatStreamEvent[] = [
+      // Replay of a previous turn's message (id <= cursor) — must not count.
+      msg(4, "assistant", [{ type: "text", text: "old" }], {
+        input_tokens: 999,
+        output_tokens: 999,
+      }),
+      msg(6, "assistant", [{ type: "text", text: "new" }], { input_tokens: 10, output_tokens: 3 }),
+      status("waiting"),
+    ];
+    for (const ev of events) t.ingest(ev);
+    const finish = t.finish().at(-1)!;
+    if (finish.type !== "finish") return;
+    expect(finish.usage.inputTokens.total).toBe(10);
+    expect(finish.usage.outputTokens.total).toBe(3);
+  });
+
+  it("adds cache write tokens into inputTokens.total alongside reads", () => {
+    const { parts } = run([
+      msg(2, "assistant", [{ type: "text", text: "Hi" }], {
+        input_tokens: 5,
+        output_tokens: 2,
+        cache_read_tokens: 1000,
+        cache_creation_tokens: 200,
+      }),
+      status("waiting"),
+    ]);
+    const finish = parts.at(-1)!;
+    if (finish.type !== "finish") return;
+    expect(finish.usage.inputTokens).toEqual({
+      total: 1205,
+      noCache: 5,
+      cacheRead: 1000,
+      cacheWrite: 200,
+    });
+  });
+});
+
 describe("TurnTranslator — usage cost metadata", () => {
   it("surfaces wire cost/runtime under providerMetadata.coder and the verbatim usage under usage.raw", () => {
     const usage = {

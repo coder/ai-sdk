@@ -282,6 +282,10 @@ export class CoderLanguageModel implements LanguageModelV4 {
       }
 
       const chatId = this.#chatId as string;
+      // Only messages past the turn's starting cursor count toward its usage —
+      // resuming a chat replays earlier turns' messages (usage included), and a
+      // mid-turn history reset re-sends them again.
+      translator.usageCursor = afterId ?? 0;
       // chatd emits the `requires_action` status BEFORE the `action_required`
       // event that carries the pending tool calls, so for that status we keep
       // reading until the client tool calls have actually been emitted (bounded

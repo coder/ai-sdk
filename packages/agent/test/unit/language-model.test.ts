@@ -73,9 +73,14 @@ function makeModel(events: ChatStreamEvent[]): CoderLanguageModel {
  */
 const serverToolTurn: ChatStreamEvent[] = [
   status("running"),
-  msg(2, "assistant", [
-    { type: "tool-call", tool_call_id: "s1", tool_name: "web_search", args: { q: "x" } },
-  ]),
+  // chatd attaches per-step usage to EVERY assistant message it commits; the
+  // turn's usage is the sum, not the last message's.
+  msg(
+    2,
+    "assistant",
+    [{ type: "tool-call", tool_call_id: "s1", tool_name: "web_search", args: { q: "x" } }],
+    { input_tokens: 8, output_tokens: 2, total_cost_micros: 100, total_runtime_ms: 1000 },
+  ),
   msg(3, "tool", [
     { type: "tool-result", tool_call_id: "s1", tool_name: "web_search", result: { hits: 1 } },
   ]),
@@ -108,15 +113,18 @@ describe("CoderLanguageModel.doGenerate aggregation", () => {
     expect(result.content.filter((c) => c.type === "source")).toEqual([
       { type: "source", sourceType: "url", id: "src-1", url: "https://example.com/a", title: "A" },
     ]);
-    // The finish part's provider metadata and raw usage flow into the result.
+    // The finish part's provider metadata and raw usage flow into the result,
+    // summed across both committed steps.
     expect(result.providerMetadata).toEqual({
-      coder: { total_cost_micros: 1234, total_runtime_ms: 5678 },
+      coder: { total_cost_micros: 1334, total_runtime_ms: 6678 },
     });
+    expect(result.usage.inputTokens.total).toBe(18);
+    expect(result.usage.outputTokens.total).toBe(5);
     expect(result.usage.raw).toEqual({
-      input_tokens: 10,
-      output_tokens: 3,
-      total_cost_micros: 1234,
-      total_runtime_ms: 5678,
+      input_tokens: 18,
+      output_tokens: 5,
+      total_cost_micros: 1334,
+      total_runtime_ms: 6678,
     });
   });
 

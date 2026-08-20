@@ -66,6 +66,9 @@ suite("CoderAgent e2e (live Coder)", () => {
     expect(result.text.toLowerCase()).toContain("pong");
     expect(result.finishReason).toBe("stop");
     expect(result.steps.length).toBeGreaterThanOrEqual(1);
+    // The turn's token consumption must be reported, not zero/undefined.
+    expect(result.usage.inputTokens ?? 0).toBeGreaterThan(0);
+    expect(result.usage.outputTokens ?? 0).toBeGreaterThan(0);
   }, 120_000);
 
   it("streams text deltas", async () => {

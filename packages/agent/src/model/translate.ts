@@ -15,11 +15,25 @@ import {
   TERMINAL_STATUSES,
 } from "../coder/types.js";
 
+/** `a + b` where an undefined operand contributes nothing; undefined only when both are. */
+function addDefined(a: number | undefined, b: number | undefined): number | undefined {
+  if (b === undefined) return a;
+  return (a ?? 0) + b;
+}
+
 function mapUsage(u: ChatMessageUsage | undefined): LanguageModelV4Usage {
+  // chatd normalizes provider usage so `input_tokens` counts only the UNCACHED
+  // prompt tokens — cache reads/writes are reported separately (both Anthropic
+  // and OpenAI are normalized this way server-side). The V4 `inputTokens.total`
+  // is the full prompt size, so the cache components must be added back; with
+  // prompt caching active, `input_tokens` alone is near zero.
   return {
     inputTokens: {
-      total: u?.input_tokens,
-      noCache: undefined,
+      total: addDefined(
+        addDefined(u?.input_tokens, u?.cache_read_tokens),
+        u?.cache_creation_tokens,
+      ),
+      noCache: u?.input_tokens,
       cacheRead: u?.cache_read_tokens,
       cacheWrite: u?.cache_creation_tokens,
     },
@@ -28,10 +42,46 @@ function mapUsage(u: ChatMessageUsage | undefined): LanguageModelV4Usage {
       text: undefined,
       reasoning: u?.reasoning_tokens,
     },
-    // Preserve the verbatim wire usage (snake_case) so callers can reach fields
+    // Preserve the turn's wire usage (snake_case) so callers can reach fields
     // the normalized shape has no slot for (context_limit, cost, runtime, …).
     ...(u ? { raw: u as unknown as JSONObject } : {}),
   };
+}
+
+/**
+ * Sums per-message wire usage into turn totals. chatd attaches usage to every
+ * assistant message it commits — one per internal model step — so a turn's
+ * consumption is the sum over all of them, not the last message's. Counters
+ * stay undefined unless at least one message reported them (old servers keep
+ * looking unchanged); `context_limit` is a property of the model rather than a
+ * counter, so the newest message's value wins.
+ */
+function accumulateUsage(
+  byMessageId: ReadonlyMap<number, ChatMessageUsage>,
+): ChatMessageUsage | undefined {
+  if (byMessageId.size === 0) return undefined;
+  const total: ChatMessageUsage = {};
+  const set = (key: keyof ChatMessageUsage, value: number | undefined): void => {
+    if (value !== undefined) total[key] = value;
+  };
+  let contextLimitFromId = -1;
+  let contextLimit: number | undefined;
+  for (const [id, u] of byMessageId) {
+    set("input_tokens", addDefined(total.input_tokens, u.input_tokens));
+    set("output_tokens", addDefined(total.output_tokens, u.output_tokens));
+    set("total_tokens", addDefined(total.total_tokens, u.total_tokens));
+    set("reasoning_tokens", addDefined(total.reasoning_tokens, u.reasoning_tokens));
+    set("cache_creation_tokens", addDefined(total.cache_creation_tokens, u.cache_creation_tokens));
+    set("cache_read_tokens", addDefined(total.cache_read_tokens, u.cache_read_tokens));
+    set("total_cost_micros", addDefined(total.total_cost_micros, u.total_cost_micros));
+    set("total_runtime_ms", addDefined(total.total_runtime_ms, u.total_runtime_ms));
+    if (u.context_limit !== undefined && id > contextLimitFromId) {
+      contextLimitFromId = id;
+      contextLimit = u.context_limit;
+    }
+  }
+  set("context_limit", contextLimit);
+  return total;
 }
 
 function jsonResult(value: unknown): NonNullable<unknown> {
@@ -76,10 +126,21 @@ export class TurnTranslator {
   #clientToolCallSeen = false;
   #sources = new Set<string>();
 
-  #usage: ChatMessageUsage | undefined;
+  // Per-message wire usage, keyed by message id so a re-streamed revision of
+  // the same message replaces its earlier entry instead of double-counting
+  // (chatd re-sends full snapshots on revision bumps and history resets).
+  readonly #usageByMessageId = new Map<number, ChatMessageUsage>();
   #error: ChatErrorPayload | undefined;
   #terminalStatus: ChatStatus | undefined;
   #maxMessageId = 0;
+
+  /**
+   * Messages with an id at or below this cursor don't count toward the turn's
+   * usage. Set it to the turn's starting message id so replays of earlier
+   * turns (the initial sync when resuming a chat, or a mid-turn
+   * `history_reset` re-send) can't inflate this turn's totals.
+   */
+  usageCursor = 0;
 
   constructor(opts: { dynamicToolNames: ReadonlySet<string> }) {
     this.#dynamicToolNames = opts.dynamicToolNames;
@@ -325,8 +386,12 @@ export class TurnTranslator {
 
   #ingestMessage(out: LanguageModelV4StreamPart[], message: ChatMessage): void {
     if (message.id > this.#maxMessageId) this.#maxMessageId = message.id;
-    if (message.usage && (message.role === "assistant" || message.role === "tool")) {
-      this.#usage = message.usage;
+    if (
+      message.usage &&
+      (message.role === "assistant" || message.role === "tool") &&
+      message.id > this.usageCursor
+    ) {
+      this.#usageByMessageId.set(message.id, message.usage);
     }
     const content = message.content ?? [];
 
@@ -398,18 +463,18 @@ export class TurnTranslator {
       unified = "tool-calls";
     else unified = "stop";
 
+    const usage = accumulateUsage(this.#usageByMessageId);
+
     // Surface server-side cost/runtime (sent by newer servers as extra usage
-    // fields) verbatim under `providerMetadata.coder`. Omitted entirely when
-    // the server sent neither, so old servers look unchanged to callers.
+    // fields), summed over the turn, under `providerMetadata.coder`. Omitted
+    // entirely when the server sent neither, so old servers look unchanged.
     const coder: JSONObject = {};
-    if (this.#usage?.total_cost_micros !== undefined)
-      coder.total_cost_micros = this.#usage.total_cost_micros;
-    if (this.#usage?.total_runtime_ms !== undefined)
-      coder.total_runtime_ms = this.#usage.total_runtime_ms;
+    if (usage?.total_cost_micros !== undefined) coder.total_cost_micros = usage.total_cost_micros;
+    if (usage?.total_runtime_ms !== undefined) coder.total_runtime_ms = usage.total_runtime_ms;
 
     out.push({
       type: "finish",
-      usage: mapUsage(this.#usage),
+      usage: mapUsage(usage),
       finishReason: { unified, raw: this.#terminalStatus },
       ...(Object.keys(coder).length > 0 ? { providerMetadata: { coder } } : {}),
     });

@@ -452,6 +452,15 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
    * ```
    */
   async [Symbol.asyncDispose](): Promise<void> {
+    // Release the session's retained event stream first (issue #44): a turn
+    // that paused for client tools, aborted, or timed out leaves its WebSocket
+    // open for reuse, and scope exit is where it must be freed. Local-only and
+    // instant; never throws.
+    try {
+      await this.#model[Symbol.asyncDispose]();
+    } catch {
+      /* best-effort cleanup */
+    }
     // archive() only soft-hides the chat; it does not stop a generation. If the
     // scope exits mid-turn (e.g. generate() threw, or an early return), interrupt
     // first so chatd stops generating and releases the workspace, then archive.

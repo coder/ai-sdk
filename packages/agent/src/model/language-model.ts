@@ -27,6 +27,7 @@ import {
   type UserContent,
   userContentToInputParts,
 } from "./prompt.js";
+import { SessionChatStream } from "./session-stream.js";
 import { TurnTranslator } from "./translate.js";
 
 /**
@@ -41,6 +42,15 @@ const ACTION_REQUIRED_GRACE_MS = 2_000;
 
 /** Sentinel resolved by the grace timer, distinguishable from a stream read. */
 const GRACE_EXPIRED = Symbol("action-required-grace-expired");
+
+/**
+ * Sentinel resolved when the SEGMENT's abort signal fires. Segment reads race
+ * this against the shared stream instead of wiring the signal into the stream
+ * itself: an aborted or timed-out segment detaches, while the retained socket
+ * stays open for the session close policy (teardown / terminal settle /
+ * replacement) to deal with.
+ */
+const SEGMENT_ABORTED = Symbol("segment-aborted");
 
 function startGraceTimer(ms: number) {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -100,6 +110,15 @@ export interface CoderLanguageModelConfig {
  *
  * NOTE: a single model instance is single-flight — do not run concurrent
  * generations against the same instance/session.
+ *
+ * The session retains ONE event stream per turn (issue #44): a segment that
+ * pauses for client tools leaves the WebSocket open, and the tool-result
+ * resume segment keeps reading it — no re-dial per tool round trip. The
+ * socket closes when the turn settles terminally, on a fatal stream error,
+ * when the next turn replaces it, or on session teardown (`resetSession()` /
+ * `[Symbol.asyncDispose]()`). A turn abandoned between segments (aborted,
+ * timed out, or never resumed after a pause) leaves the socket open until one
+ * of those, so dispose or reset sessions you are done with.
  */
 export class CoderLanguageModel implements LanguageModelV4 {
   readonly specificationVersion = "v4" as const;
@@ -114,6 +133,8 @@ export class CoderLanguageModel implements LanguageModelV4 {
   #modelResolved = false;
   readonly #submittedToolCallIds = new Set<string>();
   #inFlight = false;
+  /** The turn-lifetime event stream, retained across client-tool pauses. */
+  #retainedStream: SessionChatStream | undefined;
 
   constructor(config: CoderLanguageModelConfig) {
     // Fail fast on an incompatible AI SDK major (see peer dependency `ai@^7`).
@@ -127,11 +148,62 @@ export class CoderLanguageModel implements LanguageModelV4 {
     return this.#chatId;
   }
 
-  /** Drops the current session so the next turn creates a fresh chat. */
+  /**
+   * Drops the current session so the next turn creates a fresh chat. Also
+   * closes the retained event stream, if any (fire-and-forget — a sync reset
+   * must not wait on socket teardown, and `close()` never rejects).
+   */
   resetSession(): void {
     this.#chatId = undefined;
     this.#lastSeenMessageId = 0;
     this.#submittedToolCallIds.clear();
+    const stream = this.#retainedStream;
+    this.#retainedStream = undefined;
+    if (stream) void stream.close();
+  }
+
+  /**
+   * Closes the retained event stream, if any. The stream otherwise closes
+   * when its turn settles terminally or when the next turn replaces it — but
+   * a turn abandoned between segments (aborted, timed out, or never resumed
+   * after a client-tool pause) leaves the socket open, so dispose (`await
+   * using`) or {@link resetSession} sessions you are done with.
+   */
+  async [Symbol.asyncDispose](): Promise<void> {
+    const stream = this.#retainedStream;
+    this.#retainedStream = undefined;
+    if (stream) await stream.close();
+  }
+
+  /**
+   * The stream a segment reads: a resume segment re-attaches to the stream
+   * its predecessor left paused at `requires_action` (the whole point of
+   * retention — no re-dial per tool round trip); everything else — a new
+   * turn, or a stream a previous segment left detached (aborted/timed out) —
+   * replaces it with a fresh dial, because a stale buffer from a settle this
+   * client never observed must not leak into the new turn.
+   */
+  #acquireStream(resume: boolean, chatId: string, afterId: number | undefined): SessionChatStream {
+    const retained = this.#retainedStream;
+    if (resume && retained?.canAttach(chatId)) {
+      retained.attach();
+      return retained;
+    }
+    this.#retainedStream = undefined;
+    if (retained) void retained.close();
+    const created = new SessionChatStream({
+      chatId,
+      open: (streamSignal) =>
+        this.#config.client.streamEvents(chatId, { afterId, signal: streamSignal }),
+    });
+    this.#retainedStream = created;
+    return created;
+  }
+
+  /** Close `stream` and drop the retention slot if it still holds it. */
+  async #closeStream(stream: SessionChatStream): Promise<void> {
+    if (this.#retainedStream === stream) this.#retainedStream = undefined;
+    await stream.close();
   }
 
   async #resolveModelConfigId(signal?: AbortSignal): Promise<string | undefined> {
@@ -438,6 +510,10 @@ export class CoderLanguageModel implements LanguageModelV4 {
       translator = new TurnTranslator({
         dynamicToolNames: dynamicNames,
         turnCursor: afterId ?? 0,
+        // The retained stream redials with the TURN's original cursor, so a
+        // reconnect can replay an earlier segment's `action_required`
+        // snapshot; calls this session already answered must not run again.
+        submittedToolCallIds: this.#submittedToolCallIds,
       });
       // chatd emits the `requires_action` status BEFORE the `action_required`
       // event that carries the pending tool calls, so for that status we keep
@@ -465,22 +541,62 @@ export class CoderLanguageModel implements LanguageModelV4 {
       let recovery: Promise<ChatStreamEvent[]> | undefined;
       let recoveryAbort: AbortController | undefined;
       let recoveryAttempted = false;
-      const stream = this.#config.client.streamEvents(chatId, { afterId, signal });
+      // One stream per TURN, not per segment: a resume segment re-attaches to
+      // the stream its predecessor left paused at `requires_action`; anything
+      // else dials fresh (see #acquireStream). The stream is bound to its OWN
+      // lifetime signal — the segment signal instead races reads below, so an
+      // abort/timeout detaches this segment without killing the shared socket.
+      const stream = this.#acquireStream(action.kind === "resume", chatId, afterId);
+      let onSegmentAbort: (() => void) | undefined;
+      const segmentAborted: Promise<typeof SEGMENT_ABORTED> | undefined = signal
+        ? new Promise((resolve) => {
+            onSegmentAbort = () => resolve(SEGMENT_ABORTED);
+            if (signal.aborted) onSegmentAbort();
+            else signal.addEventListener("abort", onSegmentAbort, { once: true });
+          })
+        : undefined;
+      const raceSegment = <T>(p: Promise<T>): Promise<T | typeof SEGMENT_ABORTED> =>
+        segmentAborted ? Promise.race([p, segmentAborted]) : p;
+      // Whether the segment settled at a healthy client-tool pause — the one
+      // exit that keeps the stream for the next segment (see the finally).
+      let retainStream = false;
       try {
-        let next = stream.next();
         for (;;) {
-          let result: IteratorResult<ChatStreamEvent, void>;
+          // The stream memoizes its pending read: this either starts a fresh
+          // read or adopts one an earlier iteration (or segment) raced out —
+          // an event resolved while nobody was consuming is delivered here,
+          // never dropped.
+          const next = stream.read();
           const awaitingActionRequired =
             translator.terminalStatus === "requires_action" && !translator.clientToolCallSeen;
+          if (!awaitingActionRequired && (grace !== undefined || recoveryAttempted)) {
+            // The requires_action that armed this wait state was stale — a
+            // replayed connect-time snapshot from a redial, cleared by a later
+            // non-terminal transition (the chat is generating again). Re-arm
+            // the one-shot fallback so a REAL pause later in this segment
+            // gets its own grace timer and recovery fetch.
+            grace?.cancel();
+            grace = undefined;
+            recoveryAbort?.abort();
+            recoveryAbort = undefined;
+            recovery = undefined;
+            recoveryAttempted = false;
+            sinceRequiresAction = 0;
+          }
+          let raced:
+            | IteratorResult<ChatStreamEvent, void>
+            | ChatStreamEvent[]
+            | typeof GRACE_EXPIRED
+            | typeof SEGMENT_ABORTED;
           if (awaitingActionRequired && !recoveryAttempted) {
             // One timer for the whole wait (not per event), so a server that
             // keeps sending unrelated events cannot postpone the fallback.
             grace ??= startGraceTimer(ACTION_REQUIRED_GRACE_MS);
-            const raced = await Promise.race([next, grace.expired]);
+            raced = await raceSegment(Promise.race([next, grace.expired]));
             if (raced === GRACE_EXPIRED) {
               recoveryAttempted = true;
-              // Defensive: the reader settles its read on abort, but if the
-              // grace timer won that race, classify before fetching.
+              // Defensive: if the grace timer beat a concurrent abort,
+              // classify before fetching.
               throwIfAborted();
               // A recovery-specific controller (chained to the turn signal)
               // so the losing fetch is canceled when the stream wins or the
@@ -495,31 +611,31 @@ export class CoderLanguageModel implements LanguageModelV4 {
               ).catch(() => []);
               continue;
             }
-            result = raced;
           } else if (awaitingActionRequired && recovery) {
-            const raced = await Promise.race([next, recovery]);
+            raced = await raceSegment(Promise.race([next, recovery]));
             if (Array.isArray(raced)) {
               recovery = undefined;
               // An aborted fetch resolves [] through the catch above —
               // classify instead of silently waiting out the timeout.
               throwIfAborted();
               for (const ev of raced) for (const part of translator.ingest(ev)) yield part;
-              if (translator.clientToolCallSeen) {
-                // The abandoned read stays pending on the quiet socket until
-                // the teardown below settles it; tag it handled in case that
-                // surfaces as a rejection instead.
-                void next.catch(() => {});
-                break;
-              }
+              // The losing read stays memoized on the stream — the resume
+              // segment adopts it (read() is rejection-tagged, so a late
+              // failure while paused cannot surface as unhandled).
+              if (translator.clientToolCallSeen) break;
               continue; // nothing recovered — keep waiting on the stream
             }
-            result = raced;
           } else {
-            result = await next;
+            raced = await raceSegment(next);
           }
-          if (result.done) break;
-          next = stream.next();
-          for (const part of translator.ingest(result.value)) yield part;
+          if (raced === SEGMENT_ABORTED) {
+            throwIfAborted();
+            // Unreachable: the sentinel only resolves once `signal` aborted.
+            throw new CoderAgentError("segment abort sentinel resolved without an abort");
+          }
+          stream.consumed(next);
+          if (raced.done) break;
+          for (const part of translator.ingest(raced.value)) yield part;
           const status = translator.terminalStatus;
           if (status) {
             if (status !== "requires_action") break;
@@ -527,6 +643,14 @@ export class CoderLanguageModel implements LanguageModelV4 {
             if (++sinceRequiresAction > 200) break;
           }
         }
+        // A healthy pause — the turn continues with a tool-result resume, so
+        // the stream is retained (the finally pauses it). Every other exit
+        // (terminal settle, error settle, premature end) closes it. Never
+        // retain past an error settle: the SDK ends the turn there.
+        retainStream =
+          translator.terminalStatus === "requires_action" &&
+          translator.clientToolCallSeen &&
+          !translator.error;
       } catch (err) {
         // Abort surfaces here only if the reader threw instead of closing cleanly;
         // prefer the abort/timeout classification.
@@ -593,24 +717,37 @@ export class CoderLanguageModel implements LanguageModelV4 {
         // must not leave its HTTP request alive. (Settled/consumed recovery
         // makes this a no-op; the fetch rejection resolves to [] above.)
         recoveryAbort?.abort();
-        // Manual iteration (unlike for-await) does not close the stream on
-        // break/throw. The reader's return() wakes its own pending read, so
-        // this cannot hang, and its teardown errors are not the turn's
-        // problem.
-        await stream.return(undefined).catch(() => {});
+        if (signal && onSegmentAbort) signal.removeEventListener("abort", onSegmentAbort);
+        // The stream's fate, by exit kind:
+        //  - healthy client-tool pause → retained (paused) for the resume
+        //    segment, with a read outstanding so a drop during tool execution
+        //    redials in the background;
+        //  - segment abort/timeout → detached WITHOUT closing: the socket
+        //    belongs to the session close policy (teardown, or replacement by
+        //    the next segment), not to the segment's signal;
+        //  - everything else (terminal settle, error settle, fatal stream
+        //    error, premature end, consumer teardown mid-loop) → closed.
+        if (retainStream && !stream.closed) {
+          stream.pause();
+        } else if (signal?.aborted && !stream.closed) {
+          stream.detach();
+        } else {
+          await this.#closeStream(stream);
+        }
       }
 
-      // The stream loop exits cleanly when the socket closes on abort, so classify
-      // an abort/timeout here before treating the end as a normal/closed turn.
+      // An abort can slip past the loop (e.g. it settled a race the segment
+      // never awaited again); classify before treating the end as normal.
       throwIfAborted();
 
-      // No terminal status: the stream ended before the turn settled. With the
-      // reader redialing drops internally this is defensive — a clean end now
-      // means abort (classified above) — but keep it: if an `error` event
-      // arrived (without a trailing `status: error`), fall through to
-      // finish() so the real error surfaces (unified:"error" + the error part),
-      // consistent with the `status: error` path; otherwise it's a genuine
-      // premature close — surface it rather than a clean (truncated) `stop`.
+      // No terminal status: the stream ended before the turn settled — with
+      // the reader redialing drops internally, a clean `done` means the
+      // session stream was closed underneath this segment (resetSession or
+      // dispose mid-turn). If an `error` event arrived (without a trailing
+      // `status: error`), fall through to finish() so the real error surfaces
+      // (unified:"error" + the error part), consistent with the
+      // `status: error` path; otherwise surface the premature close rather
+      // than a clean (truncated) `stop`.
       if (!translator.terminalStatus && !translator.error) {
         throw new CoderChatError({
           message:

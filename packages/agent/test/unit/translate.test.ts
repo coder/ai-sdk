@@ -904,6 +904,38 @@ describe("TurnTranslator — earlier-message revision reconciliation (#57)", () 
     expect(parts.filter((p) => p.type === "tool-call")).toHaveLength(1);
   });
 
+  it("settles pending deltas on a suppressed rewrite commit so later messages reconcile", () => {
+    // A delta-streamed message commits with REWRITTEN content ("Hi" does not
+    // extend the emitted "Hello"): the rewrite itself stays suppressed, but
+    // the commit still settles ownership of the deltas — stale pending
+    // content must not poison the NEXT message's reconciliation.
+    const { parts } = run([
+      part("assistant", { type: "text", text: "Hello" }),
+      msg(2, "assistant", [{ type: "text", text: "Hi" }]),
+      msg(4, "assistant", [{ type: "text", text: "Next" }]),
+      status("waiting"),
+    ]);
+    expect(textBlocks(parts)).toEqual(["Hello", "Next"]);
+  });
+
+  it("reconciles a revision deferred during a delta race once the next step commits", () => {
+    // The mid-race revision arrives ONCE on a healthy connection — chatd does
+    // not re-send it later. Its suffix must be cached and reconciled when the
+    // next step's snapshot settles delta ownership, not wait for a replay
+    // that never comes.
+    const { parts } = run([
+      msg(2, "assistant", [{ type: "text", text: "A" }]),
+      part("assistant", { type: "text", text: "B" }),
+      msg(2, "assistant", [{ type: "text", text: "A+" }]), // mid-race, sent once
+      msg(4, "assistant", [{ type: "text", text: "B" }]), // resolves the race
+      status("waiting"),
+    ]);
+    // "A" and the step-2 delta share a block (snapshot-opened block stays
+    // open); the deferred revision suffix "+" lands bracketed after the race
+    // resolves.
+    expect(textBlocks(parts)).toEqual(["AB", "+"]);
+  });
+
   it("keeps suppressing a rewrite revision that cannot be expressed as a suffix", () => {
     // A revision that REWRITES already-emitted content cannot be reconciled
     // in a delta stream (emitted text cannot be retracted) — the safe side is

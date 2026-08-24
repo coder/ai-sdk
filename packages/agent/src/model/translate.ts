@@ -180,6 +180,11 @@ export class TurnTranslator {
     number,
     { text: string; reasoning: string; substantive: boolean }
   >();
+  // Same-id revision snapshots that arrived while the NEXT step's deltas were
+  // open (latest wins). chatd sends each revision once on a healthy
+  // connection, so the suffix cannot wait for a replay — it is reconciled as
+  // soon as the next step's snapshot settles ownership of the pending deltas.
+  readonly #deferredRevisions = new Map<number, { text: string; reasoning: string }>();
   #error: ChatErrorPayload | undefined;
   #terminalStatus: ChatStatus | undefined;
   #maxMessageId = 0;
@@ -521,12 +526,13 @@ export class TurnTranslator {
         // to committed messages arrive only as revision snapshots), so the
         // pending deltas belong to the next, still-uncommitted message —
         // they must NOT be claimed here, even when the revised content
-        // happens to share their prefix. Emit nothing and claim nothing: a
-        // mid-race revision suffix is deferred until the next step commits
-        // and a re-sent snapshot takes the earlier-message path above.
+        // happens to share their prefix. Emit nothing and claim nothing yet:
+        // the snapshot is DEFERRED and reconciled once the next step's
+        // snapshot settles ownership of the pending deltas (see below).
         // Announce-style commits (the earlier snapshot was EMPTY) stay on
         // the attribution path below — their deltas ARE this message's
         // content.
+        this.#deferredRevisions.set(message.id, { text: fullText, reasoning: fullReasoning });
       } else {
         // First sight of this message, or a re-snapshot of the CURRENT one —
         // progressive snapshot-mode growth, or an announce-style commit
@@ -566,7 +572,6 @@ export class TurnTranslator {
             this.#emitTextDelta(out, fullText.slice(attributed.length));
           }
           rec.text = fullText;
-          this.#text.pending = "";
         };
         const reconcileReasoning = (): void => {
           const attributed = rec.reasoning + this.#reasoning.pending;
@@ -575,7 +580,6 @@ export class TurnTranslator {
             this.#emitReasoningDelta(out, fullReasoning.slice(attributed.length));
           }
           rec.reasoning = fullReasoning;
-          this.#reasoning.pending = "";
         };
         // The currently open block reconciles FIRST: emitting the other kind
         // closes it, and the block order should match the wire order.
@@ -586,11 +590,28 @@ export class TurnTranslator {
           reconcileText();
           reconcileReasoning();
         }
+        // Reaching this path means THIS snapshot owns the pending deltas (the
+        // race guard above intercepts the one ambiguous ordering), so they
+        // are settled even when reconciliation failed: a rewrite-on-commit
+        // stays suppressed, but its stale pending must not poison every later
+        // message's reconciliation.
+        this.#text.pending = "";
+        this.#reasoning.pending = "";
         rec.substantive ||= content.some((p) =>
           p.type === "text" || p.type === "reasoning" ? (p.text ?? "").length > 0 : true,
         );
         this.#emittedByMessageId.set(message.id, rec);
         this.#deltasSinceSnapshot = false;
+        // Delta ownership is settled: reconcile revisions that were deferred
+        // while the race was open. They are now revisions of an EARLIER
+        // message and get the same bracketed suffix-or-suppress treatment.
+        for (const [id, deferred] of this.#deferredRevisions) {
+          if (id === message.id) continue;
+          const deferredRec = this.#emittedByMessageId.get(id);
+          if (deferredRec)
+            this.#reconcileRevision(out, deferredRec, deferred.text, deferred.reasoning);
+          this.#deferredRevisions.delete(id);
+        }
       }
       // Tool calls/results and sources are id-deduped, so snapshots process them
       // unconditionally (even when the snapshot is a text/reasoning no-op).

@@ -51,14 +51,14 @@ export interface StreamChatEventsOptions {
 const STREAM_BACKOFF_INITIAL_MS = 1_000;
 const STREAM_BACKOFF_CAP_MS = 30_000;
 /**
- * Consecutive progress-less connection failures tolerated before a dropped
- * per-chat stream gives up. Only forward progress — a newly committed message
- * or a new (unsuppressed) delta — resets the count; chatd replays a `status`
- * and the in-progress episode on every reconnect, so counting mere receipt
- * would let a half-dead connection (connects, replays, drops) redial forever.
- * With 1s→2s→4s→8s backoff between the five attempts this bounds a
- * non-progressing network to ~15s of redialing even without a caller signal or
- * `requestTimeoutMs`.
+ * Consecutive progress-less connection endings tolerated before a dropped
+ * per-chat stream gives up — counting the drop that starts an outage. Only
+ * forward progress — a newly committed message or a new (unsuppressed) delta —
+ * resets the count; chatd replays a `status` and the in-progress episode on
+ * every reconnect, so counting mere receipt would let a half-dead connection
+ * (connects, replays, drops) redial forever. With 1s→2s→4s→8s backoff between
+ * the five endings this bounds a non-progressing network to ~15s of redialing
+ * even without a caller signal or `requestTimeoutMs`.
  */
 const STREAM_MAX_CONSECUTIVE_FAILURES = 5;
 
@@ -137,7 +137,6 @@ export async function* streamChatEvents(
     let finished = false;
     let failure: Error | undefined;
     let parseFailure = false;
-    let progressed = false;
 
     const wake = () => {
       resolveNext?.();
@@ -253,7 +252,6 @@ export async function* streamChatEvents(
             }
           }
           if (progress) {
-            progressed = true;
             failures = 0;
             backoffMs = STREAM_BACKOFF_INITIAL_MS;
           }
@@ -297,15 +295,16 @@ export async function* streamChatEvents(
       });
     }
     if (failure) lastFailure = failure;
-    if (!progressed) {
-      failures += 1;
-      if (failures >= STREAM_MAX_CONSECUTIVE_FAILURES) {
-        throw new CoderStreamError({
-          message: `Coder chat stream ${path} could not be (re-)established after ${failures} consecutive connection failures without progress`,
-          url,
-          cause: lastFailure,
-        });
-      }
+    // EVERY ended connection counts toward the budget — including the one
+    // whose drop started this outage — so the give-up bound stays ~15s of
+    // backoff on all paths; forward progress above resets the count.
+    failures += 1;
+    if (failures >= STREAM_MAX_CONSECUTIVE_FAILURES) {
+      throw new CoderStreamError({
+        message: `Coder chat stream ${path} could not be (re-)established after ${failures} consecutive connection failures without progress`,
+        url,
+        cause: lastFailure,
+      });
     }
     await sleep(backoffMs, signal);
     if (signal?.aborted) return;

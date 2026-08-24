@@ -804,13 +804,13 @@ describe("CoderChatClient.streamEvents (redial)", () => {
         (e: unknown) => e,
       );
       await vi.advanceTimersByTimeAsync(0);
-      // …so five more dead connections are needed before it gives up again.
+      // …so a fresh budget of five progress-less endings (the progressing
+      // connection's own drop counts as the first) applies before giving up.
       for (let i = 0; i < 5; i++) {
         sockets.at(-1)?.emit("close", { code: 1006 });
         await vi.advanceTimersByTimeAsync(30_000);
       }
-      expect(sockets).toHaveLength(10);
-      sockets.at(-1)?.emit("close", { code: 1006 });
+      expect(sockets).toHaveLength(9);
       expect(await p2).toMatchObject({ name: "CoderStreamError" });
     } finally {
       vi.useRealTimers();
@@ -843,9 +843,8 @@ describe("CoderChatClient.streamEvents (redial)", () => {
         sockets.at(-1)?.emit("message", frame(statusEv("running"), delta(1, "Hel")));
         await vi.advanceTimersByTimeAsync(0);
       }
-      sockets.at(-1)?.emit("close", { code: 1006 });
       expect(await result).toMatchObject({ name: "CoderStreamError" });
-      expect(sockets).toHaveLength(6);
+      expect(sockets).toHaveLength(5);
       // The replayed delta was suppressed every round — yielded exactly once.
       expect(seen.filter((e) => e.type === "message_part")).toHaveLength(1);
     } finally {

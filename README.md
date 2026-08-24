@@ -124,6 +124,8 @@ and [structured output](./packages/agent/README.md#structured-output) (when the
 typed answer must come out of the agent run itself, not a follow-up model call)
 in the agent README;
 [surfaces and authentication modes](./packages/provider/README.md#the-two-surfaces)
+and the [enterprise governance & security reference](./packages/provider/README.md#enterprise-governance--security)
+(data flow, credential isolation, audit capture, required permissions)
 in the provider README.
 
 ## Contributing

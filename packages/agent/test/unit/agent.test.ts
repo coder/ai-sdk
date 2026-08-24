@@ -1169,6 +1169,76 @@ describe("CoderLanguageModel stream redial (real reader)", () => {
     }
   });
 
+  it("emits the tail from a commit-during-disconnect snapshot when the text block already closed", async () => {
+    vi.useFakeTimers();
+    try {
+      const { model, sockets, fetchCalls } = redialModel();
+      const { stream } = await model.doStream({
+        prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      } as never);
+      const parts: { type: string; delta?: string }[] = [];
+      const done = (async () => {
+        const reader = stream.getReader();
+        for (;;) {
+          const { value, done: d } = await reader.read();
+          if (d) break;
+          parts.push(value as { type: string; delta?: string });
+        }
+      })();
+
+      await vi.advanceTimersByTimeAsync(0);
+      // Text streams, then reasoning opens — closing the text block (#60's
+      // closed-cursor case, unlike the open-block recovery above).
+      sockets[0]?.emit(
+        "message",
+        streamFrame(status("running"), deltaEv(1, "A"), {
+          type: "message_part",
+          chat_id: "chat-1",
+          message_part: {
+            role: "assistant",
+            part: { type: "reasoning", text: "Th" },
+            history_version: 1,
+            generation_attempt: 1,
+            seq: 2,
+          },
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      // Drop; the message COMMITS during the gap with more reasoning AND more
+      // text after the reasoning. The redialed stream replays only the full
+      // snapshot — every remaining suffix must be emitted.
+      sockets[0]?.emit("close", { code: 1006 });
+      await vi.advanceTimersByTimeAsync(1000);
+      sockets[1]?.emit(
+        "message",
+        streamFrame(
+          msg(2, "assistant", [
+            { type: "text", text: "A" },
+            { type: "reasoning", text: "Think" },
+            { type: "text", text: "B" },
+          ]),
+          status("waiting"),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      await done;
+
+      const text = parts
+        .filter((p) => p.type === "text-delta")
+        .map((p) => p.delta)
+        .join("");
+      expect(text).toBe("AB");
+      const reasoning = parts
+        .filter((p) => p.type === "reasoning-delta")
+        .map((p) => p.delta)
+        .join("");
+      expect(reasoning).toBe("Think");
+      expect(fetchCalls.filter((c) => c.includes("/interrupt"))).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("interrupts and surfaces an AI-SDK-retryable error once the redial budget is exhausted", async () => {
     vi.useFakeTimers();
     try {

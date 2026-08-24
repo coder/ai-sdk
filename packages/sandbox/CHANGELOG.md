@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.2](https://github.com/coder/ai-sdk/compare/sandbox-v0.4.1...sandbox-v0.4.2) (2026-08-24)
+
+Adds a new documentation guide covering how to author zero-install templates.
+
+### Highlights
+
+- New zero-install template authoring guide is now available in the docs. ([#66](https://github.com/coder/ai-sdk/pull/66))
+
+### Documentation
+
+* **sandbox:** add zero-install template authoring guide ([#66](https://github.com/coder/ai-sdk/issues/66)) ([5d8959c](https://github.com/coder/ai-sdk/commit/5d8959c13d2b7700188ec5fc65d4393be8e8954d))
+
 ## [0.4.1](https://github.com/coder/ai-sdk/compare/sandbox-v0.4.0...sandbox-v0.4.1) (2026-08-24)
 
 Documentation-only release that corrects inconsistencies across the READMEs and CONTRIBUTING files.

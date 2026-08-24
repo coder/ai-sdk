@@ -98,7 +98,67 @@ const TRANSIENT_UPGRADE_STATUSES: ReadonlySet<number> = new Set([408, 425, 429])
  * `message` advancing the cursor finalizes them and re-enables redial), or the
  * redial budget running out (also a {@link CoderStreamError}).
  */
-export async function* streamChatEvents(
+export function streamChatEvents(
+  options: StreamChatEventsOptions,
+): AsyncGenerator<ChatStreamEvent, void, void> {
+  // Cancellation plumbing, mirroring watchChatEvents below: async-generator
+  // `return()`/`throw()` queue behind a pending `next()`, and with redial a
+  // pending read can now span a backoff sleep and a fresh socket — a bare
+  // `return()` from a signal-less consumer would otherwise keep redialing
+  // instead of tearing down. The wrapper aborts an internal controller first,
+  // which wakes the pending read (and the backoff sleep), then delegates.
+  const controller = new AbortController();
+  const external = options.signal;
+  const chain = (): void => controller.abort(external?.reason);
+  if (external) {
+    if (external.aborted) chain();
+    else external.addEventListener("abort", chain, { once: true });
+  }
+  const inner = streamChatEventsLoop({ ...options, signal: controller.signal });
+  const detach = (): void => external?.removeEventListener("abort", chain);
+  const finish = async (): Promise<void> => {
+    controller.abort();
+    detach();
+    try {
+      await inner.return();
+    } catch {
+      /* the loop's own teardown errors are not the caller's problem */
+    }
+  };
+  return {
+    // Detach the signal chain once the loop settles for good (done, or a
+    // terminal failure) — the iteration protocol never calls return() on a
+    // failed iterator, and the {once} listener would otherwise pile up on a
+    // long-lived signal across re-created readers.
+    async next(): Promise<IteratorResult<ChatStreamEvent, void>> {
+      try {
+        const result = await inner.next();
+        if (result.done) detach();
+        return result;
+      } catch (err) {
+        detach();
+        throw err;
+      }
+    },
+    async return(): Promise<IteratorResult<ChatStreamEvent, void>> {
+      await finish();
+      return { done: true, value: undefined };
+    },
+    async throw(err: unknown): Promise<IteratorResult<ChatStreamEvent, void>> {
+      await finish();
+      throw err;
+    },
+    [Symbol.asyncIterator]() {
+      return this;
+    },
+    // Native async generators are async-disposable; the wrapper must be too.
+    async [Symbol.asyncDispose](): Promise<void> {
+      await finish();
+    },
+  } as AsyncGenerator<ChatStreamEvent, void, void>;
+}
+
+async function* streamChatEventsLoop(
   options: StreamChatEventsOptions,
 ): AsyncGenerator<ChatStreamEvent, void, void> {
   const { baseUrl, token, chatId, signal } = options;

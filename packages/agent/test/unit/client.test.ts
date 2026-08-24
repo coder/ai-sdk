@@ -852,6 +852,40 @@ describe("CoderChatClient.streamEvents (redial)", () => {
     }
   });
 
+  it("iterator return() tears down promptly while a read is pending", async () => {
+    const { c, sockets } = streamClient();
+    const iter = c.streamEvents("c1");
+    const pending = iter.next(); // nothing queued: suspends waiting on the socket
+    await tick();
+    expect(sockets).toHaveLength(1);
+    // A bare return() (e.g. `break` from `for await`) must not wait for the
+    // next server event: it has to wake the pending read and settle.
+    const ret = await iter.return(undefined);
+    expect(ret.done).toBe(true);
+    expect((await pending).done).toBe(true);
+    expect(sockets[0]?.closedWith).toContain(1000);
+  });
+
+  it("iterator return() during the redial backoff cancels the redial (no signal supplied)", async () => {
+    vi.useFakeTimers();
+    try {
+      const { c, sockets } = streamClient();
+      const iter = c.streamEvents("c1");
+      const pending = iter.next();
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("close", { code: 1006 });
+      await vi.advanceTimersByTimeAsync(0); // now sleeping before a redial
+      // Must settle without advancing timers and without dialing again.
+      const ret = await iter.return(undefined);
+      expect(ret.done).toBe(true);
+      expect((await pending).done).toBe(true);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(sockets).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("stops during the redial delay when the signal aborts, without redialing", async () => {
     vi.useFakeTimers();
     try {

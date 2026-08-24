@@ -840,6 +840,48 @@ describe("transport events: isolation and overhead", () => {
     }
   });
 
+  it("a caller abort followed by a consumer cancel still settles as a failure", async () => {
+    vi.useFakeTimers();
+    try {
+      const { events, model, sockets } = harness();
+      const controller = new AbortController();
+      const { stream } = await model.doStream({
+        prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        abortSignal: controller.signal,
+      } as never);
+      const reader = (stream as ReadableStream<unknown>).getReader();
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("message", streamFrame(status("running")));
+      await vi.advanceTimersByTimeAsync(0);
+      await reader.read(); // stream-start
+      const pending = reader.read().then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      // The CALLER aborts first; the consumer then cancels its reader before
+      // the rejection propagates — the settle must keep the abort failure,
+      // not be reclassified as a teardown.
+      controller.abort();
+      const cancelled = reader.cancel().then(
+        () => undefined,
+        () => undefined,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      await pending;
+      await cancelled;
+
+      const settle = events.find((e) => e.type === "segment:settle") as Extract<
+        CoderTransportEvent,
+        { type: "segment:settle" }
+      >;
+      expect(settle).toBeDefined();
+      expect(settle.error?.name).toBe("AbortError");
+      expect(settle.status).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("an aborted segment settles with the abort error", async () => {
     vi.useFakeTimers();
     try {

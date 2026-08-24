@@ -969,7 +969,13 @@ export class CoderLanguageModel implements LanguageModelV4 {
     const abortSignal = options.abortSignal
       ? AbortSignal.any([options.abortSignal, cancelController.signal])
       : cancelController.signal;
-    const gen = this.#runTurn({ ...options, abortSignal }, () => cancelController.signal.aborted);
+    // Observability classification: a segment counts as consumer-cancelled
+    // only when cancel() INITIATED the termination. A caller abort that fired
+    // first is a failure settle even if the consumer also cancels its reader
+    // before the rejection propagates — so record which came first, rather
+    // than whether cancellation ever happened.
+    let consumerCancelled = false;
+    const gen = this.#runTurn({ ...options, abortSignal }, () => consumerCancelled);
     const stream = new ReadableStream<LanguageModelV4StreamPart>({
       async pull(controller) {
         try {
@@ -986,6 +992,8 @@ export class CoderLanguageModel implements LanguageModelV4 {
         }
       },
       async cancel() {
+        // Only a cancel that beat any caller abort is a teardown (see above).
+        consumerCancelled = !options.abortSignal?.aborted;
         cancelController.abort();
         await gen.return().catch(() => {});
       },

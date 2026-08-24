@@ -697,8 +697,9 @@ describe("CoderChatClient.streamEvents (redial)", () => {
     const p2 = iter.next();
     await tick();
     sockets[0]?.emit("close", { code: 1006 });
+    // A CoderStreamError so the model layer's retry-safety gates apply.
     await expect(p2).rejects.toMatchObject({
-      name: "CoderAgentError",
+      name: "CoderStreamError",
       message: expect.stringContaining("cannot be resumed"),
     });
     expect(sockets).toHaveLength(1);

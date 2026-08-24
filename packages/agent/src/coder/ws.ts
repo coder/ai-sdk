@@ -93,10 +93,10 @@ const TRANSIENT_UPGRADE_STATUSES: ReadonlySet<number> = new Set([408, 425, 429])
  * chat cannot succeed on retry, while 408/425/429 consume the redial budget),
  * an unparseable frame (terminal {@link CoderAgentError} — a redial would
  * replay the same frame forever), a drop while deltas WITHOUT episode
- * coordinates are outstanding (older chatd; terminal {@link CoderAgentError},
+ * coordinates are outstanding (older chatd; a {@link CoderStreamError},
  * because a replay could not be deduped and would double-emit — a committed
  * `message` advancing the cursor finalizes them and re-enables redial), or the
- * redial budget running out (a retryable {@link CoderStreamError}).
+ * redial budget running out (also a {@link CoderStreamError}).
  */
 export async function* streamChatEvents(
   options: StreamChatEventsOptions,
@@ -286,10 +286,15 @@ export async function* streamChatEvents(
     if (failure instanceof CoderApiError) throw failure;
     if (parseFailure && failure) throw failure;
     if (sawUntrackableDelta) {
-      throw new CoderAgentError(
-        "chat stream dropped mid-turn and cannot be resumed: this server does not stamp deltas with history_version/generation_attempt/seq, so a redial would replay them",
-        { cause: failure },
-      );
+      // A CoderStreamError (not a bare CoderAgentError) so the model layer
+      // applies its retry-safety gates — otherwise the generic stream_closed
+      // wrap would advertise a same-chat retry that could duplicate the turn.
+      throw new CoderStreamError({
+        message:
+          "chat stream dropped mid-turn and cannot be resumed: this server does not stamp deltas with history_version/generation_attempt/seq, so a redial would replay them",
+        url,
+        cause: failure,
+      });
     }
     if (failure) lastFailure = failure;
     if (!progressed) {

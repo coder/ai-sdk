@@ -340,11 +340,11 @@ export class CoderLanguageModel implements LanguageModelV4 {
         // The reader redials dropped connections internally (with `after_id`
         // catch-up), so what escapes it is terminal: a CoderApiError (4xx
         // upgrade rejection, re-thrown as-is), a CoderStreamError (redial
-        // budget exhausted; handled below), or a bare CoderAgentError
-        // (unparseable frame / undedupable old-server deltas). Surface the
-        // latter as a retryable stream failure so a caller's
-        // `CoderChatError && retryable` retry path catches it instead of
-        // seeing a bare, non-retryable error.
+        // budget exhausted, or undedupable old-server deltas; handled below),
+        // or a bare CoderAgentError (unparseable frame). Surface the latter as
+        // a retryable stream failure so a caller's `CoderChatError &&
+        // retryable` retry path catches it instead of seeing a bare,
+        // non-retryable error.
         //
         // An AI-SDK `maxRetries` retry re-invokes this model with the SAME
         // prompt, and `#runTurn` would submit it AGAIN as a new user turn.

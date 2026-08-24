@@ -36,7 +36,8 @@ export class CoderApiError extends CoderAgentError {
 
 /**
  * The per-chat event stream dropped and could not be re-established within its
- * redial budget. Extends the AI SDK's {@link APICallError} with
+ * redial budget (or could not be safely resumed — see `streamChatEvents` on
+ * servers without delta coordinates). Extends the AI SDK's {@link APICallError} with
  * `isRetryable: true` because the `ai` package's retry machinery (`maxRetries`)
  * only honors `APICallError`/`GatewayError`-branded errors — plain `Error`
  * subclasses are never retried no matter what they claim. Note the retry

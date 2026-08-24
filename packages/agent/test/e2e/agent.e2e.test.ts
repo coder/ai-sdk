@@ -2,7 +2,12 @@ import { tool } from "ai";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import NodeWebSocket from "ws";
 import { z } from "zod";
-import { CoderAgent, CoderChatClient, type WebSocketLike } from "../../src/index.js";
+import {
+  CoderAgent,
+  CoderChatClient,
+  type CoderTransportEvent,
+  type WebSocketLike,
+} from "../../src/index.js";
 
 /**
  * Live end-to-end tests against a real Coder deployment.
@@ -196,6 +201,81 @@ suite("CoderAgent e2e (live Coder)", () => {
     expect(result.steps.length).toBeGreaterThanOrEqual(3);
     // …all on ONE socket: the requires_action pauses retained it (#44).
     expect(dialed).toHaveLength(1);
+  }, 240_000);
+
+  it("emits a coherent transport-event trace for a client-tool turn (#45)", async () => {
+    const events: CoderTransportEvent[] = [];
+    const agent = new CoderAgent({
+      baseUrl: baseUrl as string,
+      token: token as string,
+      organizationId,
+      model: process.env.CODER_TOOL_MODEL ?? "sonnet",
+      instructions:
+        "You must call the provided tools to look up information you do not already know.",
+      onTransportEvent: (ev) => void events.push(ev),
+      tools: {
+        lookup: tool({
+          description:
+            "Look up the secret value for a topic. You must call this; the value is not knowable otherwise.",
+          inputSchema: z.object({ topic: z.string() }),
+          execute: async ({ topic }) => ({ value: `SECRET-${topic}-${topic.length}` }),
+        }),
+      },
+    });
+
+    const result = await agent.generate({
+      prompt:
+        "Use the lookup tool with topic 'trace', then reply with exactly the value it returns.",
+    });
+    if (agent.chatId) cleanup.push(agent.chatId);
+    expect(result.text).toContain("SECRET-trace-5");
+
+    // Log the trace (the point of the hook: a stable event vocabulary).
+    const t0 = events[0]?.timestamp ?? 0;
+    for (const ev of events) {
+      const extra =
+        ev.type === "http:request" || ev.type === "http:response" || ev.type === "http:error"
+          ? `${ev.method} ${ev.path}${"status" in ev ? ` → ${ev.status} (${ev.durationMs.toFixed(0)}ms)` : ""}`
+          : ev.type === "ws:event"
+            ? `${ev.event.type}${ev.event.status ? `:${ev.event.status.status}` : ""}`
+            : ev.type === "segment:settle"
+              ? `status=${ev.status} finish=${ev.finishReason} (${ev.durationMs.toFixed(0)}ms)`
+              : ev.type === "ws:dial"
+                ? `attempt=${ev.attempt}`
+                : "";
+      // eslint-disable-next-line no-console
+      console.log(`[+${String(ev.timestamp - t0).padStart(6)}ms] ${ev.type} ${extra}`);
+    }
+
+    // Every HTTP request has a paired response, and none leaked the token.
+    const reqs = events.filter((e) => e.type === "http:request");
+    const ress = events.filter((e) => e.type === "http:response" || e.type === "http:error");
+    expect(reqs.length).toBeGreaterThan(0);
+    expect(ress.length).toBe(reqs.length);
+    expect(JSON.stringify(events)).not.toContain(token as string);
+
+    // One socket spans the whole tool turn (#44): one dial, one close, open seen.
+    expect(events.filter((e) => e.type === "ws:dial")).toHaveLength(1);
+    expect(events.filter((e) => e.type === "ws:open")).toHaveLength(1);
+    expect(events.filter((e) => e.type === "ws:close")).toHaveLength(1);
+
+    // The decoded stream is observable: the requires_action pause and the
+    // terminal settle both arrived as ws:event payloads.
+    const wsEvents = events.filter((e) => e.type === "ws:event").map((e) => e.event);
+    expect(wsEvents.some((e) => e.type === "action_required")).toBe(true);
+    expect(wsEvents.some((e) => e.type === "status" && e.status?.status === "waiting")).toBe(true);
+
+    // Segment lifecycle: at least one tool pause, then a terminal settle
+    // (the model may make extra tool rounds; the shape stays the same).
+    const settles = events.filter((e) => e.type === "segment:settle");
+    expect(settles.length).toBeGreaterThanOrEqual(2);
+    expect(settles[0]).toMatchObject({ status: "requires_action", finishReason: "tool-calls" });
+    expect(settles.at(-1)).toMatchObject({ status: "waiting", finishReason: "stop" });
+    expect(events.filter((e) => e.type === "segment:start")).toHaveLength(settles.length);
+    // Timings are populated and sane.
+    for (const s of settles) {
+      expect((s as { durationMs: number }).durationMs).toBeGreaterThan(0);
+    }
   }, 240_000);
 
   it("uploads and downloads a chat file (round-trip)", async () => {

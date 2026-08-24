@@ -25,6 +25,7 @@ import {
 } from "../coder/workspaces.js";
 import { CoderAgentError, CoderApiError } from "../errors.js";
 import type { FileContent } from "../files.js";
+import type { TransportEventHandler } from "../transport-events.js";
 import { CoderLanguageModel } from "../model/language-model.js";
 import { CODER_PROVIDER_OPTIONS } from "../model/prompt.js";
 import type { WorkspaceFileStore, WorkspacePlacement } from "../workspace-files.js";
@@ -153,6 +154,17 @@ export interface CoderAgentSettings<TOOLS extends ToolSet = {}> {
   token?: string;
   fetch?: CoderChatClientOptions["fetch"];
   webSocketFactory?: CoderChatClientOptions["webSocketFactory"];
+  /**
+   * Observability hook: receives typed transport events — HTTP request/
+   * response timings, the per-chat stream's WebSocket lifecycle (dial/open/
+   * events/close/redial), and turn-segment start/settle — so timing and
+   * tracing need no `fetch`/`webSocketFactory` wrapping. Exceptions it throws
+   * are swallowed; without it, no event objects are allocated. NOTE: when a
+   * pre-built `client` is supplied, its own `onTransportEvent` (set at client
+   * construction) emits the HTTP/WebSocket events — this setting then only
+   * receives the `segment:*` events. See {@link CoderTransportEvent}.
+   */
+  onTransportEvent?: TransportEventHandler;
 
   // --- Coder chat configuration ---
   /** Organization UUID that owns the chat (required). */
@@ -300,6 +312,7 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
         token: settings.token,
         fetch: settings.fetch,
         webSocketFactory: settings.webSocketFactory,
+        onTransportEvent: settings.onTransportEvent,
       });
     } else {
       throw new CoderAgentError(
@@ -342,6 +355,7 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
       planMode: settings.planMode,
       chatId: settings.chatId,
       requestTimeoutMs: settings.requestTimeoutMs,
+      onTransportEvent: settings.onTransportEvent,
     });
 
     // Whether `toolsContext` is required depends on the concrete TOOLS the

@@ -286,6 +286,79 @@ with a 4xx — bad/expired token, or an older Coder server without the endpoint
 `watchChatEvents({ baseUrl, token, signal, webSocketFactory })` export provides
 the same stream without a `CoderChatClient`.
 
+## Observability
+
+`onTransportEvent` receives typed transport events — HTTP exchanges, the
+per‑chat stream's WebSocket lifecycle, and turn‑segment boundaries — so timing
+and tracing need no `fetch`/`webSocketFactory` wrapping and no re‑parsing of
+stream frames. Pass it on `CoderAgentSettings` (it reaches both the client and
+the model), on `CoderChatClientOptions`, or on `CoderLanguageModelConfig`:
+
+```ts
+import { CoderAgent, type CoderTransportEvent } from "@coder/ai-sdk-agent";
+
+const events: CoderTransportEvent[] = [];
+const agent = new CoderAgent({
+  baseUrl,
+  token,
+  organizationId,
+  onTransportEvent: (ev) => events.push(ev),
+});
+
+await agent.generate({ prompt: "…" });
+
+// e.g. attribute where the turn spent its time:
+for (const ev of events) {
+  if (ev.type === "http:response")
+    console.log(`${ev.method} ${ev.path} → ${ev.status} in ${ev.durationMs.toFixed(0)}ms`);
+  if (ev.type === "ws:event" && ev.event.type === "action_required")
+    console.log(`tool calls arrived at +${ev.timestamp - events[0]!.timestamp}ms`);
+  if (ev.type === "segment:settle")
+    console.log(`segment ${ev.segment}: ${ev.status} in ${ev.durationMs.toFixed(0)}ms`);
+}
+```
+
+`CoderTransportEvent` is a discriminated union on `type`. Every event carries
+`timestamp` (`Date.now()` at observation — comparable to server‑side timestamps
+such as a message's `created_at`, for delivery‑lag measurements):
+
+| event            | when                                                | payload (besides `timestamp`)                                                                                                        |
+| ---------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `http:request`   | a REST request is sent                              | `id` (correlates the pair), `method`, `path`                                                                                         |
+| `http:response`  | response headers arrive (incl. non‑2xx, `ok:false`) | `id`, `method`, `path`, `status`, `ok`, `durationMs`                                                                                 |
+| `http:error`     | the fetch itself rejects (network failure, abort)   | `id`, `method`, `path`, `message`, `durationMs`                                                                                      |
+| `ws:dial`        | a stream connection attempt starts                  | `chatId`, `attempt` (1‑based, increments per redial), `url`                                                                          |
+| `ws:open`        | the WebSocket handshake completes                   | `chatId`, `attempt`                                                                                                                  |
+| `ws:event`       | a decoded stream event arrives                      | `chatId`, `attempt`, `event` (the decoded `ChatStreamEvent`, by reference — don't mutate)                                            |
+| `ws:close`       | the connection ends (exactly one per dial)          | `chatId`, `attempt`, `code`/`reason` when the server/network closed it; absent when the reader closed it (settle, teardown, redial)  |
+| `ws:error`       | a socket error or unparseable frame                 | `chatId`, `attempt`, `message`                                                                                                       |
+| `ws:redial`      | a dropped connection is about to be redialed        | `chatId`, `attempt` (the ended connection), `consecutiveFailures`, `maxConsecutiveFailures`, `backoffMs`                             |
+| `segment:start`  | a turn segment (one model round‑trip) starts        | `segment` (1‑based per model instance), `chatId` (absent before the first turn creates the chat)                                     |
+| `segment:settle` | the segment ends (exactly one per start)            | `segment`, `chatId`, and: `status` + `finishReason` on a clean settle, `error` (`{name, message}`) on failure, neither on a teardown |
+
+Semantics worth knowing:
+
+- **Isolation** — exceptions thrown by the handler are swallowed; they can never
+  alter transport behavior or a turn's outcome.
+- **Zero overhead** — without a handler, no event objects are allocated and no
+  extra socket listeners are registered.
+- **No secrets** — events carry no headers and no tokens (auth travels in the
+  `Coder-Session-Token` header, which is deliberately excluded); `path`/`url`
+  never contain credentials.
+- `ws:event` fires at arrival, **before** replay dedup: after a redial, chatd's
+  replay of the in‑progress episode is visible here (correlate with `attempt`)
+  even though the reader suppresses the duplicates it forwards to the turn.
+- A multi‑step turn that drives client tools emits one `segment:start`/
+  `segment:settle` pair per round‑trip, all riding **one** `ws:dial`ed
+  connection — the stream is retained across `requires_action` pauses. A pause
+  settles with `status: "requires_action"`, `finishReason: "tool-calls"`; the
+  final settle carries the terminal status (`waiting`/`completed`/`error`).
+- `ws:*` events cover the per‑chat `/stream` reader (turn transport). The
+  `watchChats` subscription is not instrumented.
+- With a pre‑built `client` in `CoderAgentSettings`, HTTP/WS events come from
+  the hook given to **that client's** options; the agent‑level hook then only
+  receives `segment:*` events.
+
 ## Timeouts & cancellation
 
 Pass an `abortSignal` to `generate()`/`stream()` to cancel a turn. Aborting
@@ -624,6 +697,7 @@ running many agents at once:
 | `stopWhen`                        | AI SDK stop condition(s); default `stepCountIs(64)`                                              |
 | `maxRetries`                      | default `0` — SDK retries can duplicate server‑side turns; override with care                    |
 | `requestTimeoutMs`                | per‑turn time budget (ms); interrupts the run and rejects (`kind: "timeout"`) instead of hanging |
+| `onTransportEvent`                | observability hook for typed transport events (see [Observability](#observability))              |
 | `settleDeadlineMs`                | overall deadline for bounded cleanup (`archive()` 409 retries, disposal); default 15 000         |
 | `settleRetryDelayMs`              | pause between `archive()` retries while the chat settles; default 1000                           |
 | `chatId`                          | resume an existing chat                                                                          |

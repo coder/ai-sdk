@@ -16,6 +16,7 @@ import {
   type UploadChatFileResponse,
 } from "./types.js";
 import { streamChatEvents, watchChatEvents, type WebSocketFactory } from "./ws.js";
+import { safeTransportEmitter, type TransportEventHandler } from "../transport-events.js";
 
 /** A file to upload as a chat attachment. */
 export interface ChatFileInput {
@@ -46,6 +47,13 @@ export interface CoderChatClientOptions {
   fetch?: typeof globalThis.fetch;
   /** Custom WebSocket factory (defaults to the `ws` package on Node). */
   webSocketFactory?: WebSocketFactory;
+  /**
+   * Observability hook: receives typed transport events (HTTP request/response
+   * timings, per-chat stream WebSocket lifecycle). Exceptions it throws are
+   * swallowed; without it, no event objects are allocated. See
+   * {@link CoderTransportEvent}.
+   */
+  onTransportEvent?: TransportEventHandler;
 }
 
 const API_PREFIX = "/api/experimental/chats";
@@ -59,6 +67,11 @@ export class CoderChatClient {
   readonly #token: string;
   readonly #fetch: typeof globalThis.fetch;
   readonly #webSocketFactory: WebSocketFactory | undefined;
+  /** The raw subscriber, forwarded to stream readers (which wrap it themselves). */
+  readonly #onTransportEvent: TransportEventHandler | undefined;
+  /** Exception-isolated emitter for this client's own HTTP events. */
+  readonly #emitTransportEvent: TransportEventHandler | undefined;
+  #httpSeq = 0;
 
   constructor(options: CoderChatClientOptions) {
     // Normalize: strip a single trailing slash.
@@ -66,6 +79,8 @@ export class CoderChatClient {
     this.#token = options.token;
     this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.#webSocketFactory = options.webSocketFactory;
+    this.#onTransportEvent = options.onTransportEvent;
+    this.#emitTransportEvent = safeTransportEmitter(options.onTransportEvent);
   }
 
   /**
@@ -88,7 +103,42 @@ export class CoderChatClient {
       (init as RequestInit & { duplex?: "half" }).duplex = "half";
     }
 
-    const res = await this.#fetch(`${this.baseUrl}${path}`, init);
+    // Observability: request/response/error events, guarded so nothing is
+    // allocated without a subscriber. NOTE: headers are deliberately excluded
+    // from the events (the auth token travels in `Coder-Session-Token`).
+    const emit = this.#emitTransportEvent;
+    let requestId = 0;
+    let startedAt = 0;
+    if (emit) {
+      requestId = ++this.#httpSeq;
+      startedAt = performance.now();
+      emit({ type: "http:request", id: requestId, method, path, timestamp: Date.now() });
+    }
+    let res: Response;
+    try {
+      res = await this.#fetch(`${this.baseUrl}${path}`, init);
+    } catch (err) {
+      emit?.({
+        type: "http:error",
+        id: requestId,
+        method,
+        path,
+        message: err instanceof Error ? err.message : String(err),
+        durationMs: performance.now() - startedAt,
+        timestamp: Date.now(),
+      });
+      throw err;
+    }
+    emit?.({
+      type: "http:response",
+      id: requestId,
+      method,
+      path,
+      status: res.status,
+      ok: res.ok,
+      durationMs: performance.now() - startedAt,
+      timestamp: Date.now(),
+    });
     if (!res.ok) {
       const errObj = (await this.#json<{ message?: string; detail?: string }>(res)) ?? {};
       throw new CoderApiError({
@@ -314,6 +364,7 @@ export class CoderChatClient {
       afterId: opts?.afterId,
       signal: opts?.signal,
       webSocketFactory: this.#webSocketFactory,
+      onTransportEvent: this.#onTransportEvent,
     });
   }
 

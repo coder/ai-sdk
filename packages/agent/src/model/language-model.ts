@@ -13,6 +13,7 @@ import { CoderAgentError, CoderApiError, CoderChatError, CoderStreamError } from
 import { CoderChatClient } from "../coder/client.js";
 import type {
   ChatInputPart,
+  ChatStatus,
   ChatStreamEvent,
   ChatStreamToolCall,
   CreateChatRequest,
@@ -29,6 +30,12 @@ import {
 } from "./prompt.js";
 import { SessionChatStream } from "./session-stream.js";
 import { TurnTranslator } from "./translate.js";
+import {
+  safeTransportEmitter,
+  type SegmentSettleTransportEvent,
+  type SegmentStartTransportEvent,
+  type TransportEventHandler,
+} from "../transport-events.js";
 
 /**
  * How long a segment that has settled into `requires_action` waits for the
@@ -93,6 +100,15 @@ export interface CoderLanguageModelConfig {
    * `abortSignal: AbortSignal.timeout(ms)`. Unset or non-positive means no limit.
    */
   requestTimeoutMs?: number;
+  /**
+   * Observability hook: receives this model's `segment:*` transport events
+   * (turn-segment start/settle with terminal status and timing). HTTP and
+   * WebSocket events are emitted by the {@link CoderChatClient} — pass the
+   * hook to its options too (CoderAgent wires both from one setting).
+   * Exceptions it throws are swallowed; without it, no event objects are
+   * allocated. See {@link CoderTransportEvent}.
+   */
+  onTransportEvent?: TransportEventHandler;
 }
 
 /**
@@ -135,6 +151,9 @@ export class CoderLanguageModel implements LanguageModelV4 {
   #inFlight = false;
   /** The turn-lifetime event stream, retained across client-tool pauses. */
   #retainedStream: SessionChatStream | undefined;
+  /** Exception-isolated observability emitter for `segment:*` events. */
+  readonly #emitTransportEvent: TransportEventHandler | undefined;
+  #segmentSeq = 0;
 
   constructor(config: CoderLanguageModelConfig) {
     // Fail fast on an incompatible AI SDK major (see peer dependency `ai@^7`).
@@ -142,6 +161,7 @@ export class CoderLanguageModel implements LanguageModelV4 {
     this.#config = config;
     this.modelId = config.model ?? "chatd";
     this.#chatId = config.chatId;
+    this.#emitTransportEvent = safeTransportEmitter(config.onTransportEvent);
   }
 
   get chatId(): string | undefined {
@@ -336,7 +356,67 @@ export class CoderLanguageModel implements LanguageModelV4 {
     return events;
   }
 
+  /**
+   * Wraps {@link #runTurnInner} with `segment:start`/`segment:settle`
+   * observability events. A pure pass-through without a subscriber — no
+   * counters, clocks, or event objects on the unobserved path. The settle
+   * event is emitted in a `finally`, so every started segment settles exactly
+   * once: cleanly (with the terminal status carried by the `finish` part that
+   * streamed through), with an `error` summary, or — when the consumer tears
+   * the stream down mid-segment — with neither.
+   */
   async *#runTurn(
+    options: LanguageModelV4CallOptions,
+  ): AsyncGenerator<LanguageModelV4StreamPart, void, void> {
+    const emit = this.#emitTransportEvent;
+    if (!emit) {
+      yield* this.#runTurnInner(options);
+      return;
+    }
+    const segment = ++this.#segmentSeq;
+    const startedAt = performance.now();
+    const startEvent: SegmentStartTransportEvent = {
+      type: "segment:start",
+      segment,
+      timestamp: Date.now(),
+    };
+    if (this.#chatId !== undefined) startEvent.chatId = this.#chatId;
+    emit(startEvent);
+    let finishReason: LanguageModelV4GenerateResult["finishReason"] | undefined;
+    let failure: unknown;
+    let failed = false;
+    try {
+      for await (const part of this.#runTurnInner(options)) {
+        if (part.type === "finish") finishReason = part.finishReason;
+        yield part;
+      }
+    } catch (err) {
+      failure = err;
+      failed = true;
+      throw err;
+    } finally {
+      const settleEvent: SegmentSettleTransportEvent = {
+        type: "segment:settle",
+        segment,
+        durationMs: performance.now() - startedAt,
+        timestamp: Date.now(),
+      };
+      if (this.#chatId !== undefined) settleEvent.chatId = this.#chatId;
+      if (failed) {
+        settleEvent.error = {
+          name: failure instanceof Error ? failure.name : "Error",
+          message: failure instanceof Error ? failure.message : String(failure),
+        };
+      } else if (finishReason !== undefined) {
+        // finishReason.raw is the translator's terminal chat status.
+        if (finishReason.raw !== undefined) settleEvent.status = finishReason.raw as ChatStatus;
+        settleEvent.finishReason = finishReason.unified;
+      }
+      emit(settleEvent);
+    }
+  }
+
+  async *#runTurnInner(
     options: LanguageModelV4CallOptions,
   ): AsyncGenerator<LanguageModelV4StreamPart, void, void> {
     // A single model instance owns one chatd session's mutable state, so it is

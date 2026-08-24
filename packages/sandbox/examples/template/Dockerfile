@@ -37,10 +37,13 @@ WORKDIR /home/${USER}
 #   this provider), and pnpm records the store as an absolute path in
 #   node_modules/.modules.yaml — a relocated pre-bake makes the session's
 #   `pnpm install` abort (ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY).
-# - Pin the adapter version to the one your host application uses. A newer
-#   adapter on the host re-runs the bootstrap against this directory and
-#   downloads only the delta (slower first session, still correct).
-ARG HARNESS_CLAUDE_CODE_VERSION=1.0.89
+# - Pin the adapter version to the one your host application resolves
+#   (`pnpm why @ai-sdk/harness-claude-code`, or check its lockfile) via
+#   `--build-arg HARNESS_CLAUDE_CODE_VERSION=...`. A different adapter on the
+#   host re-runs the bootstrap against this directory and downloads the delta
+#   (slower first session, still correct). The default matches the version
+#   this repository's examples resolve.
+ARG HARNESS_CLAUDE_CODE_VERSION=1.0.76
 RUN mkdir -p /home/${USER}/.harness-bootstrap/claude-code \
   && cd /tmp \
   && npm pack @ai-sdk/harness-claude-code@${HARNESS_CLAUDE_CODE_VERSION} \

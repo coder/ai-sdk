@@ -35,6 +35,14 @@ data "coder_provisioner" "me" {}
 data "coder_workspace" "me" {}
 data "coder_workspace_owner" "me" {}
 
+# Materialize the image on the provisioner's Docker host (pulls from the
+# registry when it isn't already local) so the first workspace build can find
+# it. keep_locally stops workspace deletion from removing the shared image.
+resource "docker_image" "workspace" {
+  name         = var.image
+  keep_locally = true
+}
+
 resource "coder_agent" "main" {
   arch = data.coder_provisioner.me.arch
   os   = "linux"
@@ -70,7 +78,7 @@ resource "docker_volume" "home_volume" {
 
 resource "docker_container" "workspace" {
   count = data.coder_workspace.me.start_count
-  image = var.image
+  image = docker_image.workspace.image_id
   # Uses lower() to avoid Docker restriction on container names.
   name     = "coder-${data.coder_workspace_owner.me.name}-${lower(data.coder_workspace.me.name)}"
   hostname = data.coder_workspace.me.name

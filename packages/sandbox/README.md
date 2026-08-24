@@ -305,7 +305,7 @@ bash/coreutils) and replays the recipe at build time — same files, same
 commands, same absolute path:
 
 ```dockerfile
-ARG HARNESS_CLAUDE_CODE_VERSION=1.0.89
+ARG HARNESS_CLAUDE_CODE_VERSION=1.0.76
 RUN mkdir -p /home/${USER}/.harness-bootstrap/claude-code \
   && cd /tmp \
   && npm pack @ai-sdk/harness-claude-code@${HARNESS_CLAUDE_CODE_VERSION} \
@@ -328,8 +328,10 @@ Rules that make or break the pre-bake:
   `/opt/...` and copied into `$HOME` later makes the session's `pnpm install`
   abort (`ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY` — pnpm wants to purge and
   reinstall, and a session has no TTY to confirm).
-- **Pin the adapter version your application uses.** The recipe and its marker
-  hash derive from the adapter's shipped assets. A mismatch is not fatal — the
+- **Pin the adapter version your application resolves** (find it with
+  `pnpm why @ai-sdk/harness-claude-code`, or in your lockfile) and pass it as
+  `--build-arg HARNESS_CLAUDE_CODE_VERSION=...`. The recipe and its marker hash
+  derive from the adapter's shipped assets. A mismatch is not fatal — the
   recipe re-runs in the same directory and downloads only the delta — but it
   reintroduces registry traffic on first sessions.
 - **Build for the workspace CPU architecture** — the pre-bake fetches the

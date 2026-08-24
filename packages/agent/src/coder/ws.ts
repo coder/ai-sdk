@@ -1,5 +1,10 @@
 import NodeWebSocket from "ws";
 import { CoderAgentError, CoderApiError, CoderStreamError } from "../errors.js";
+import {
+  safeTransportEmitter,
+  type StreamCloseTransportEvent,
+  type TransportEventHandler,
+} from "../transport-events.js";
 import type { ChatStreamEvent, ChatWatchEvent } from "./types.js";
 
 /**
@@ -46,6 +51,13 @@ export interface StreamChatEventsOptions {
   afterId?: number;
   signal?: AbortSignal;
   webSocketFactory?: WebSocketFactory;
+  /**
+   * Observability hook: receives the reader's `ws:*` transport events (dial,
+   * open, decoded events, close, error, redial). Exceptions it throws are
+   * swallowed; without it, no event objects are allocated and no extra socket
+   * listeners are registered. See {@link CoderTransportEvent}.
+   */
+  onTransportEvent?: TransportEventHandler;
 }
 
 const STREAM_BACKOFF_INITIAL_MS = 1_000;
@@ -167,6 +179,12 @@ async function* streamChatEventsLoop(
 ): AsyncGenerator<ChatStreamEvent, void, void> {
   const { baseUrl, token, chatId, signal } = options;
   const factory = options.webSocketFactory ?? defaultFactory;
+  // Exception-isolated observability emitter; undefined without a subscriber,
+  // and every emit site below is guarded on that so the no-subscriber path
+  // allocates no event objects and registers no extra listeners.
+  const emit = safeTransportEmitter(options.onTransportEvent);
+  // 1-based connection attempt for `ws:*` event correlation.
+  let attempt = 0;
 
   const wsBase = httpToWs(baseUrl);
   const path = `/api/experimental/chats/${chatId}/stream`;
@@ -201,13 +219,32 @@ async function* streamChatEventsLoop(
     let finished = false;
     let failure: Error | undefined;
     let parseFailure = false;
+    // Whether this connection's `ws:close` has been emitted (via the close
+    // listener); the teardown below emits a synthetic one otherwise, so every
+    // dial gets exactly one close.
+    let closeEmitted = false;
 
     const wake = () => {
       resolveNext?.();
       resolveNext = undefined;
     };
 
-    const ws = factory(url, { headers: { "Coder-Session-Token": token } });
+    attempt += 1;
+    emit?.({ type: "ws:dial", chatId, attempt, url, timestamp: Date.now() });
+    let ws: WebSocketLike;
+    try {
+      ws = factory(url, { headers: { "Coder-Session-Token": token } });
+    } catch (err) {
+      // A synchronously-throwing factory is a terminal reader failure (as
+      // before the hooks); keep the observability invariants on the way out —
+      // the emitted dial still gets its error and exactly-one close.
+      if (emit) {
+        const message = err instanceof Error ? err.message : String(err);
+        emit({ type: "ws:error", chatId, attempt, message, timestamp: Date.now() });
+        emit({ type: "ws:close", chatId, attempt, timestamp: Date.now() });
+      }
+      throw err;
+    }
 
     const onAbort = () => {
       finished = true;
@@ -234,6 +271,13 @@ async function* streamChatEventsLoop(
         const data = typeof ev.data === "string" ? ev.data : String(ev.data);
         batch = JSON.parse(data);
       } catch (err) {
+        emit?.({
+          type: "ws:error",
+          chatId,
+          attempt,
+          message: "failed to parse chat stream frame",
+          timestamp: Date.now(),
+        });
         failure = new CoderAgentError("failed to parse chat stream frame", { cause: err });
         parseFailure = true;
         finished = true;
@@ -241,9 +285,28 @@ async function* streamChatEventsLoop(
         return;
       }
       if (Array.isArray(batch)) {
-        for (const e of batch) queue.push(e as ChatStreamEvent);
+        for (const e of batch) {
+          queue.push(e as ChatStreamEvent);
+          // Observed at arrival, BEFORE replay dedup — a redial's replayed
+          // episode is visible to subscribers even though the reader
+          // suppresses the duplicates it forwards.
+          emit?.({
+            type: "ws:event",
+            chatId,
+            attempt,
+            event: e as ChatStreamEvent,
+            timestamp: Date.now(),
+          });
+        }
       } else if (batch && typeof batch === "object") {
         queue.push(batch as ChatStreamEvent);
+        emit?.({
+          type: "ws:event",
+          chatId,
+          attempt,
+          event: batch as ChatStreamEvent,
+          timestamp: Date.now(),
+        });
       }
       wake();
     };
@@ -253,6 +316,7 @@ async function* streamChatEventsLoop(
         ev && typeof ev === "object" && "message" in ev
           ? String((ev as { message: unknown }).message)
           : "chat stream socket error";
+      emit?.({ type: "ws:error", chatId, attempt, message, timestamp: Date.now() });
       const status = upgradeStatus(message);
       failure =
         status !== undefined &&
@@ -264,10 +328,28 @@ async function* streamChatEventsLoop(
       finished = true;
       wake();
     };
-    const onClose = (): void => {
+    const onClose = (ev?: { code?: number; reason?: string }): void => {
+      if (emit && !closeEmitted) {
+        closeEmitted = true;
+        const closeEvent: StreamCloseTransportEvent = {
+          type: "ws:close",
+          chatId,
+          attempt,
+          timestamp: Date.now(),
+        };
+        if (ev?.code !== undefined) closeEvent.code = ev.code;
+        if (ev?.reason !== undefined && ev.reason !== "") closeEvent.reason = ev.reason;
+        emit(closeEvent);
+      }
       finished = true;
       wake();
     };
+    // Registered only for observability — the reader itself never waits for
+    // the handshake (a send-less consumer just reads whatever arrives).
+    const onOpen = emit
+      ? (): void => emit({ type: "ws:open", chatId, attempt, timestamp: Date.now() })
+      : undefined;
+    if (onOpen) ws.addEventListener("open", onOpen);
     ws.addEventListener("message", onMessage);
     ws.addEventListener("error", onError);
     ws.addEventListener("close", onClose);
@@ -329,6 +411,7 @@ async function* streamChatEventsLoop(
     } finally {
       finished = true;
       if (signal && abortListenerAdded) signal.removeEventListener("abort", onAbort);
+      if (onOpen) ws.removeEventListener("open", onOpen);
       ws.removeEventListener("message", onMessage);
       ws.removeEventListener("error", onError);
       ws.removeEventListener("close", onClose);
@@ -336,6 +419,14 @@ async function* streamChatEventsLoop(
         ws.close(1000);
       } catch {
         /* ignore */
+      }
+      // The reader ended the connection itself (settle, teardown, abort, or an
+      // error-triggered exit whose close event hadn't fired yet): emit the
+      // close now — every dial gets exactly one `ws:close`, with `code`/
+      // `reason` only when the server/network closed the socket.
+      if (emit && !closeEmitted) {
+        closeEmitted = true;
+        emit({ type: "ws:close", chatId, attempt, timestamp: Date.now() });
       }
     }
 
@@ -370,6 +461,15 @@ async function* streamChatEventsLoop(
         cause: lastFailure,
       });
     }
+    emit?.({
+      type: "ws:redial",
+      chatId,
+      attempt,
+      consecutiveFailures: failures,
+      maxConsecutiveFailures: STREAM_MAX_CONSECUTIVE_FAILURES,
+      backoffMs,
+      timestamp: Date.now(),
+    });
     await sleep(backoffMs, signal);
     if (signal?.aborted) return;
     backoffMs = Math.min(backoffMs * 2, STREAM_BACKOFF_CAP_MS);

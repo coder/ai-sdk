@@ -13,6 +13,7 @@ import { CoderAgentError, CoderApiError, CoderChatError, CoderStreamError } from
 import { CoderChatClient } from "../coder/client.js";
 import type {
   ChatInputPart,
+  ChatStatus,
   ChatStreamEvent,
   ChatStreamToolCall,
   CreateChatRequest,
@@ -29,6 +30,12 @@ import {
 } from "./prompt.js";
 import { SessionChatStream } from "./session-stream.js";
 import { TurnTranslator } from "./translate.js";
+import {
+  safeTransportEmitter,
+  type SegmentSettleTransportEvent,
+  type SegmentStartTransportEvent,
+  type TransportEventHandler,
+} from "../transport-events.js";
 
 /**
  * How long a segment that has settled into `requires_action` waits for the
@@ -58,6 +65,16 @@ function startGraceTimer(ms: number) {
     timer = setTimeout(() => resolve(GRACE_EXPIRED), ms);
   });
   return { expired, cancel: () => clearTimeout(timer) };
+}
+
+/**
+ * Observability out-param threaded from the `segment:*` wrapper into
+ * `#runTurnInner`: records the segment's chat id once known, surviving a
+ * session discard (`resetSession()`) that clears the instance field before
+ * the settle event is emitted.
+ */
+interface SegmentChatRef {
+  chatId?: string;
 }
 
 const EMPTY_USAGE: LanguageModelV4Usage = {
@@ -93,6 +110,15 @@ export interface CoderLanguageModelConfig {
    * `abortSignal: AbortSignal.timeout(ms)`. Unset or non-positive means no limit.
    */
   requestTimeoutMs?: number;
+  /**
+   * Observability hook: receives this model's `segment:*` transport events
+   * (turn-segment start/settle with terminal status and timing). HTTP and
+   * WebSocket events are emitted by the {@link CoderChatClient} — pass the
+   * hook to its options too (CoderAgent wires both from one setting).
+   * Exceptions it throws are swallowed; without it, no event objects are
+   * allocated. See {@link CoderTransportEvent}.
+   */
+  onTransportEvent?: TransportEventHandler;
 }
 
 /**
@@ -135,6 +161,9 @@ export class CoderLanguageModel implements LanguageModelV4 {
   #inFlight = false;
   /** The turn-lifetime event stream, retained across client-tool pauses. */
   #retainedStream: SessionChatStream | undefined;
+  /** Exception-isolated observability emitter for `segment:*` events. */
+  readonly #emitTransportEvent: TransportEventHandler | undefined;
+  #segmentSeq = 0;
 
   constructor(config: CoderLanguageModelConfig) {
     // Fail fast on an incompatible AI SDK major (see peer dependency `ai@^7`).
@@ -142,6 +171,7 @@ export class CoderLanguageModel implements LanguageModelV4 {
     this.#config = config;
     this.modelId = config.model ?? "chatd";
     this.#chatId = config.chatId;
+    this.#emitTransportEvent = safeTransportEmitter(config.onTransportEvent);
   }
 
   get chatId(): string | undefined {
@@ -336,8 +366,112 @@ export class CoderLanguageModel implements LanguageModelV4 {
     return events;
   }
 
+  /**
+   * Wraps {@link #runTurnInner} with `segment:start`/`segment:settle`
+   * observability events. A pure pass-through without a subscriber — no
+   * counters, clocks, or event objects on the unobserved path. The settle
+   * event is emitted in a `finally`, so every started segment settles exactly
+   * once: cleanly (with the terminal status carried by the `finish` part that
+   * streamed through), with an `error` summary, or — when the consumer tears
+   * the stream down mid-segment — with neither. Consumer teardown has two
+   * shapes: a plain generator return (no catch runs), and a
+   * `ReadableStream.cancel()` that {@link doStream} routes through an abort to
+   * unblock a pending socket read — the latter surfaces here as an abort
+   * throw, so `isConsumerCancel` (supplied by `doStream`) reclassifies it as
+   * teardown rather than a failed segment.
+   *
+   * Two more classification wrinkles (review findings):
+   * - a streamed server `error` part is captured BEFORE being yielded —
+   *   `doGenerate()` throws on receiving it and closes this generator without
+   *   another pull, so the catch below never sees that failure;
+   * - the segment's chat id is tracked in `segmentChat` (written by
+   *   {@link #runTurnInner} once known) — a retry-safe stream failure on a
+   *   freshly created chat discards the session (clearing `this.#chatId`)
+   *   before the finally runs, and the settle must still name the chat that
+   *   the preceding `ws:*`/`http:*` events identified.
+   */
   async *#runTurn(
     options: LanguageModelV4CallOptions,
+    isConsumerCancel?: () => boolean,
+  ): AsyncGenerator<LanguageModelV4StreamPart, void, void> {
+    const emit = this.#emitTransportEvent;
+    if (!emit) {
+      yield* this.#runTurnInner(options);
+      return;
+    }
+    const segment = ++this.#segmentSeq;
+    const startedAt = performance.now();
+    const startEvent: SegmentStartTransportEvent = {
+      type: "segment:start",
+      segment,
+      timestamp: Date.now(),
+    };
+    if (this.#chatId !== undefined) startEvent.chatId = this.#chatId;
+    emit(startEvent);
+    const segmentChat: SegmentChatRef = {};
+    let finishReason: LanguageModelV4GenerateResult["finishReason"] | undefined;
+    let failure: unknown;
+    let failed = false;
+    try {
+      for await (const part of this.#runTurnInner(options, segmentChat)) {
+        if (part.type === "finish") finishReason = part.finishReason;
+        else if (part.type === "error" && !failed) {
+          failure = part.error;
+          failed = true;
+        }
+        yield part;
+      }
+    } catch (err) {
+      // An intentional consumer cancel is a teardown, not a failed segment —
+      // even though it reaches the turn as an abort (see the doc comment).
+      if (!isConsumerCancel?.()) {
+        failure = err;
+        failed = true;
+      }
+      throw err;
+    } finally {
+      const settleEvent: SegmentSettleTransportEvent = {
+        type: "segment:settle",
+        segment,
+        durationMs: performance.now() - startedAt,
+        timestamp: Date.now(),
+      };
+      const chatId = segmentChat.chatId ?? this.#chatId;
+      if (chatId !== undefined) settleEvent.chatId = chatId;
+      // A caller abort can also end the segment through generator return()
+      // while suspended at a yield (e.g. the consumer cancels after the abort
+      // with no pull pending) — return() runs this finally WITHOUT the catch
+      // above ever seeing an exception. If the segment would otherwise look
+      // like a teardown but the turn's signal aborted and the consumer did
+      // not initiate it, the abort is the termination source: settle as a
+      // failure with the abort reason.
+      if (!failed && finishReason === undefined && options.abortSignal?.aborted) {
+        if (!isConsumerCancel?.()) {
+          failure = options.abortSignal.reason;
+          failed = true;
+        }
+      }
+      if (failed) {
+        settleEvent.error = {
+          name: failure instanceof Error ? failure.name : "Error",
+          message: failure instanceof Error ? failure.message : String(failure),
+        };
+      }
+      if (finishReason !== undefined) {
+        // finishReason.raw is the translator's terminal chat status. An error
+        // settle keeps it too when the server run itself settled terminally
+        // (`status: "error"` streamed alongside the error part).
+        if (finishReason.raw !== undefined) settleEvent.status = finishReason.raw as ChatStatus;
+        if (!failed) settleEvent.finishReason = finishReason.unified;
+      }
+      emit(settleEvent);
+    }
+  }
+
+  async *#runTurnInner(
+    options: LanguageModelV4CallOptions,
+    /** Observability out-param: the segment's chat id, written once known. */
+    segmentChat?: SegmentChatRef,
   ): AsyncGenerator<LanguageModelV4StreamPart, void, void> {
     // A single model instance owns one chatd session's mutable state, so it is
     // single-flight: reject overlapping turns rather than silently corrupting
@@ -533,6 +667,7 @@ export class CoderLanguageModel implements LanguageModelV4 {
 
       const chatId = this.#chatId as string;
       turnChatId = chatId;
+      if (segmentChat) segmentChat.chatId = chatId;
       // Only messages past the turn's starting cursor belong to this turn —
       // resuming a chat replays earlier turns' messages (usage included), and
       // a mid-turn history reset re-sends them again. Constructing the
@@ -847,7 +982,13 @@ export class CoderLanguageModel implements LanguageModelV4 {
     const abortSignal = options.abortSignal
       ? AbortSignal.any([options.abortSignal, cancelController.signal])
       : cancelController.signal;
-    const gen = this.#runTurn({ ...options, abortSignal });
+    // Observability classification: a segment counts as consumer-cancelled
+    // only when cancel() INITIATED the termination. A caller abort that fired
+    // first is a failure settle even if the consumer also cancels its reader
+    // before the rejection propagates — so record which came first, rather
+    // than whether cancellation ever happened.
+    let consumerCancelled = false;
+    const gen = this.#runTurn({ ...options, abortSignal }, () => consumerCancelled);
     const stream = new ReadableStream<LanguageModelV4StreamPart>({
       async pull(controller) {
         try {
@@ -864,6 +1005,8 @@ export class CoderLanguageModel implements LanguageModelV4 {
         }
       },
       async cancel() {
+        // Only a cancel that beat any caller abort is a teardown (see above).
+        consumerCancelled = !options.abortSignal?.aborted;
         cancelController.abort();
         await gen.return().catch(() => {});
       },

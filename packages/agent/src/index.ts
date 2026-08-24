@@ -62,6 +62,21 @@ export {
   type WebSocketLike,
 } from "./coder/ws.js";
 export { CoderAgentError, CoderApiError, CoderChatError, CoderStreamError } from "./errors.js";
+export type {
+  CoderTransportEvent,
+  HttpErrorTransportEvent,
+  HttpRequestTransportEvent,
+  HttpResponseTransportEvent,
+  SegmentSettleTransportEvent,
+  SegmentStartTransportEvent,
+  StreamCloseTransportEvent,
+  StreamDialTransportEvent,
+  StreamErrorTransportEvent,
+  StreamEventTransportEvent,
+  StreamOpenTransportEvent,
+  StreamRedialTransportEvent,
+  TransportEventHandler,
+} from "./transport-events.js";
 // Runtime constants (the `export type *` below only re-exports types).
 export {
   CHAT_ATTACHMENT_MEDIA_TYPES,

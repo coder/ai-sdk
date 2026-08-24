@@ -115,6 +115,112 @@ createCoder({
 | `providers`     | `{ openai?, anthropic? }` | `openai` / `anthropic` | Override the admin-configured provider path segments.                                                 |
 | `fetch`         | `typeof fetch`            | global `fetch`         | Custom fetch (testing / middleware).                                                                  |
 
+## Enterprise governance & security
+
+Reference for security reviewers evaluating this package. The boundary between
+the two kinds of claims below matters: **client behavior** (what this package
+puts on the wire) is verifiable in [`src/provider.ts`](./src/provider.ts) —
+~175 lines with no dependencies beyond the official AI SDK provider packages —
+while **gateway behavior** (key custody, audit capture, retention) is a
+property of your Coder deployment, enforced server-side regardless of what any
+client does, and documented in the
+[AI Gateway docs](https://coder.com/docs/ai-coder/ai-gateway).
+
+### Data flow
+
+```text
+your app ──HTTPS──▶ your Coder deployment ──▶ upstream provider
+ (this package)     (AI Gateway intercepts    (Anthropic, OpenAI,
+                     /api/v2/aibridge/…)       Bedrock, Copilot, …)
+```
+
+**What leaves your app.** This package's only network destination is the
+`baseURL` you configure. It never contacts upstream vendors directly and adds
+no telemetry of its own; each request is exactly what the AI SDK builds for a
+normal provider call:
+
+- **URL** — `POST <baseURL>/api/v2/aibridge/<provider>/v1/chat/completions`
+  (OpenAI surface; `…/v1/embeddings` for `textEmbeddingModel`) or
+  `…/v1/messages` (Anthropic surface). `/api/v2/aibridge` is this package's
+  default; deployments also serve the post-rename alias `/api/v2/ai-gateway`
+  (see `aiGatewayPath`).
+- **Auth headers** — per the mode matrix below.
+- **Body** — standard OpenAI-/Anthropic-format JSON: the model id (passed
+  through unchanged), your full prompt/message content, tool definitions, and
+  sampling parameters. Prompt content is visible to the Gateway — that is what
+  enables auditing.
+- Anything you add via the `headers` option.
+
+**What the Gateway does before forwarding** _(server-side —
+[authentication docs](https://coder.com/docs/ai-coder/ai-gateway/auth))_: it
+authenticates the token as an active Coder user and rejects the request
+outright when it is missing or invalid (nothing is forwarded upstream), strips
+all Coder credentials from the outbound request, and attaches the upstream
+credential for the mode in use.
+
+### Credential isolation: centralized vs. BYOK
+
+|                                 | **Centralized (default)**                                             | **BYOK**                                                                                                                                 |
+| ------------------------------- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| Your app holds                  | Coder API token only                                                  | Coder API token **+** the user's own upstream key                                                                                        |
+| On the wire                     | `Authorization: Bearer <Coder token>` (both surfaces)                 | `X-Coder-AI-Governance-Token: <Coder token>`; upstream key in `Authorization: Bearer` (OpenAI surface) / `x-api-key` (Anthropic surface) |
+| Upstream provider keys live     | On the deployment, admin-configured — never distributed to developers | With the individual user; forwarded per request, bypassing the deployment's central key pool                                             |
+| Coder token forwarded upstream? | **No** — stripped and replaced by the deployment's provider key       | **No** — the governance header is stripped before forwarding                                                                             |
+| Admin control                   | Provider and key configuration, rotation, failover                    | Can be disabled deployment-wide (`CODER_AI_GATEWAY_ALLOW_BYOK=false` rejects requests carrying the governance header with `403`)         |
+
+Both modes are audited identically: audit records store _which credential
+kind_ was used (`centralized` / `byok`), not the credential itself.
+
+### Audit capture
+
+Every request is attributed to the Coder user whose token authenticated it —
+per user, per request, in both modes. Per intercepted request the Gateway
+records _(server-side —
+[audit docs](https://coder.com/docs/ai-coder/ai-gateway/audit))_:
+
+- **Identity & metadata** — initiating user, provider, model, client,
+  credential kind, timestamps.
+- **Last user prompt** — earlier turns and system prompts are not stored.
+- **Token usage** — input / output / cache counts.
+- **Tool calls** — tool name and arguments; tool _results_ are not stored.
+- **Model reasoning** — extended-thinking / reasoning-summary content when
+  present.
+
+Model-generated response text is **discarded**, not stored. Retention defaults
+to **60 days** and is configurable (`CODER_AI_GATEWAY_RETENTION`; `0` keeps
+data indefinitely). Auditors browse sessions and causal tool-call chains in
+the deployment dashboard under `/ai-gateway/sessions`.
+
+### Required Coder permissions
+
+| To…                                          | You need                                                                                                                                                      |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Send requests through the Gateway            | An active Coder user with a valid API token — no extra role. (RBAC: members hold create/update on `aibridge_interception`, i.e. recording their own traffic.) |
+| Read audit data (prompts, tool calls, usage) | The **Owner** or **Auditor** role. Regular members cannot read interceptions back — not even their own.                                                       |
+| Configure providers / keys, toggle BYOK      | Deployment administrator (server flags / deployment configuration).                                                                                           |
+| Use the feature at all                       | A deployment licensed for [AI Governance](https://coder.com/docs/ai-coder/ai-governance) — the Gateway is license-gated server-side.                          |
+
+### Security FAQ
+
+- **Does prompt data ever go anywhere other than my deployment?** Not from
+  this package — the only host it contacts is `baseURL`. Onward traffic to the
+  upstream vendor originates from your deployment (or its standalone gateway
+  replicas), using the providers your admins configured.
+- **Do developers ever handle raw provider keys?** Centralized mode: no —
+  developers only ever hold a Coder token. BYOK mode: they supply their own
+  personal key, which is forwarded per request without entering central custody.
+- **What is the blast radius of a leaked Coder token?** It cannot authenticate
+  to upstream vendors — the Gateway strips it and it never leaves your
+  deployment. Until revoked or expired it can spend AI usage through your
+  Gateway, fully attributed to that user; revoke it like any Coder API token.
+- **Is model output stored?** No — assistant-generated text is discarded.
+  Auditing keeps the last user prompt, token counts, tool-call arguments, and
+  model reasoning.
+- **Can I verify the client claims myself?** Yes: [`src/provider.ts`](./src/provider.ts)
+  is the entire wire-facing surface, and
+  [`test/provider.test.ts`](./test/provider.test.ts) asserts every URL and
+  header this package emits.
+
 ## Examples
 
 Runnable scripts live in [`examples/`](./examples) (run against a real deployment via `tsx`):

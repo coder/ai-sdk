@@ -93,6 +93,8 @@ function harness(config?: {
   withoutHook?: boolean;
   /** Make the WebSocket factory itself throw synchronously on every dial. */
   throwOnDial?: boolean;
+  /** Per-segment time budget passed to the model (settle classification, #73). */
+  requestTimeoutMs?: number;
 }) {
   const events: CoderTransportEvent[] = [];
   const onTransportEvent = config?.withoutHook
@@ -131,7 +133,14 @@ function harness(config?: {
     webSocketFactory: factory,
     onTransportEvent,
   });
-  const model = new CoderLanguageModel({ client, organizationId: "org-1", onTransportEvent });
+  const model = new CoderLanguageModel({
+    client,
+    organizationId: "org-1",
+    onTransportEvent,
+    ...(config?.requestTimeoutMs !== undefined
+      ? { requestTimeoutMs: config.requestTimeoutMs }
+      : {}),
+  });
   return { events, model, client, sockets, fetchCalls };
 }
 
@@ -741,7 +750,7 @@ describe("transport events: isolation and overhead", () => {
     expect(safeTransportEmitter(undefined)).toBeUndefined();
   });
 
-  it("a streamed server error settles the segment as a failure via doGenerate", async () => {
+  it("a streamed server error settles with error AND the frame-batched terminal status via doGenerate", async () => {
     vi.useFakeTimers();
     try {
       const { events, model, sockets } = harness();
@@ -774,6 +783,10 @@ describe("transport events: isolation and overhead", () => {
         message: "provider exploded",
       });
       expect(settle.chatId).toBe("chat-1");
+      // #72: the terminal `status: "error"` shared the WS frame with the
+      // error event — the settle must carry it even though the finish part
+      // never reached the consumer.
+      expect(settle.status).toBe("error");
     } finally {
       vi.useRealTimers();
     }
@@ -913,6 +926,39 @@ describe("transport events: isolation and overhead", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("requestTimeoutMs expiry on a suspended generator (cancel with no pending pull) settles as a timeout", async () => {
+    // Real timers: AbortSignal.timeout is not under vitest's fake-timer control.
+    const { events, model, sockets, fetchCalls } = harness({ requestTimeoutMs: 100 });
+    const { stream } = await model.doStream(newTurnOptions());
+    const reader = (stream as ReadableStream<unknown>).getReader();
+    const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await reader.read(); // stream-start
+    const second = reader.read(); // drives the REST phase, the dial, and the first stream read
+    await tick();
+    sockets[0]?.emit("message", streamFrame(status("running"), delta(1, 1, "Hel")));
+    // text-start arrives; the generator now sits suspended yielding text-delta.
+    expect(await second).toMatchObject({ value: { type: "text-start" } });
+    // The internal requestTimeoutMs budget expires with NO pull pending: it
+    // interrupts the server run, but no read observes the rejection.
+    await new Promise<void>((resolve) => setTimeout(resolve, 250));
+    expect(fetchCalls.some((c) => c.includes("/interrupt"))).toBe(true);
+    // The consumer then cancels — gen.return() runs the wrapper's finally
+    // without any catch. The settle must name the TIMEOUT as the termination
+    // source (issue #73), not pass as a consumer teardown.
+    await reader.cancel();
+    const settle = events.find((e) => e.type === "segment:settle") as Extract<
+      CoderTransportEvent,
+      { type: "segment:settle" }
+    >;
+    expect(settle).toBeDefined();
+    expect(settle.error).toMatchObject({
+      name: "CoderChatError",
+      message: expect.stringContaining("requestTimeoutMs") as unknown,
+    });
+    expect(settle.status).toBeUndefined();
+    expect(settle.finishReason).toBeUndefined();
   });
 
   it("an aborted segment settles with the abort error", async () => {

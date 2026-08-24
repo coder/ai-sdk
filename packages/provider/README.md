@@ -224,9 +224,12 @@ the deployment dashboard under `/ai-gateway/sessions`.
   permissions** (workspaces, templates, and anything else that user's roles
   allow), and, until revoked or expired, AI usage through your Gateway (fully
   attributed to that user). What it can _not_ do is authenticate to upstream
-  vendors: the Gateway strips it and it never leaves your deployment. Treat a
-  leak as a Coder account compromise — revoke the token — and prefer
-  short-lived, dedicated tokens for AI workloads.
+  vendors: under normal Gateway forwarding it is stripped and does not leave
+  your deployment (the cross-origin-redirect caveat above is the exception —
+  a redirect can resend non-`Authorization` headers, including the governance
+  header, before the Gateway ever sees them). Treat a leak as a Coder account
+  compromise — revoke the token — and prefer short-lived, dedicated tokens
+  for AI workloads.
 - **Is model-generated content stored?** Partially. Assistant _response text_
   is discarded, but two model-generated artifacts are retained for auditing:
   reasoning content (extended thinking / reasoning summaries) and tool-call

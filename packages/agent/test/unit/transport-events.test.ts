@@ -882,6 +882,39 @@ describe("transport events: isolation and overhead", () => {
     }
   });
 
+  it("a caller abort on a suspended generator (cancel with no pending pull) settles as a failure", async () => {
+    vi.useFakeTimers();
+    try {
+      const { events, model } = harness();
+      const controller = new AbortController();
+      const { stream } = await model.doStream({
+        prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        abortSignal: controller.signal,
+      } as never);
+      const reader = (stream as ReadableStream<unknown>).getReader();
+      await vi.advanceTimersByTimeAsync(0);
+      // The generator sits suspended at a yielded part (stream-start was
+      // pulled into the queue; no read is pending). The caller aborts, then
+      // the consumer cancels — cancel() runs gen.return(), which executes
+      // the wrapper's finally WITHOUT any catch. The settle must still be
+      // failure-shaped: the abort initiated the termination.
+      controller.abort();
+      await reader.cancel();
+      await vi.advanceTimersByTimeAsync(0);
+
+      const settle = events.find((e) => e.type === "segment:settle") as Extract<
+        CoderTransportEvent,
+        { type: "segment:settle" }
+      >;
+      expect(settle).toBeDefined();
+      expect(settle.error?.name).toBe("AbortError");
+      expect(settle.status).toBeUndefined();
+      expect(settle.finishReason).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("an aborted segment settles with the abort error", async () => {
     vi.useFakeTimers();
     try {

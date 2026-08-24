@@ -438,6 +438,19 @@ export class CoderLanguageModel implements LanguageModelV4 {
       };
       const chatId = segmentChat.chatId ?? this.#chatId;
       if (chatId !== undefined) settleEvent.chatId = chatId;
+      // A caller abort can also end the segment through generator return()
+      // while suspended at a yield (e.g. the consumer cancels after the abort
+      // with no pull pending) — return() runs this finally WITHOUT the catch
+      // above ever seeing an exception. If the segment would otherwise look
+      // like a teardown but the turn's signal aborted and the consumer did
+      // not initiate it, the abort is the termination source: settle as a
+      // failure with the abort reason.
+      if (!failed && finishReason === undefined && options.abortSignal?.aborted) {
+        if (!isConsumerCancel?.()) {
+          failure = options.abortSignal.reason;
+          failed = true;
+        }
+      }
       if (failed) {
         settleEvent.error = {
           name: failure instanceof Error ? failure.name : "Error",

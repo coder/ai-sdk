@@ -675,6 +675,35 @@ describe("CoderChatClient.streamEvents (redial)", () => {
     }
   });
 
+  it("does not redial after deltas without episode coordinates (older servers)", async () => {
+    const { c, sockets } = streamClient();
+    const iter = c.streamEvents("c1");
+    const p1 = iter.next();
+    await tick();
+    // A delta missing history_version/generation_attempt/seq cannot be deduped
+    // on replay — a redial would double-emit it — so a later drop must be
+    // terminal (the pre-redial behavior), not resumed. It must not count as
+    // budget-resetting progress either.
+    sockets[0]?.emit("message", {
+      data: JSON.stringify([
+        {
+          type: "message_part",
+          chat_id: "c1",
+          message_part: { role: "assistant", part: { type: "text", text: "Hel" } },
+        },
+      ]),
+    });
+    expect((await p1).value).toMatchObject({ type: "message_part" });
+    const p2 = iter.next();
+    await tick();
+    sockets[0]?.emit("close", { code: 1006 });
+    await expect(p2).rejects.toMatchObject({
+      name: "CoderAgentError",
+      message: expect.stringContaining("cannot be resumed"),
+    });
+    expect(sockets).toHaveLength(1);
+  });
+
   it("throws a terminal error on an unparseable frame instead of replaying it forever", async () => {
     const { c, sockets } = streamClient();
     const iter = c.streamEvents("c1");

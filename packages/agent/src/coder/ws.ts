@@ -87,13 +87,15 @@ const TRANSIENT_UPGRADE_STATUSES: ReadonlySet<number> = new Set([408, 425, 429])
  * dedupes). On reconnect chatd replays the in-progress generation attempt's
  * `message_part` deltas from `seq` 1, so parts of an episode
  * (`history_version`, `generation_attempt`) at or below the last yielded `seq`
- * are suppressed here rather than double-yielded. The iteration ends in four
+ * are suppressed here rather than double-yielded. The iteration ends in five
  * ways: `signal` aborting (clean return), a non-transient 4xx upgrade
  * rejection (terminal {@link CoderApiError} — bad/expired token or a deleted
  * chat cannot succeed on retry, while 408/425/429 consume the redial budget),
  * an unparseable frame (terminal {@link CoderAgentError} — a redial would
- * replay the same frame forever), or the redial budget running out (a
- * retryable {@link CoderStreamError}).
+ * replay the same frame forever), a drop after deltas WITHOUT episode
+ * coordinates (older chatd; terminal {@link CoderAgentError}, because a replay
+ * could not be deduped and would double-emit), or the redial budget running
+ * out (a retryable {@link CoderStreamError}).
  */
 export async function* streamChatEvents(
   options: StreamChatEventsOptions,
@@ -107,11 +109,14 @@ export async function* streamChatEvents(
   // Redial cursor — see the doc comment above.
   let cursor = options.afterId;
   // Last yielded delta position, for suppressing chatd's from-the-start replay
-  // of the in-progress episode after a redial. Absent fields (older servers)
-  // disable suppression rather than guessing.
+  // of the in-progress episode after a redial.
   let lastHistoryVersion: number | undefined;
   let lastGenerationAttempt: number | undefined;
   let lastSeq: number | undefined;
+  // Deltas missing those coordinates (older servers) cannot be deduped on
+  // replay: seeing one makes any later drop terminal instead of redialed —
+  // the pre-redial behavior — because a replay would double-emit them.
+  let sawUntrackableDelta = false;
 
   let backoffMs = STREAM_BACKOFF_INITIAL_MS;
   let failures = 0;
@@ -227,8 +232,12 @@ export async function* streamChatEvents(
               lastHistoryVersion = hv;
               lastGenerationAttempt = ga;
               lastSeq = seq;
+              progress = true;
+            } else {
+              // No episode coordinates: cannot be deduped on replay, so it
+              // must not count as progress and disables redial (see below).
+              sawUntrackableDelta = true;
             }
-            progress = true;
           } else if (next.type === "message" && next.message) {
             if (cursor === undefined || next.message.id > cursor) {
               cursor = next.message.id;
@@ -268,6 +277,12 @@ export async function* streamChatEvents(
     // frame forever.
     if (failure instanceof CoderApiError) throw failure;
     if (parseFailure && failure) throw failure;
+    if (sawUntrackableDelta) {
+      throw new CoderAgentError(
+        "chat stream dropped mid-turn and cannot be resumed: this server does not stamp deltas with history_version/generation_attempt/seq, so a redial would replay them",
+        { cause: failure },
+      );
+    }
     if (failure) lastFailure = failure;
     if (!progressed) {
       failures += 1;

@@ -68,13 +68,27 @@ function startGraceTimer(ms: number) {
 }
 
 /**
- * Observability out-param threaded from the `segment:*` wrapper into
- * `#runTurnInner`: records the segment's chat id once known, surviving a
- * session discard (`resetSession()`) that clears the instance field before
- * the settle event is emitted.
+ * Observability out-params threaded from the `segment:*` wrapper into
+ * `#runTurnInner`, read by the wrapper's `finally` for settle classification
+ * on paths where the inner generator is closed without delivering its normal
+ * terminal parts:
+ * - `chatId`: the segment's chat id once known, surviving a session discard
+ *   (`resetSession()`) that clears the instance field before the settle
+ *   event is emitted;
+ * - `terminalStatus`: the translator's terminal chat status, for a settle
+ *   whose `finish` part never reached the wrapper — `doGenerate()` throws on
+ *   a streamed error part and closes the generator before `finish()` runs
+ *   (issue #72);
+ * - `timeoutError`: set when the turn's internal `requestTimeoutMs` signal
+ *   fired. That signal is created inside the turn and is invisible to the
+ *   wrapper, so a `gen.return()` teardown (consumer cancel with no pull
+ *   pending) would otherwise misclassify the timeout as a consumer teardown
+ *   (issue #73).
  */
 interface SegmentChatRef {
   chatId?: string;
+  terminalStatus?: ChatStatus;
+  timeoutError?: CoderChatError;
 }
 
 const EMPTY_USAGE: LanguageModelV4Usage = {
@@ -388,7 +402,9 @@ export class CoderLanguageModel implements LanguageModelV4 {
    *   {@link #runTurnInner} once known) — a retry-safe stream failure on a
    *   freshly created chat discards the session (clearing `this.#chatId`)
    *   before the finally runs, and the settle must still name the chat that
-   *   the preceding `ws:*`/`http:*` events identified.
+   *   the preceding `ws:*`/`http:*` events identified. The same out-param
+   *   carries the translator's terminal status and the internal-timeout
+   *   marker for generator-return exits (see {@link SegmentChatRef}).
    */
   async *#runTurn(
     options: LanguageModelV4CallOptions,
@@ -438,15 +454,21 @@ export class CoderLanguageModel implements LanguageModelV4 {
       };
       const chatId = segmentChat.chatId ?? this.#chatId;
       if (chatId !== undefined) settleEvent.chatId = chatId;
-      // A caller abort can also end the segment through generator return()
-      // while suspended at a yield (e.g. the consumer cancels after the abort
-      // with no pull pending) — return() runs this finally WITHOUT the catch
-      // above ever seeing an exception. If the segment would otherwise look
-      // like a teardown but the turn's signal aborted and the consumer did
-      // not initiate it, the abort is the termination source: settle as a
-      // failure with the abort reason.
-      if (!failed && finishReason === undefined && options.abortSignal?.aborted) {
-        if (!isConsumerCancel?.()) {
+      // An abort or timeout can also end the segment through generator
+      // return() while suspended at a yield (e.g. the consumer cancels after
+      // the abort with no pull pending) — return() runs this finally WITHOUT
+      // the catch above ever seeing an exception. If the segment would
+      // otherwise look like a teardown, classify by termination source:
+      // - the turn's internal requestTimeoutMs having fired wins (it already
+      //   interrupted the server run, and it is invisible to both the
+      //   caller's signal and the consumer-cancel probe — issue #73);
+      // - otherwise a caller abort the consumer did not initiate settles as
+      //   a failure with the abort reason.
+      if (!failed && finishReason === undefined) {
+        if (segmentChat.timeoutError) {
+          failure = segmentChat.timeoutError;
+          failed = true;
+        } else if (options.abortSignal?.aborted && !isConsumerCancel?.()) {
           failure = options.abortSignal.reason;
           failed = true;
         }
@@ -463,6 +485,12 @@ export class CoderLanguageModel implements LanguageModelV4 {
         // (`status: "error"` streamed alongside the error part).
         if (finishReason.raw !== undefined) settleEvent.status = finishReason.raw as ChatStatus;
         if (!failed) settleEvent.finishReason = finishReason.unified;
+      } else if (segmentChat.terminalStatus !== undefined) {
+        // The finish part never reached this wrapper — doGenerate() throws on
+        // a streamed error part and closes the generator without another pull
+        // — but the translator still observed the terminal status batched
+        // behind the error in the same frame (issue #72).
+        settleEvent.status = segmentChat.terminalStatus;
       }
       emit(settleEvent);
     }
@@ -540,13 +568,15 @@ export class CoderLanguageModel implements LanguageModelV4 {
     // `timeoutSignal` having fired means a per-turn timeout; otherwise it's a
     // caller abort, re-thrown as the caller's reason (preserving AbortError so the
     // AI SDK still recognizes the cancellation).
+    const timeoutError = (): CoderChatError =>
+      new CoderChatError({
+        message: `Coder Agent turn exceeded its ${timeoutMs}ms requestTimeoutMs budget.`,
+        kind: "timeout",
+        retryable: true,
+      });
     const throwIfAborted = (): void => {
       if (timeoutSignal?.aborted) {
-        throw new CoderChatError({
-          message: `Coder Agent turn exceeded its ${timeoutMs}ms requestTimeoutMs budget.`,
-          kind: "timeout",
-          retryable: true,
-        });
+        throw timeoutError();
       }
       if (signal?.aborted) {
         throw (
@@ -594,6 +624,9 @@ export class CoderLanguageModel implements LanguageModelV4 {
       // Either way its tools can have non-idempotent effects a replay would
       // repeat.
       let chatHasWorkspace = Boolean(this.#config.workspaceId);
+      // Same for chatd-side MCP servers: configured OR auto-attached by the
+      // deployment (createChat's response `mcp_server_ids` says — issue #58).
+      let chatHasMcpServers = Boolean(this.#config.mcpServerIds?.length);
 
       // A fresh instance resuming an existing chat (config.chatId) has no
       // message cursor yet. Without one, a queued submission or a tool-result
@@ -639,6 +672,7 @@ export class CoderLanguageModel implements LanguageModelV4 {
           this.#chatId = chat.id;
           turnCreatedChat = true;
           if (chat.workspace_id) chatHasWorkspace = true;
+          if (chat.mcp_server_ids?.length) chatHasMcpServers = true;
           afterId = this.#lastSeenMessageId > 0 ? this.#lastSeenMessageId : undefined;
         } else {
           const resp = await this.#config.client.createChatMessage(
@@ -803,7 +837,32 @@ export class CoderLanguageModel implements LanguageModelV4 {
           }
           stream.consumed(next);
           if (raced.done) break;
-          for (const part of translator.ingest(raced.value)) yield part;
+          const parts = translator.ingest(raced.value);
+          if (raced.value.type === "error" && translator.error && !translator.terminalStatus) {
+            // chatd batches the terminal `status: "error"` right behind the
+            // `error` event in the same WS frame, but a doGenerate() consumer
+            // throws on the error part yielded below and closes this
+            // generator without another pull — the settle event would then
+            // omit a terminal status that was already decoded (issue #72).
+            // Peek ONE more event, bounded by a 0ms timer: an event buffered
+            // from the same frame resolves in microtasks (the reader yields
+            // batched events without awaiting in between), which always beats
+            // the macrotask timer, while a quiet socket costs a single timer
+            // tick on an already-failing turn. A peek that loses (or rejects)
+            // stays memoized on the stream — the next iteration adopts it,
+            // so no event or failure is ever dropped.
+            const peek = stream.read();
+            const bound = startGraceTimer(0);
+            const peeked = await raceSegment(Promise.race([peek, bound.expired])).catch(
+              (): typeof GRACE_EXPIRED => GRACE_EXPIRED,
+            );
+            bound.cancel();
+            if (peeked !== GRACE_EXPIRED && peeked !== SEGMENT_ABORTED && !peeked.done) {
+              stream.consumed(peek);
+              parts.push(...translator.ingest(peeked.value));
+            }
+          }
+          for (const part of parts) yield part;
           const status = translator.terminalStatus;
           if (status) {
             if (status !== "requires_action") break;
@@ -860,8 +919,7 @@ export class CoderLanguageModel implements LanguageModelV4 {
             // must not attach to it either.
             discardSession = true;
           }
-          const effectful =
-            chatHasWorkspace || Boolean(this.#config.mcpServerIds?.length) || uploadedAttachment;
+          const effectful = chatHasWorkspace || chatHasMcpServers || uploadedAttachment;
           if (turnCreatedChat && !effectful) throw err;
           throw new CoderStreamError({
             message: `${err.message}; automatic retry is disabled because ${
@@ -944,6 +1002,15 @@ export class CoderLanguageModel implements LanguageModelV4 {
       // same chat doesn't re-read messages already streamed this turn.
       if (translator && translator.maxMessageId > this.#lastSeenMessageId)
         this.#lastSeenMessageId = translator.maxMessageId;
+      // Settle-time observability out-params (see SegmentChatRef): the
+      // segment wrapper's finally runs after this one and reads them for
+      // classification on generator-return exits.
+      if (segmentChat) {
+        if (translator?.terminalStatus !== undefined) {
+          segmentChat.terminalStatus = translator.terminalStatus;
+        }
+        if (timeoutSignal?.aborted) segmentChat.timeoutError = timeoutError();
+      }
       signal?.removeEventListener("abort", interrupt);
       // Teardown of an unsettled turn — stream cancel(), premature close, or an
       // abort the listener didn't cover — interrupt the server so it stops.

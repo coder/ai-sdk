@@ -137,9 +137,7 @@ function harness(config?: {
     client,
     organizationId: "org-1",
     onTransportEvent,
-    ...(config?.requestTimeoutMs !== undefined
-      ? { requestTimeoutMs: config.requestTimeoutMs }
-      : {}),
+    requestTimeoutMs: config?.requestTimeoutMs,
   });
   return { events, model, client, sockets, fetchCalls };
 }

@@ -86,24 +86,13 @@ describe("SessionChatStream", () => {
     expect(stream.canAttach("chat-1")).toBe(false); // attached again
   });
 
-  it("a detached (aborted) stream is never reusable but stays open until close()", async () => {
+  it("close() settles an abandoned read from an aborted segment", async () => {
     const { chan, stream } = make();
     const abandoned = stream.read(); // the aborted segment's raced-out read
-    stream.detach();
-    expect(stream.canAttach("chat-1")).toBe(false);
-    expect(() => stream.attach()).toThrow(/non-reusable/);
-    expect(chan.ended).toBe(false); // detach does NOT close the socket
-    // The abandoned read survives the detach (memoized, rejection-tagged)…
-    expect(stream.read()).toBe(abandoned);
+    expect(chan.ended).toBe(false);
     await stream.close();
     expect(chan.ended).toBe(true);
-    expect((await abandoned).done).toBe(true); // …and is settled by the close
-  });
-
-  it("rejects a fresh read on a detached stream (reads belong to segments)", () => {
-    const { stream } = make();
-    stream.detach(); // no read outstanding
-    expect(() => stream.read()).toThrow(/without an attached segment/);
+    expect((await abandoned).done).toBe(true);
   });
 
   it("pause() leaves a prefetched read outstanding so buffered events survive the gap", async () => {

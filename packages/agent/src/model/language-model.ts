@@ -46,9 +46,9 @@ const GRACE_EXPIRED = Symbol("action-required-grace-expired");
 /**
  * Sentinel resolved when the SEGMENT's abort signal fires. Segment reads race
  * this against the shared stream instead of wiring the signal into the stream
- * itself: an aborted or timed-out segment detaches, while the retained socket
- * stays open for the session close policy (teardown / terminal settle /
- * replacement) to deal with.
+ * itself: the stream's fate is a session policy decided at segment exit (a
+ * healthy client-tool pause survives its segment; every other exit closes the
+ * stream), never a side effect of signal chaining.
  */
 const SEGMENT_ABORTED = Symbol("segment-aborted");
 
@@ -114,11 +114,11 @@ export interface CoderLanguageModelConfig {
  * The session retains ONE event stream per turn (issue #44): a segment that
  * pauses for client tools leaves the WebSocket open, and the tool-result
  * resume segment keeps reading it — no re-dial per tool round trip. The
- * socket closes when the turn settles terminally, on a fatal stream error,
- * when the next turn replaces it, or on session teardown (`resetSession()` /
- * `[Symbol.asyncDispose]()`). A turn abandoned between segments (aborted,
- * timed out, or never resumed after a pause) leaves the socket open until one
- * of those, so dispose or reset sessions you are done with.
+ * socket closes when its segment ends any other way (terminal settle, error,
+ * abort, timeout), when the next turn replaces it, or on session teardown
+ * (`resetSession()` / `[Symbol.asyncDispose]()`). A turn that pauses for
+ * client tools but never resumes leaves the socket open until teardown, so
+ * dispose or reset sessions you abandon mid-turn.
  */
 export class CoderLanguageModel implements LanguageModelV4 {
   readonly specificationVersion = "v4" as const;
@@ -164,10 +164,11 @@ export class CoderLanguageModel implements LanguageModelV4 {
 
   /**
    * Closes the retained event stream, if any. The stream otherwise closes
-   * when its turn settles terminally or when the next turn replaces it — but
-   * a turn abandoned between segments (aborted, timed out, or never resumed
-   * after a client-tool pause) leaves the socket open, so dispose (`await
-   * using`) or {@link resetSession} sessions you are done with.
+   * when its turn settles or fails, or when the next turn replaces it — but a
+   * turn that pauses for client tools and never resumes (e.g. the caller
+   * stopped the tool loop, or aborted between segments) leaves the socket
+   * open, so dispose (`await using`) or {@link resetSession} sessions you
+   * abandon mid-turn.
    */
   async [Symbol.asyncDispose](): Promise<void> {
     const stream = this.#retainedStream;
@@ -179,9 +180,9 @@ export class CoderLanguageModel implements LanguageModelV4 {
    * The stream a segment reads: a resume segment re-attaches to the stream
    * its predecessor left paused at `requires_action` (the whole point of
    * retention — no re-dial per tool round trip); everything else — a new
-   * turn, or a stream a previous segment left detached (aborted/timed out) —
-   * replaces it with a fresh dial, because a stale buffer from a settle this
-   * client never observed must not leak into the new turn.
+   * turn, or a pause the caller abandoned — replaces it with a fresh dial,
+   * because a stale buffer from a settle this client never observed must not
+   * leak into the new turn.
    */
   #acquireStream(resume: boolean, chatId: string, afterId: number | undefined): SessionChatStream {
     const retained = this.#retainedStream;
@@ -718,19 +719,19 @@ export class CoderLanguageModel implements LanguageModelV4 {
         // makes this a no-op; the fetch rejection resolves to [] above.)
         recoveryAbort?.abort();
         if (signal && onSegmentAbort) signal.removeEventListener("abort", onSegmentAbort);
-        // The stream's fate, by exit kind:
-        //  - healthy client-tool pause → retained (paused) for the resume
-        //    segment, with a read outstanding so a drop during tool execution
-        //    redials in the background;
-        //  - segment abort/timeout → detached WITHOUT closing: the socket
-        //    belongs to the session close policy (teardown, or replacement by
-        //    the next segment), not to the segment's signal;
-        //  - everything else (terminal settle, error settle, fatal stream
-        //    error, premature end, consumer teardown mid-loop) → closed.
+        // The stream's fate, by exit kind: a healthy client-tool pause
+        // retains it (paused) for the resume segment, with a read outstanding
+        // so a drop during tool execution redials in the background; every
+        // other exit — terminal settle, error settle, fatal stream error,
+        // premature end, consumer teardown mid-loop, abort/timeout — closes
+        // it. An aborted segment's stream could never be reused anyway (its
+        // half-consumed in-progress episode cannot be re-read), so leaving it
+        // open would only leak the socket until session teardown. Note the
+        // close is still a policy decision made HERE, not signal-chaining:
+        // the segment's signal never reaches the shared stream, which is what
+        // lets the healthy pause outlive its segment.
         if (retainStream && !stream.closed) {
           stream.pause();
-        } else if (signal?.aborted && !stream.closed) {
-          stream.detach();
         } else {
           await this.#closeStream(stream);
         }

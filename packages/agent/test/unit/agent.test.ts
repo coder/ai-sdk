@@ -1980,7 +1980,7 @@ describe("CoderLanguageModel stream reuse across segments (#44)", () => {
     }
   });
 
-  it("a per-segment abort detaches without closing the shared socket; the next turn replaces it", async () => {
+  it("a per-segment abort closes the shared socket (never reusable); the next turn dials fresh", async () => {
     vi.useFakeTimers();
     try {
       const { model, sockets, fetchCalls } = redialModel();
@@ -1996,19 +1996,17 @@ describe("CoderLanguageModel stream reuse across segments (#44)", () => {
 
       abort.abort();
       expect(await err1).toMatchObject({ name: "AbortError" });
-      // The abort detached the segment: the server run was interrupted, but
-      // the shared socket was NOT closed (session close policy owns it).
+      // The abort interrupted the server run AND closed the retained socket:
+      // its half-read episode could never be reused, so keeping it open would
+      // only leak the connection until session teardown.
       await vi.advanceTimersByTimeAsync(0);
       expect(fetchCalls.filter((c) => c.includes("/interrupt"))).toHaveLength(1);
-      expect(sockets[0]?.closed).toBe(false);
+      expect(sockets[0]?.closed).toBe(true);
 
-      // The next turn must NOT attach to the detached stream (its half-read
-      // episode is unusable): it replaces it — closing the old socket — and
-      // dials fresh; no stale content leaks into the new turn.
+      // The next turn dials fresh; no stale content leaks into it.
       const s2 = collect((await model.doStream(newTurnOptions())).stream);
       await vi.advanceTimersByTimeAsync(0);
       expect(sockets).toHaveLength(2);
-      expect(sockets[0]?.closed).toBe(true);
       sockets[1]?.emit(
         "message",
         streamFrame(

@@ -25,13 +25,13 @@ import type { ChatStreamEvent } from "../coder/types.js";
  *   resolves with is delivered, never dropped.
  * - Lifecycle is a small state machine: `attached` (a segment is consuming) →
  *   {@link pause} on a healthy `requires_action` settle (reusable by the
- *   resume segment) or {@link detach} on an aborted/timed-out segment (kept
- *   open per the session close policy, but never reusable — a partially
- *   consumed in-progress episode cannot be safely re-read) → {@link attach}
- *   or {@link close}. Closing is idempotent and is the ONLY way the socket
- *   ends: session teardown (`resetSession()` / `[Symbol.asyncDispose]()`),
- *   a fatal stream error, a terminal turn status, or replacement by the next
- *   turn's fresh stream.
+ *   resume segment) → {@link attach} or {@link close}. Every other segment
+ *   exit closes the stream — an aborted/timed-out segment's stream could
+ *   never be reused (its partially consumed in-progress episode cannot be
+ *   safely re-read), so it is not kept. Closing is idempotent; the socket
+ *   also ends on session teardown (`resetSession()` /
+ *   `[Symbol.asyncDispose]()`) or replacement by the next turn's fresh
+ *   stream.
  *
  * The redial machinery inside the wrapped reader keeps working while paused:
  * {@link pause} leaves a read outstanding, so a socket drop during tool
@@ -75,7 +75,7 @@ export class SessionChatStream {
     if (!this.#pending) {
       if (!this.#attached && !this.closed) {
         // Reads belong to segments; only the paused prefetch (issued by
-        // pause() itself) may exist while detached.
+        // pause() itself) may exist between segments.
         throw new CoderAgentError("SessionChatStream.read() without an attached segment");
       }
       this.#pending = this.#events.next();
@@ -118,16 +118,6 @@ export class SessionChatStream {
       this.#pending = this.#events.next();
       this.#pending.catch(() => {});
     }
-  }
-
-  /**
-   * Segment aborted or timed out without settling: the stream stays open (the
-   * session close policy owns the socket) but is never reusable — the segment
-   * may have consumed part of an in-progress episode, which cannot be re-read.
-   */
-  detach(): void {
-    this.#attached = false;
-    this.#reusable = false;
   }
 
   /**

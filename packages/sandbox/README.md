@@ -11,12 +11,13 @@ you pass it as the `sandbox` to a `HarnessAgent` exactly like
 `@ai-sdk/sandbox-vercel`.
 
 > **Status:** experimental. This provider tracks the stable AI SDK v7 harness
-> packages (`@ai-sdk/harness@^1.0.23`).
+> packages (see the `@ai-sdk/harness` peer range in
+> [`package.json`](./package.json)).
 
 ## Install
 
 ```bash
-npm add @coder/ai-sdk-sandbox @ai-sdk/harness @ai-sdk/harness-claude-code @ai-sdk/provider-utils
+pnpm add @coder/ai-sdk-sandbox @ai-sdk/harness @ai-sdk/harness-claude-code @ai-sdk/provider-utils
 ```
 
 Choose one host transport:
@@ -38,7 +39,7 @@ import { createClaudeCode } from "@ai-sdk/harness-claude-code";
 import { createCoderWorkspace } from "@coder/ai-sdk-sandbox";
 
 const agent = new HarnessAgent({
-  harness: createClaudeCode({ thinking: "adaptive" }),
+  harness: createClaudeCode({ thinking: { type: "adaptive" } }),
   sandbox: createCoderWorkspace({ workspace: "my-dev-workspace" }),
   instructions: "You are a careful coding assistant.",
 });
@@ -92,7 +93,7 @@ the session ends. Add a `create` block:
 
 ```ts
 const agent = new HarnessAgent({
-  harness: createClaudeCode({ thinking: "adaptive" }),
+  harness: createClaudeCode({ thinking: { type: "adaptive" } }),
   sandbox: createCoderWorkspace({
     create: {
       template: "docker", // required: the template to create from
@@ -201,7 +202,7 @@ For an interactive chat in your terminal instead of one-shot `generate()` calls,
 wrap the same agent with the AI SDK terminal UI ([`@ai-sdk/tui`](https://ai-sdk.dev/v7/docs/ai-sdk-harnesses/terminal-ui)):
 
 ```bash
-npm add @ai-sdk/tui
+pnpm add @ai-sdk/tui
 ```
 
 The TUI drives a session-less agent, so adapt the `HarnessAgent` (whose
@@ -215,7 +216,7 @@ import { runAgentTUI, type AgentTUIAgent } from "@ai-sdk/tui";
 import { createCoderWorkspace } from "@coder/ai-sdk-sandbox";
 
 const agent = new HarnessAgent({
-  harness: createClaudeCode({ thinking: "adaptive" }),
+  harness: createClaudeCode({ thinking: { type: "adaptive" } }),
   sandbox: createCoderWorkspace({ workspace: "my-dev-ws" }),
   // or, to create a fresh workspace per session from a template:
   // sandbox: createCoderWorkspace({ create: { template: 'claude-code-test' } }),
@@ -389,27 +390,27 @@ and a full Claude Code turn with tool use (`scripts/e2e-claude.ts`).
 ## Development
 
 ```bash
-npm install
-npm run typecheck   # tsc against the real harness types
-npm test            # vitest: unit + local integration (fake `coder` + `ssh`)
-npm run build       # tsup → dist/ (ESM + d.ts)
+pnpm install
+pnpm typecheck   # tsc against the real harness types
+pnpm test        # vitest: unit + local integration (fake `coder` + `ssh`)
+pnpm build       # tsup → dist/ (ESM + d.ts)
 
-# Formatting & linting (Biome):
-npm run format      # biome format --write .   (apply formatting)
-npm run lint        # biome lint .             (report lint issues)
-npm run check       # biome check .            (format + lint, read-only; for CI)
+# Formatting & linting (root-level scripts, run from the repo root):
+pnpm format      # oxfmt (apply formatting)
+pnpm lint        # oxlint (report lint issues)
+pnpm check       # format check + lint + typecheck (CI gate)
 
 # End-to-end against a real workspace (needs the coder CLI + a running workspace):
-npm run verify:real -- my-ws
+pnpm verify:real my-ws
 
-# The same contract through Coderd directly. The CLI is used only to retrieve
-# the already-authenticated token for this shell; CoderNativeTransport never invokes it:
+# The same contract through Coderd directly. The CLI is used only to mint a
+# token for this shell; CoderNativeTransport never invokes it:
 CODER_URL=https://coder.example.com \
-  CODER_SESSION_TOKEN="$(coder login token)" \
-  npm run verify:native -- my-ws
+  CODER_SESSION_TOKEN="$(coder tokens create --name ai-sdk-sandbox)" \
+  pnpm verify:native my-ws
 
 # End-to-end of create mode (creates a throwaway workspace, then deletes it):
-npm run verify:create -- docker
+pnpm verify:create docker
 ```
 
 The local integration tests exercise the real transport (argument building,

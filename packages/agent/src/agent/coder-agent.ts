@@ -164,7 +164,7 @@ export interface CoderAgentSettings<TOOLS extends ToolSet = {}> {
   /**
    * Adapter for writing files onto a workspace filesystem, enabling
    * {@link CoderAgent.uploadToWorkspace}. Supply one backed by a workspace
-   * connection (e.g. a `@coder/ai-sdk-eve-sandbox` session).
+   * connection (e.g. a `CoderWorkspaceSession` from `@coder/ai-sdk-sandbox`).
    */
   workspaceFiles?: WorkspaceFileStore;
   /** chatd-side MCP servers to enable for this chat. */
@@ -507,7 +507,7 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
     if (!this.#workspaceFiles) {
       throw new CoderAgentError(
         "uploadToWorkspace requires a `workspaceFiles` adapter. Construct the agent with " +
-          "`workspaceFiles` (e.g. backed by a @coder/ai-sdk-eve-sandbox session) to enable it.",
+          "`workspaceFiles` (e.g. backed by a @coder/ai-sdk-sandbox workspace session) to enable it.",
       );
     }
     const { path } = await this.#workspaceFiles.write({

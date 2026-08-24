@@ -151,6 +151,11 @@ export class TurnTranslator {
   // the same message replaces its earlier entry instead of double-counting
   // (chatd re-sends full snapshots on revision bumps and history resets).
   readonly #usageByMessageId = new Map<number, ChatMessageUsage>();
+  // Assistant snapshots already processed once. A redial replays the turn
+  // from its original cursor, so earlier messages arrive again — without this,
+  // re-running the boundary logic on them would reset the emitted-length
+  // cursors and re-emit their entire text (see #ingestMessage).
+  readonly #snapshotSeen = new Set<number>();
   #error: ChatErrorPayload | undefined;
   #terminalStatus: ChatStatus | undefined;
   #maxMessageId = 0;
@@ -424,6 +429,34 @@ export class TurnTranslator {
     const content = message.content ?? [];
 
     if (message.role === "assistant") {
+      // A snapshot already processed once — a redial's original-cursor replay,
+      // or a revision bump of an earlier message: the boundary logic below
+      // would close and reset the emitted-length cursors and re-emit the whole
+      // message. Suppress its text/reasoning entirely (replays are
+      // byte-identical, and the revisions that matter in practice update usage
+      // or tool results, which are id-keyed and still processed). The CURRENT
+      // message stays on the normal path — its block's length cursor dedupes
+      // progressive/trailing snapshots and recovers gap suffixes — but ONLY
+      // while no newer deltas are open: deltas carry no message id, so once
+      // the NEXT step starts streaming, #currentAssistantId still names the
+      // committed step, and reconciling its replayed snapshot would diff old
+      // content against the open next-step block and emit a spurious suffix.
+      // (An unseen snapshot with deltas open is that next step committing —
+      // the gap-recovery case — and keeps the normal path.)
+      if (
+        this.#snapshotSeen.has(message.id) &&
+        (message.id !== this.#currentAssistantId || this.#deltasSinceSnapshot)
+      ) {
+        for (const part of content) {
+          if (part.type === "tool-call" && !this.#isClientTool(part.tool_name))
+            this.#emitServerToolCall(out, part);
+          else if (part.type === "tool-result" && !this.#isClientTool(part.tool_name))
+            this.#emitServerToolResult(out, part);
+          else if (part.type === "source") this.#emitSource(out, part);
+        }
+        return;
+      }
+      this.#snapshotSeen.add(message.id);
       // New assistant message boundary: close prior blocks and reset cursors.
       // Skipped when deltas arrived since the previous assistant snapshot:
       // deltas carry no message id, so they belong to the message THIS snapshot
@@ -445,19 +478,40 @@ export class TurnTranslator {
       }
       this.#currentAssistantId = message.id;
 
-      if (!this.#text.sawDelta) {
-        const full = content
-          .filter((p) => p.type === "text")
-          .map((p) => p.text ?? "")
-          .join("");
-        if (full.length > 0) this.#emitTextUpTo(out, full);
-      }
-      if (!this.#reasoning.sawDelta) {
-        const full = content
-          .filter((p) => p.type === "reasoning")
-          .map((p) => p.text ?? "")
-          .join("");
-        if (full.length > 0) this.#emitReasoningUpTo(out, full);
+      // Snapshot mode diffs the full text against the emitted length. Delta
+      // mode normally treats the trailing snapshot as a no-op — but only while
+      // the block is still OPEN can the emitted length vouch for that: a
+      // snapshot carrying MORE text than was emitted means deltas this client
+      // never received (the message committed while a dropped stream was
+      // redialing), so emit the missing suffix instead of losing it. Once the
+      // block is closed the length cursor is gone, and the snapshot must be
+      // skipped as before. The currently open block reconciles FIRST: opening
+      // the other kind closes it (resetting its length cursor), which would
+      // silently drop its gap suffix.
+      const emitSnapshotText = (): void => {
+        if (!this.#text.sawDelta || this.#text.id) {
+          const full = content
+            .filter((p) => p.type === "text")
+            .map((p) => p.text ?? "")
+            .join("");
+          if (full.length > 0) this.#emitTextUpTo(out, full);
+        }
+      };
+      const emitSnapshotReasoning = (): void => {
+        if (!this.#reasoning.sawDelta || this.#reasoning.id) {
+          const full = content
+            .filter((p) => p.type === "reasoning")
+            .map((p) => p.text ?? "")
+            .join("");
+          if (full.length > 0) this.#emitReasoningUpTo(out, full);
+        }
+      };
+      if (this.#reasoning.id) {
+        emitSnapshotReasoning();
+        emitSnapshotText();
+      } else {
+        emitSnapshotText();
+        emitSnapshotReasoning();
       }
       // Tool calls/results and sources are id-deduped, so snapshots process them
       // unconditionally (even when the snapshot is a text/reasoning no-op).

@@ -557,3 +557,168 @@ describe("TurnTranslator — usage cost metadata", () => {
     expect(finish.providerMetadata).toBeUndefined();
   });
 });
+
+describe("TurnTranslator — redial replay", () => {
+  it("recovers text and reasoning committed while the stream was disconnected", () => {
+    // Deltas stream part of the message, the connection drops, and the message
+    // COMMITS during the gap: the redialed stream replays only the full
+    // snapshot (no more deltas for that episode). The snapshot's surplus over
+    // the emitted length is exactly the content generated during the gap and
+    // must be emitted, not treated as a redundant trailing snapshot.
+    const { parts } = run([
+      part("assistant", { type: "reasoning", text: "Think" }),
+      part("assistant", { type: "text", text: "Hel" }),
+      // — drop; commit during the gap; redial replays the snapshot —
+      msg(
+        2,
+        "assistant",
+        [
+          { type: "reasoning", text: "Think" },
+          { type: "text", text: "Hello world" },
+        ],
+        { input_tokens: 5, output_tokens: 4 },
+      ),
+      status("waiting"),
+    ]);
+    expect(textBlocks(parts)).toEqual(["Hello world"]);
+    const finish = parts.at(-1)!;
+    if (finish.type !== "finish") return;
+    expect(finish.usage.inputTokens.total).toBe(5);
+  });
+
+  it("does not re-emit earlier steps when a multi-step turn replays from the original cursor", () => {
+    // Two committed steps (a server-tool round), then a drop: the redial
+    // replays BOTH snapshots from the turn's original after_id. The earlier
+    // message must not re-trigger the boundary logic and re-emit its text.
+    const step1 = msg(
+      2,
+      "assistant",
+      [
+        { type: "text", text: "Step one" },
+        { type: "tool-call", tool_call_id: "s1", tool_name: "web_search", args: { q: "x" } },
+      ],
+      { input_tokens: 10, output_tokens: 2 },
+    );
+    const toolMsg = msg(3, "tool", [
+      { type: "tool-result", tool_call_id: "s1", tool_name: "web_search", result: { hits: 1 } },
+    ]);
+    const step2 = msg(4, "assistant", [{ type: "text", text: "Step two" }], {
+      input_tokens: 20,
+      output_tokens: 3,
+    });
+    const { parts } = run([
+      step1,
+      toolMsg,
+      step2,
+      // — drop; redial replays the whole turn —
+      step1,
+      toolMsg,
+      step2,
+      status("waiting"),
+    ]);
+
+    expect(textBlocks(parts)).toEqual(["Step one", "Step two"]);
+    expect(parts.filter((p) => p.type === "tool-call")).toHaveLength(1);
+    expect(parts.filter((p) => p.type === "tool-result")).toHaveLength(1);
+    const finish = parts.at(-1)!;
+    if (finish.type !== "finish") return;
+    expect(finish.usage.inputTokens.total).toBe(30);
+    expect(finish.usage.outputTokens.total).toBe(5);
+  });
+
+  it("does not splice a replayed committed snapshot into the next step's open deltas", () => {
+    // Step 1 commits (text + tool call closes its block); step 2's deltas are
+    // streaming when the drop hits. currentAssistantId still names step 1
+    // (deltas carry no id), so the replayed step-1 snapshot must NOT be
+    // diffed against the open step-2 block ("Sec" + "First".slice(3) = "st").
+    const step1 = msg(2, "assistant", [
+      { type: "text", text: "First" },
+      { type: "tool-call", tool_call_id: "s1", tool_name: "web_search", args: { q: "x" } },
+    ]);
+    const toolMsg = msg(3, "tool", [
+      { type: "tool-result", tool_call_id: "s1", tool_name: "web_search", result: { hits: 1 } },
+    ]);
+    const { parts } = run([
+      step1,
+      toolMsg,
+      part("assistant", { type: "text", text: "Sec" }),
+      // — drop; redial replays the turn, then step 2 finishes —
+      step1,
+      toolMsg,
+      part("assistant", { type: "text", text: "ond" }),
+      msg(4, "assistant", [{ type: "text", text: "Second" }]),
+      status("waiting"),
+    ]);
+    // Block granularity matches the no-drop flow (a snapshot-opened block stays
+    // open across snapshot-content tool calls); what matters is the total text:
+    // no spurious splice suffix, nothing double-emitted.
+    expect(textBlocks(parts).join("")).toBe("FirstSecond");
+    expect(parts.filter((p) => p.type === "tool-call")).toHaveLength(1);
+  });
+
+  it("recovers a reasoning suffix when reasoning was the open block at the drop", () => {
+    // The drop happens while REASONING is still streaming; the message commits
+    // during the gap with completed reasoning plus final text. The open
+    // reasoning block must reconcile before snapshot text opens its own block
+    // (which closes reasoning and would discard its length cursor).
+    const { parts } = run([
+      part("assistant", { type: "reasoning", text: "Think" }),
+      // — drop; commit during the gap; redial replays the snapshot —
+      msg(2, "assistant", [
+        { type: "reasoning", text: "Thinking hard" },
+        { type: "text", text: "Answer" },
+      ]),
+      status("waiting"),
+    ]);
+    const reasoning = parts
+      .filter((p) => p.type === "reasoning-delta")
+      .map((p) => ("delta" in p ? p.delta : ""))
+      .join("");
+    expect(reasoning).toBe("Thinking hard");
+    expect(textBlocks(parts)).toEqual(["Answer"]);
+    // Block order preserved: reasoning completes before text opens.
+    const types = parts.map((p) => p.type);
+    expect(types.indexOf("reasoning-end")).toBeLessThan(types.indexOf("text-start"));
+  });
+
+  it("does not double-emit content, tool calls, or usage when a reconnect replays the turn", () => {
+    // A redial replays the turn from its original after_id, so the translator
+    // re-sees events it already ingested: the committed snapshot of a message
+    // whose deltas streamed, and the pending action_required. Neither may
+    // double-emit.
+    const action: ChatStreamEvent = {
+      type: "action_required",
+      chat_id: "c",
+      action_required: {
+        tool_calls: [{ tool_call_id: "t1", tool_name: "myTool", args: "{}" }],
+      },
+    };
+    const { parts } = run(
+      [
+        part("assistant", { type: "text", text: "Hel" }),
+        part("assistant", { type: "text", text: "lo" }),
+        msg(2, "assistant", [{ type: "text", text: "Hello" }], {
+          input_tokens: 10,
+          output_tokens: 2,
+        }),
+        action,
+        // — reconnect: chatd re-syncs the committed snapshot and the pending action —
+        msg(2, "assistant", [{ type: "text", text: "Hello" }], {
+          input_tokens: 10,
+          output_tokens: 2,
+        }),
+        action,
+        status("requires_action"),
+      ],
+      new Set(["myTool"]),
+    );
+
+    expect(textBlocks(parts)).toEqual(["Hello"]);
+    expect(parts.filter((p) => p.type === "tool-call")).toHaveLength(1);
+    const finish = parts.at(-1)!;
+    if (finish.type !== "finish") return;
+    expect(finish.usage.inputTokens.total).toBe(10);
+    expect(finish.usage.outputTokens.total).toBe(2);
+    expect(finish.finishReason.unified).toBe("tool-calls");
+  });
+});

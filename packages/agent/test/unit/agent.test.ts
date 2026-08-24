@@ -1,3 +1,4 @@
+import { APICallError } from "@ai-sdk/provider";
 import { tool } from "ai";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -19,6 +20,7 @@ import type {
   CreateChatRequest,
   SubmitToolResultsRequest,
 } from "../../src/coder/types.js";
+import type { WebSocketFactory, WebSocketLike } from "../../src/coder/ws.js";
 import type { WorkspaceFileStore } from "../../src/workspace-files.js";
 
 /** A scripted, in-memory stand-in for {@link CoderChatClient}. */
@@ -689,6 +691,192 @@ describe("CoderAgent cancellation & failures", () => {
     await pending.catch(() => {});
 
     expect(interrupted).toEqual(["chat-1"]);
+  });
+});
+
+type StreamListener = (ev: unknown) => void;
+
+/** A scripted WebSocket for driving the REAL stream reader (redial) end-to-end. */
+class FakeStreamSocket {
+  readonly url: string;
+  #listeners = new Map<string, Set<StreamListener>>();
+
+  constructor(url: string) {
+    this.url = url;
+  }
+  send(_data: string): void {}
+  close(_code?: number): void {}
+  addEventListener(type: string, cb: StreamListener): void {
+    let set = this.#listeners.get(type);
+    if (!set) {
+      set = new Set();
+      this.#listeners.set(type, set);
+    }
+    set.add(cb);
+  }
+  removeEventListener(type: string, cb: StreamListener): void {
+    this.#listeners.get(type)?.delete(cb);
+  }
+  emit(type: "message" | "error" | "close", ev?: unknown): void {
+    for (const cb of this.#listeners.get(type) ?? []) cb(ev);
+  }
+}
+
+/**
+ * A CoderLanguageModel wired to a REAL CoderChatClient with a scripted fetch
+ * and WebSocket factory, so turns exercise the actual stream reader — redial,
+ * replay suppression, and the interrupt policy — not a fake `streamEvents`.
+ */
+function redialModel(config?: { requestTimeoutMs?: number }) {
+  const sockets: FakeStreamSocket[] = [];
+  const factory: WebSocketFactory = (url) => {
+    const s = new FakeStreamSocket(url);
+    sockets.push(s);
+    return s as WebSocketLike;
+  };
+  const fetchCalls: string[] = [];
+  const fetchFn = ((url: string, init: RequestInit) => {
+    fetchCalls.push(`${init.method} ${new URL(url).pathname}`);
+    return Promise.resolve(
+      new Response(JSON.stringify(chatStub("chat-1")), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+  }) as unknown as typeof globalThis.fetch;
+  const client = new CoderChatClient({
+    baseUrl: "https://x",
+    token: "t",
+    fetch: fetchFn,
+    webSocketFactory: factory,
+  });
+  const model = new CoderLanguageModel({ client, organizationId: "org-1", ...config });
+  return { model, sockets, fetchCalls };
+}
+
+const streamFrame = (...events: ChatStreamEvent[]) => ({ data: JSON.stringify(events) });
+const deltaEv = (seq: number, text: string): ChatStreamEvent => ({
+  type: "message_part",
+  chat_id: "chat-1",
+  message_part: {
+    role: "assistant",
+    part: { type: "text", text },
+    history_version: 1,
+    generation_attempt: 1,
+    seq,
+  },
+});
+
+describe("CoderLanguageModel stream redial (real reader)", () => {
+  it("redials a dropped mid-turn stream and completes without duplicates or an interrupt", async () => {
+    vi.useFakeTimers();
+    try {
+      const { model, sockets, fetchCalls } = redialModel();
+      const { stream } = await model.doStream({
+        prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      } as never);
+      const parts: { type: string; delta?: string }[] = [];
+      const done = (async () => {
+        const reader = stream.getReader();
+        for (;;) {
+          const { value, done: d } = await reader.read();
+          if (d) break;
+          parts.push(value as { type: string; delta?: string });
+        }
+      })();
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sockets).toHaveLength(1);
+      sockets[0]?.emit("message", streamFrame(status("running"), deltaEv(1, "Hel")));
+      await vi.advanceTimersByTimeAsync(0);
+      // The socket drops mid-message. The reader must redial — NOT interrupt
+      // the healthy server run.
+      sockets[0]?.emit("close", { code: 1006 });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(sockets).toHaveLength(2);
+      // chatd replays the in-progress attempt from seq 1, then the rest of the
+      // turn: the missed delta, the trailing snapshot, and the settle status.
+      sockets[1]?.emit(
+        "message",
+        streamFrame(
+          status("running"),
+          deltaEv(1, "Hel"),
+          deltaEv(2, "lo"),
+          msg(2, "assistant", [{ type: "text", text: "Hello" }], {
+            input_tokens: 3,
+            output_tokens: 2,
+          }),
+          status("waiting"),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      await done;
+
+      const text = parts
+        .filter((p) => p.type === "text-delta")
+        .map((p) => p.delta)
+        .join("");
+      expect(text).toBe("Hello");
+      expect(fetchCalls.filter((c) => c.includes("/interrupt"))).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("interrupts and surfaces an AI-SDK-retryable error once the redial budget is exhausted", async () => {
+    vi.useFakeTimers();
+    try {
+      const { model, sockets, fetchCalls } = redialModel();
+      const { stream } = await model.doStream({
+        prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      } as never);
+      const done = drain(stream.getReader()).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("message", streamFrame(status("running")));
+      await vi.advanceTimersByTimeAsync(0);
+      // The network dies for good: the eventful connection drops, then five
+      // consecutive redials fail without delivering anything.
+      for (let i = 0; i < 6; i++) {
+        sockets.at(-1)?.emit("close", { code: 1006 });
+        await vi.advanceTimersByTimeAsync(30_000);
+      }
+      const err = await done;
+      expect(err).toMatchObject({ name: "CoderStreamError", isRetryable: true });
+      expect(APICallError.isInstance(err)).toBe(true);
+      // Redial exhaustion abandons the run — THAT is an interrupt case.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchCalls.filter((c) => c.includes("/interrupt"))).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("requestTimeoutMs bounds the segment across redial attempts", async () => {
+    // Real timers: AbortSignal.timeout is not under vitest's fake-timer control.
+    const { model, sockets, fetchCalls } = redialModel({ requestTimeoutMs: 50 });
+    const { stream } = await model.doStream({
+      prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    } as never);
+    const done = drain(stream.getReader()).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await tick();
+    sockets[0]?.emit("message", streamFrame(status("running")));
+    await tick();
+    // Drop mid-turn: the reader starts a 1s redial sleep, but the 50ms budget
+    // expires first — the timeout must cut through the backoff.
+    sockets[0]?.emit("close", { code: 1006 });
+    const err = await done;
+    expect(err).toMatchObject({ name: "CoderChatError", kind: "timeout" });
+    await tick();
+    expect(fetchCalls.filter((c) => c.includes("/interrupt"))).toHaveLength(1);
+    expect(sockets).toHaveLength(1); // the budget expired before any redial
   });
 });
 

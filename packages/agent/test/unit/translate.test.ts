@@ -557,3 +557,45 @@ describe("TurnTranslator — usage cost metadata", () => {
     expect(finish.providerMetadata).toBeUndefined();
   });
 });
+
+describe("TurnTranslator — redial replay", () => {
+  it("does not double-emit content, tool calls, or usage when a reconnect replays the turn", () => {
+    // A dropped/redialed stream can replay events the translator already saw:
+    // the committed snapshot of a message whose deltas streamed, and the
+    // pending action_required. Neither may double-emit.
+    const action: ChatStreamEvent = {
+      type: "action_required",
+      chat_id: "c",
+      action_required: {
+        tool_calls: [{ tool_call_id: "t1", tool_name: "myTool", args: "{}" }],
+      },
+    };
+    const { parts } = run(
+      [
+        part("assistant", { type: "text", text: "Hel" }),
+        part("assistant", { type: "text", text: "lo" }),
+        msg(2, "assistant", [{ type: "text", text: "Hello" }], {
+          input_tokens: 10,
+          output_tokens: 2,
+        }),
+        action,
+        // — reconnect: chatd re-syncs the committed snapshot and the pending action —
+        msg(2, "assistant", [{ type: "text", text: "Hello" }], {
+          input_tokens: 10,
+          output_tokens: 2,
+        }),
+        action,
+        status("requires_action"),
+      ],
+      new Set(["myTool"]),
+    );
+
+    expect(textBlocks(parts)).toEqual(["Hello"]);
+    expect(parts.filter((p) => p.type === "tool-call")).toHaveLength(1);
+    const finish = parts.at(-1)!;
+    if (finish.type !== "finish") return;
+    expect(finish.usage.inputTokens.total).toBe(10);
+    expect(finish.usage.outputTokens.total).toBe(2);
+    expect(finish.finishReason.unified).toBe("tool-calls");
+  });
+});

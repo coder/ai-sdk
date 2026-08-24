@@ -1,3 +1,4 @@
+import { APICallError } from "@ai-sdk/provider";
 import type { ChatErrorPayload } from "./coder/types.js";
 
 /** Base error for all `@coder/ai-sdk-agent` failures. */
@@ -30,6 +31,30 @@ export class CoderApiError extends CoderAgentError {
     this.detail = args.detail;
     this.method = args.method;
     this.path = args.path;
+  }
+}
+
+/**
+ * The per-chat event stream dropped and could not be re-established within its
+ * redial budget. Extends the AI SDK's {@link APICallError} with
+ * `isRetryable: true` because the `ai` package's retry machinery (`maxRetries`)
+ * only honors `APICallError`/`GatewayError`-branded errors — plain `Error`
+ * subclasses are never retried no matter what they claim. The last underlying
+ * transport failure is preserved as `cause`.
+ *
+ * NOTE: this is deliberately NOT a {@link CoderAgentError} (single
+ * inheritance); match it with `APICallError.isInstance(err)` or `err.name`.
+ */
+export class CoderStreamError extends APICallError {
+  override name = "CoderStreamError";
+  constructor(args: { message: string; url: string; cause?: unknown }) {
+    super({
+      message: args.message,
+      url: args.url,
+      requestBodyValues: undefined,
+      isRetryable: true,
+      cause: args.cause,
+    });
   }
 }
 

@@ -327,10 +327,13 @@ export class CoderLanguageModel implements LanguageModelV4 {
         // Abort surfaces here only if the reader threw instead of closing cleanly;
         // prefer the abort/timeout classification.
         throwIfAborted();
-        // The reader only throws transport-level CoderAgentErrors (socket error /
-        // unparseable frame). Surface them as a retryable stream failure so a
-        // caller's `CoderChatError && retryable` retry path catches a dropped
-        // connection instead of seeing a bare, non-retryable error.
+        // The reader redials dropped connections internally (with `after_id`
+        // catch-up), so what escapes it is terminal: a CoderApiError (4xx
+        // upgrade rejection), a CoderStreamError (redial budget exhausted;
+        // already AI-SDK-retryable) — both re-thrown as-is below — or a bare
+        // CoderAgentError (unparseable frame). Surface the latter as a
+        // retryable stream failure so a caller's `CoderChatError && retryable`
+        // retry path catches it instead of seeing a bare, non-retryable error.
         if (
           err instanceof CoderAgentError &&
           !(err instanceof CoderApiError) &&
@@ -349,8 +352,10 @@ export class CoderLanguageModel implements LanguageModelV4 {
       // an abort/timeout here before treating the end as a normal/closed turn.
       throwIfAborted();
 
-      // No terminal status: the stream ended before the turn settled. If an
-      // `error` event arrived (without a trailing `status: error`), fall through to
+      // No terminal status: the stream ended before the turn settled. With the
+      // reader redialing drops internally this is defensive — a clean end now
+      // means abort (classified above) — but keep it: if an `error` event
+      // arrived (without a trailing `status: error`), fall through to
       // finish() so the real error surfaces (unified:"error" + the error part),
       // consistent with the `status: error` path; otherwise it's a genuine
       // premature close — surface it rather than a clean (truncated) `stop`.
@@ -379,7 +384,11 @@ export class CoderLanguageModel implements LanguageModelV4 {
       // Teardown of an unsettled turn — stream cancel(), premature close, or an
       // abort the listener didn't cover — interrupt the server so it stops.
       // (A turn that failed before streaming has no translator and never
-      // settled, so it interrupts too.)
+      // settled, so it interrupts too.) A transient transport drop never gets
+      // here: the reader redials internally, so an unsettled exit means abort,
+      // timeout, a terminal stream failure (4xx / redial budget exhausted /
+      // unparseable frame), or a REST-phase error — all cases where the healthy
+      // server run must not keep burning tokens on an audience of zero.
       if (!translator?.terminalStatus) interrupt();
       this.#inFlight = false;
     }

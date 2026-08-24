@@ -1,5 +1,7 @@
+import { APICallError } from "@ai-sdk/provider";
 import { describe, expect, it, vi } from "vitest";
 import { CoderChatClient } from "../../src/coder/client.js";
+import type { ChatStreamEvent } from "../../src/coder/types.js";
 import type { WebSocketFactory, WebSocketLike } from "../../src/coder/ws.js";
 import { CoderAgentError, CoderApiError } from "../../src/errors.js";
 
@@ -521,6 +523,227 @@ describe("CoderChatClient.watchChats", () => {
       expect(sockets).toHaveLength(2);
       ac.abort();
       expect((await p).done).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("CoderChatClient.streamEvents (redial)", () => {
+  function streamClient() {
+    const sockets: FakeWatchSocket[] = [];
+    const factory: WebSocketFactory = (url, { headers }) => {
+      const s = new FakeWatchSocket(url, headers);
+      sockets.push(s);
+      return s as WebSocketLike;
+    };
+    const c = new CoderChatClient({ baseUrl: "https://x", token: "t", webSocketFactory: factory });
+    return { c, sockets };
+  }
+
+  const message = (id: number, text: string): ChatStreamEvent => ({
+    type: "message",
+    chat_id: "c1",
+    message: {
+      id,
+      chat_id: "c1",
+      role: "assistant",
+      created_at: "",
+      content: [{ type: "text", text }],
+    },
+  });
+  const delta = (seq: number, text: string, generationAttempt = 1): ChatStreamEvent => ({
+    type: "message_part",
+    chat_id: "c1",
+    message_part: {
+      role: "assistant",
+      part: { type: "text", text },
+      history_version: 1,
+      generation_attempt: generationAttempt,
+      seq,
+    },
+  });
+  const statusEv = (s: string): ChatStreamEvent => ({
+    type: "status",
+    chat_id: "c1",
+    status: { status: s as never },
+  });
+  const frame = (...events: ChatStreamEvent[]) => ({ data: JSON.stringify(events) });
+
+  /** Let the generator run to its next suspension point (real timers). */
+  const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  it("redials after a drop, resuming past the last committed message id", async () => {
+    vi.useFakeTimers();
+    try {
+      const { c, sockets } = streamClient();
+      const iter = c.streamEvents("c1");
+      const p1 = iter.next();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sockets[0]?.url).toBe("wss://x/api/experimental/chats/c1/stream");
+      sockets[0]?.emit("message", frame(statusEv("running"), message(5, "step one")));
+      expect((await p1).value).toMatchObject({ type: "status" });
+      expect((await iter.next()).value).toMatchObject({ type: "message", message: { id: 5 } });
+
+      const p2 = iter.next();
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("close", { code: 1006 });
+      // First redial after the initial 1s delay…
+      await vi.advanceTimersByTimeAsync(999);
+      expect(sockets).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(sockets).toHaveLength(2);
+      // …resuming past the committed message so chatd does not replay id 5.
+      expect(sockets[1]?.url).toBe("wss://x/api/experimental/chats/c1/stream?after_id=5");
+
+      sockets[1]?.emit("message", frame(message(6, "step two"), statusEv("waiting")));
+      expect((await p2).value).toMatchObject({ type: "message", message: { id: 6 } });
+      expect((await iter.next()).value).toMatchObject({ type: "status" });
+      await iter.return(undefined);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("suppresses replayed in-progress deltas after a redial, without advancing after_id", async () => {
+    vi.useFakeTimers();
+    try {
+      const { c, sockets } = streamClient();
+      const iter = c.streamEvents("c1", { afterId: 3 });
+      const p1 = iter.next();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sockets[0]?.url).toBe("wss://x/api/experimental/chats/c1/stream?after_id=3");
+      sockets[0]?.emit("message", frame(delta(1, "Hel"), delta(2, "lo")));
+      expect((await p1).value).toMatchObject({ message_part: { seq: 1 } });
+      expect((await iter.next()).value).toMatchObject({ message_part: { seq: 2 } });
+
+      const p3 = iter.next();
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("close", { code: 1006 });
+      await vi.advanceTimersByTimeAsync(1000);
+      // Deltas carry no message id (the message is uncommitted), so the redial
+      // keeps the original cursor and chatd replays the attempt from seq 1;
+      // only parts beyond the last yielded seq may surface again.
+      expect(sockets[1]?.url).toBe("wss://x/api/experimental/chats/c1/stream?after_id=3");
+      sockets[1]?.emit("message", frame(delta(1, "Hel"), delta(2, "lo"), delta(3, "!")));
+      expect((await p3).value).toMatchObject({
+        message_part: { seq: 3, part: { text: "!" } },
+      });
+
+      // A NEW generation attempt is a fresh episode — its seq 1 is not a replay.
+      sockets[1]?.emit("message", frame(delta(1, "Re", 2)));
+      expect((await iter.next()).value).toMatchObject({
+        message_part: { seq: 1, generation_attempt: 2 },
+      });
+      await iter.return(undefined);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("throws a terminal CoderApiError on a 4xx upgrade rejection instead of redialing", async () => {
+    const { c, sockets } = streamClient();
+    const iter = c.streamEvents("c1");
+    const p = iter.next();
+    await tick();
+    sockets[0]?.emit("error", { message: "Unexpected server response: 401" });
+    await expect(p).rejects.toMatchObject({
+      name: "CoderApiError",
+      status: 401,
+      path: "/api/experimental/chats/c1/stream",
+    });
+    expect(sockets).toHaveLength(1);
+  });
+
+  it("throws a terminal error on an unparseable frame instead of replaying it forever", async () => {
+    const { c, sockets } = streamClient();
+    const iter = c.streamEvents("c1");
+    const p = iter.next();
+    await tick();
+    sockets[0]?.emit("message", { data: "{not json" });
+    await expect(p).rejects.toMatchObject({
+      name: "CoderAgentError",
+      message: "failed to parse chat stream frame",
+    });
+    expect(sockets).toHaveLength(1);
+  });
+
+  it("gives up with an AI-SDK-retryable CoderStreamError once the redial budget is exhausted", async () => {
+    vi.useFakeTimers();
+    try {
+      const { c, sockets } = streamClient();
+      const iter = c.streamEvents("c1");
+      const p = iter.next().then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      // Five consecutive connections die without delivering a single event.
+      for (let i = 0; i < 4; i++) {
+        sockets.at(-1)?.emit("close", { code: 1006 });
+        await vi.advanceTimersByTimeAsync(30_000);
+      }
+      expect(sockets).toHaveLength(5);
+      sockets.at(-1)?.emit("close", { code: 1006 });
+      const err = await p;
+      expect(err).toMatchObject({ name: "CoderStreamError", isRetryable: true });
+      // The brand the `ai` package's retry loop actually checks:
+      expect(APICallError.isInstance(err)).toBe(true);
+      expect(sockets).toHaveLength(5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("resets the redial budget once a connection delivers an event", async () => {
+    vi.useFakeTimers();
+    try {
+      const { c, sockets } = streamClient();
+      const iter = c.streamEvents("c1");
+      const p1 = iter.next();
+      await vi.advanceTimersByTimeAsync(0);
+      // Four dead connections (one short of the budget)…
+      for (let i = 0; i < 4; i++) {
+        sockets.at(-1)?.emit("close", { code: 1006 });
+        await vi.advanceTimersByTimeAsync(30_000);
+      }
+      expect(sockets).toHaveLength(5);
+      // …then a live one: the delivered event resets the budget…
+      sockets.at(-1)?.emit("message", frame(statusEv("running")));
+      expect((await p1).value).toMatchObject({ type: "status" });
+
+      const p2 = iter.next().then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      // …so five more dead connections are needed before it gives up again.
+      for (let i = 0; i < 5; i++) {
+        sockets.at(-1)?.emit("close", { code: 1006 });
+        await vi.advanceTimersByTimeAsync(30_000);
+      }
+      expect(sockets).toHaveLength(10);
+      sockets.at(-1)?.emit("close", { code: 1006 });
+      expect(await p2).toMatchObject({ name: "CoderStreamError" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops during the redial delay when the signal aborts, without redialing", async () => {
+    vi.useFakeTimers();
+    try {
+      const { c, sockets } = streamClient();
+      const ac = new AbortController();
+      const iter = c.streamEvents("c1", { signal: ac.signal });
+      const p = iter.next();
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("close", { code: 1006 });
+      await vi.advanceTimersByTimeAsync(0); // the generator is now sleeping before a redial
+      ac.abort();
+      // Must resolve without advancing timers — the sleep honors the abort.
+      expect((await p).done).toBe(true);
+      expect(sockets).toHaveLength(1);
     } finally {
       vi.useRealTimers();
     }

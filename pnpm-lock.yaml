@@ -24,13 +24,13 @@ importers:
 
   packages/agent:
     dependencies:
+      '@ai-sdk/provider':
+        specifier: 4.0.7
+        version: 4.0.7
       ws:
         specifier: ^8.21.3
         version: 8.21.3
     devDependencies:
-      '@ai-sdk/provider':
-        specifier: 4.0.7
-        version: 4.0.7
       '@ai-sdk/react':
         specifier: 4.0.69
         version: 4.0.69(react@19.2.8)(zod@4.4.3)

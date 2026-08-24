@@ -1,5 +1,5 @@
 import NodeWebSocket from "ws";
-import { CoderAgentError, CoderApiError } from "../errors.js";
+import { CoderAgentError, CoderApiError, CoderStreamError } from "../errors.js";
 import type { ChatStreamEvent, ChatWatchEvent } from "./types.js";
 
 /**
@@ -48,6 +48,17 @@ export interface StreamChatEventsOptions {
   webSocketFactory?: WebSocketFactory;
 }
 
+const STREAM_BACKOFF_INITIAL_MS = 1_000;
+const STREAM_BACKOFF_CAP_MS = 30_000;
+/**
+ * Consecutive event-less connection failures tolerated before a dropped
+ * per-chat stream gives up (a connection that delivered at least one event
+ * resets the count). With 1s→2s→4s→8s backoff between the five attempts this
+ * bounds a dead network to ~15s of redialing even without a caller signal or
+ * `requestTimeoutMs`.
+ */
+const STREAM_MAX_CONSECUTIVE_FAILURES = 5;
+
 /**
  * Opens the chatd `/stream` WebSocket and yields decoded {@link ChatStreamEvent}s
  * as an async iterable. Each text frame from chatd is a JSON array of events;
@@ -56,107 +67,194 @@ export interface StreamChatEventsOptions {
  * The chat stream is a live subscription that stays open after a turn settles,
  * so callers should `break` out of the loop once they observe a terminal status
  * — that triggers generator cleanup, which closes the socket.
+ *
+ * Dropped connections are redialed with exponential backoff (like
+ * {@link watchChatEvents}), resuming from an `after_id` cursor advanced past
+ * every *committed* message already yielded — only `message` events carry ids;
+ * chatd assigns them at commit time and never streams more parts for a
+ * committed message (revision bumps re-send full snapshots, which the consumer
+ * dedupes). On reconnect chatd replays the in-progress generation attempt's
+ * `message_part` deltas from `seq` 1, so parts of an episode
+ * (`history_version`, `generation_attempt`) at or below the last yielded `seq`
+ * are suppressed here rather than double-yielded. The iteration ends in four
+ * ways: `signal` aborting (clean return), a 4xx upgrade rejection (terminal
+ * {@link CoderApiError} — bad/expired token or a deleted chat cannot succeed on
+ * retry), an unparseable frame (terminal {@link CoderAgentError} — a redial
+ * would replay the same frame forever), or the redial budget running out
+ * (a retryable {@link CoderStreamError}).
  */
 export async function* streamChatEvents(
   options: StreamChatEventsOptions,
 ): AsyncGenerator<ChatStreamEvent, void, void> {
-  const { baseUrl, token, chatId, afterId, signal } = options;
+  const { baseUrl, token, chatId, signal } = options;
   const factory = options.webSocketFactory ?? defaultFactory;
 
   const wsBase = httpToWs(baseUrl);
-  const query = afterId !== undefined ? `?after_id=${afterId}` : "";
-  const url = `${wsBase}/api/experimental/chats/${chatId}/stream${query}`;
+  const path = `/api/experimental/chats/${chatId}/stream`;
 
-  const queue: ChatStreamEvent[] = [];
-  let resolveNext: (() => void) | undefined;
-  let finished = false;
-  let failure: Error | undefined;
+  // Redial cursor — see the doc comment above.
+  let cursor = options.afterId;
+  // Last yielded delta position, for suppressing chatd's from-the-start replay
+  // of the in-progress episode after a redial. Absent fields (older servers)
+  // disable suppression rather than guessing.
+  let lastHistoryVersion: number | undefined;
+  let lastGenerationAttempt: number | undefined;
+  let lastSeq: number | undefined;
 
-  const wake = () => {
-    resolveNext?.();
-    resolveNext = undefined;
-  };
+  let backoffMs = STREAM_BACKOFF_INITIAL_MS;
+  let failures = 0;
+  let lastFailure: Error | undefined;
 
-  const ws = factory(url, { headers: { "Coder-Session-Token": token } });
+  while (!signal?.aborted) {
+    // One connection attempt per iteration; the queue/wake plumbing mirrors
+    // watchChatEventsLoop below.
+    const query = cursor !== undefined ? `?after_id=${cursor}` : "";
+    const url = `${wsBase}${path}${query}`;
 
-  const onAbort = () => {
-    finished = true;
-    try {
-      ws.close(1000);
-    } catch {
-      /* ignore */
+    const queue: ChatStreamEvent[] = [];
+    let resolveNext: (() => void) | undefined;
+    let finished = false;
+    let failure: Error | undefined;
+    let parseFailure = false;
+    let received = false;
+
+    const wake = () => {
+      resolveNext?.();
+      resolveNext = undefined;
+    };
+
+    const ws = factory(url, { headers: { "Coder-Session-Token": token } });
+
+    const onAbort = () => {
+      finished = true;
+      try {
+        ws.close(1000);
+      } catch {
+        /* ignore */
+      }
+      wake();
+    };
+    let abortListenerAdded = false;
+    if (signal) {
+      if (signal.aborted) onAbort();
+      else {
+        signal.addEventListener("abort", onAbort, { once: true });
+        abortListenerAdded = true;
+      }
     }
-    wake();
-  };
-  let abortListenerAdded = false;
-  if (signal) {
-    if (signal.aborted) onAbort();
-    else {
-      signal.addEventListener("abort", onAbort, { once: true });
-      abortListenerAdded = true;
-    }
-  }
 
-  const onMessage = (ev: { data: unknown }): void => {
-    if (finished) return;
-    let batch: unknown;
-    try {
-      const data = typeof ev.data === "string" ? ev.data : String(ev.data);
-      batch = JSON.parse(data);
-    } catch (err) {
-      failure = new CoderAgentError("failed to parse chat stream frame", { cause: err });
+    const onMessage = (ev: { data: unknown }): void => {
+      if (finished) return;
+      let batch: unknown;
+      try {
+        const data = typeof ev.data === "string" ? ev.data : String(ev.data);
+        batch = JSON.parse(data);
+      } catch (err) {
+        failure = new CoderAgentError("failed to parse chat stream frame", { cause: err });
+        parseFailure = true;
+        finished = true;
+        wake();
+        return;
+      }
+      if (Array.isArray(batch)) {
+        for (const e of batch) queue.push(e as ChatStreamEvent);
+      } else if (batch && typeof batch === "object") {
+        queue.push(batch as ChatStreamEvent);
+      }
+      wake();
+    };
+    const onError = (ev: unknown): void => {
+      if (finished) return;
+      const message =
+        ev && typeof ev === "object" && "message" in ev
+          ? String((ev as { message: unknown }).message)
+          : "chat stream socket error";
+      const status = upgradeStatus(message);
+      failure =
+        status !== undefined && status >= 400 && status < 500
+          ? new CoderApiError({ status, method: "GET", path, message })
+          : new CoderAgentError(message);
       finished = true;
       wake();
-      return;
-    }
-    if (Array.isArray(batch)) {
-      for (const e of batch) queue.push(e as ChatStreamEvent);
-    } else if (batch && typeof batch === "object") {
-      queue.push(batch as ChatStreamEvent);
-    }
-    wake();
-  };
-  const onError = (ev: unknown): void => {
-    if (finished) return;
-    const message =
-      ev && typeof ev === "object" && "message" in ev
-        ? String((ev as { message: unknown }).message)
-        : "chat stream socket error";
-    failure = new CoderAgentError(message);
-    finished = true;
-    wake();
-  };
-  const onClose = (): void => {
-    finished = true;
-    wake();
-  };
-  ws.addEventListener("message", onMessage);
-  ws.addEventListener("error", onError);
-  ws.addEventListener("close", onClose);
+    };
+    const onClose = (): void => {
+      finished = true;
+      wake();
+    };
+    ws.addEventListener("message", onMessage);
+    ws.addEventListener("error", onError);
+    ws.addEventListener("close", onClose);
 
-  try {
-    while (true) {
-      while (queue.length > 0) {
-        const next = queue.shift() as ChatStreamEvent;
-        yield next;
-      }
-      if (failure) throw failure;
-      if (finished) return;
-      await new Promise<void>((resolve) => {
-        resolveNext = resolve;
-      });
-    }
-  } finally {
-    finished = true;
-    if (signal && abortListenerAdded) signal.removeEventListener("abort", onAbort);
-    ws.removeEventListener("message", onMessage);
-    ws.removeEventListener("error", onError);
-    ws.removeEventListener("close", onClose);
     try {
-      ws.close(1000);
-    } catch {
-      /* ignore */
+      while (true) {
+        while (queue.length > 0) {
+          const next = queue.shift() as ChatStreamEvent;
+          // Receiving an event proves the connection works — reset the budget.
+          received = true;
+          failures = 0;
+          backoffMs = STREAM_BACKOFF_INITIAL_MS;
+          if (next.type === "message_part") {
+            const mp = next.message_part;
+            const hv = mp?.history_version;
+            const ga = mp?.generation_attempt;
+            const seq = mp?.seq;
+            if (hv !== undefined && ga !== undefined && seq !== undefined) {
+              if (
+                hv === lastHistoryVersion &&
+                ga === lastGenerationAttempt &&
+                lastSeq !== undefined &&
+                seq <= lastSeq
+              ) {
+                continue; // an already-yielded delta, replayed after a redial
+              }
+              lastHistoryVersion = hv;
+              lastGenerationAttempt = ga;
+              lastSeq = seq;
+            }
+          } else if (next.type === "message" && next.message) {
+            if (cursor === undefined || next.message.id > cursor) cursor = next.message.id;
+          }
+          yield next;
+        }
+        if (finished) break;
+        await new Promise<void>((resolve) => {
+          resolveNext = resolve;
+        });
+      }
+    } finally {
+      finished = true;
+      if (signal && abortListenerAdded) signal.removeEventListener("abort", onAbort);
+      ws.removeEventListener("message", onMessage);
+      ws.removeEventListener("error", onError);
+      ws.removeEventListener("close", onClose);
+      try {
+        ws.close(1000);
+      } catch {
+        /* ignore */
+      }
     }
+
+    if (signal?.aborted) return;
+    // A rejected upgrade (4xx) is terminal: retrying with the same credentials
+    // against the same (possibly deleted) chat cannot succeed. An unparseable
+    // frame is terminal too: the cursor cannot advance past an event we cannot
+    // decode, so a redial would replay the exact same frame forever.
+    if (failure instanceof CoderApiError) throw failure;
+    if (parseFailure && failure) throw failure;
+    if (failure) lastFailure = failure;
+    if (!received) {
+      failures += 1;
+      if (failures >= STREAM_MAX_CONSECUTIVE_FAILURES) {
+        throw new CoderStreamError({
+          message: `Coder chat stream ${path} could not be (re-)established after ${failures} consecutive connection failures`,
+          url,
+          cause: lastFailure,
+        });
+      }
+    }
+    await sleep(backoffMs, signal);
+    if (signal?.aborted) return;
+    backoffMs = Math.min(backoffMs * 2, STREAM_BACKOFF_CAP_MS);
   }
 }
 

@@ -311,9 +311,15 @@ tools runs several segments, so it bounds each one, not the whole call. To cap t
 await agent.generate({ prompt: "…", abortSignal: AbortSignal.timeout(120_000) });
 ```
 
-If the event stream drops before the turn settles, the call rejects with
-`CoderChatError` (`kind: "stream_closed"`, retryable) rather than returning a
-truncated result as if the turn had finished.
+If the event stream drops mid‑turn, the agent redials it automatically with
+exponential backoff, resuming from the last received message — the server keeps
+generating during the gap, so a transient drop costs nothing and the run is
+**not** interrupted. Only when the stream cannot be re‑established (several
+consecutive failed attempts, ~15s) is the server run interrupted and the call
+rejected with a `CoderStreamError` — an AI SDK `APICallError` with
+`isRetryable: true`, so setting `maxRetries` makes the SDK retry it
+automatically. A 4xx upgrade rejection (bad/expired token, deleted chat) fails
+fast with a `CoderApiError` instead of retrying.
 
 ## Cleanup
 
@@ -344,10 +350,15 @@ avoids accumulating live chats.
 
 ## Handling errors
 
-All errors extend `CoderAgentError`. Two carry structured detail you can branch on:
+All errors extend `CoderAgentError`, except `CoderStreamError` (below). Two
+carry structured detail you can branch on:
 
 - **`CoderApiError`** — an HTTP request failed. Fields: `status`, `method`, `path`, `detail`.
 - **`CoderChatError`** — a turn ended in an error, timed out, or lost its stream. Fields: `kind`, `retryable`, `statusCode`, `provider`.
+- **`CoderStreamError`** — the event stream dropped and could not be re‑established
+  within its redial budget. Extends the AI SDK's `APICallError` (not
+  `CoderAgentError`) with `isRetryable: true`, so the SDK's own `maxRetries`
+  machinery recognizes it; the last transport failure is in `cause`.
 
 ```ts
 import { CoderApiError, CoderChatError } from "@coder/ai-sdk-agent";

@@ -189,7 +189,12 @@ export type CoderTransportEvent =
   | SegmentStartTransportEvent
   | SegmentSettleTransportEvent;
 
-/** Subscriber for {@link CoderTransportEvent}s. Exceptions are swallowed. */
+/**
+ * Subscriber for {@link CoderTransportEvent}s. Exceptions are swallowed —
+ * including an `async` handler's rejection (a function returning a promise is
+ * assignable to this void-returning signature, and its rejection must not
+ * become an unhandled rejection either).
+ */
 export type TransportEventHandler = (event: CoderTransportEvent) => void;
 
 /**
@@ -203,7 +208,14 @@ export function safeTransportEmitter(
   if (!handler) return undefined;
   return (event) => {
     try {
-      handler(event);
+      // The signature is void-returning, but TypeScript accepts an `async`
+      // handler there — its rejection would land AFTER this try/catch and
+      // become an unhandled rejection (killing the process on Node).
+      // `Promise.resolve` adopts a returned thenable, so both a rejected
+      // async handler and a sync throw (caught below, before the promise
+      // wrapping) are silenced the same way. The handler still runs
+      // synchronously; only its failure handling is deferred.
+      void Promise.resolve(handler(event)).catch(() => {});
     } catch {
       // Observability must never alter turn outcomes: a throwing subscriber
       // is deliberately silenced rather than surfaced into the pipeline.

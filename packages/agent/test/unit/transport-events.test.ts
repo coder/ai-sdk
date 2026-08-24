@@ -88,13 +88,19 @@ class FakeSocket {
  * factory, with the observability hook collecting into `events` (or a custom
  * handler). The REAL stream reader and turn machinery run.
  */
-function harness(config?: { hook?: TransportEventHandler; withoutHook?: boolean }) {
+function harness(config?: {
+  hook?: TransportEventHandler;
+  withoutHook?: boolean;
+  /** Make the WebSocket factory itself throw synchronously on every dial. */
+  throwOnDial?: boolean;
+}) {
   const events: CoderTransportEvent[] = [];
   const onTransportEvent = config?.withoutHook
     ? undefined
     : (config?.hook ?? ((ev: CoderTransportEvent) => void events.push(ev)));
   const sockets: FakeSocket[] = [];
   const factory: WebSocketFactory = (url) => {
+    if (config?.throwOnDial) throw new Error("factory exploded");
     const s = new FakeSocket(url);
     sockets.push(s);
     return s as WebSocketLike;
@@ -609,6 +615,72 @@ describe("transport events: isolation and overhead", () => {
       expect(s.parts.at(-1)).toMatchObject({
         type: "finish",
         finishReason: { unified: "stop" },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("an async subscriber whose promise rejects does not affect the turn (no unhandled rejection)", async () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      const { model, sockets } = harness({
+        // An async handler is assignable to the void-returning signature; its
+        // rejection must be silenced like a sync throw (vitest fails this test
+        // on any unhandled rejection).
+        hook: (async () => {
+          calls += 1;
+          throw new Error("async subscriber boom");
+        }) as unknown as TransportEventHandler,
+      });
+      const s = collect((await model.doStream(newTurnOptions())).stream);
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit(
+        "message",
+        streamFrame(
+          status("running"),
+          delta(1, 1, "Hello"),
+          msg(2, "assistant", [{ type: "text", text: "Hello" }]),
+          status("waiting"),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      await s.done; // resolves — the turn is unaffected
+
+      expect(calls).toBeGreaterThan(0);
+      const text = s.parts
+        .filter((p) => p.type === "text-delta")
+        .map((p) => p.delta)
+        .join("");
+      expect(text).toBe("Hello");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a synchronously-throwing socket factory still gets ws:error and exactly one ws:close", async () => {
+    vi.useFakeTimers();
+    try {
+      const { events, model } = harness({ throwOnDial: true });
+      const s = collect((await model.doStream(newTurnOptions())).stream);
+      const err = s.done.then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(String(await err)).toMatch(/factory exploded/);
+
+      // The dial is matched by an error and exactly one close, then the
+      // segment settles with the failure — no unmatched dial.
+      expect(events.filter((e) => e.type === "ws:dial")).toHaveLength(1);
+      expect(events.filter((e) => e.type === "ws:error")).toEqual([
+        expect.objectContaining({ type: "ws:error", attempt: 1, message: "factory exploded" }),
+      ]);
+      expect(events.filter((e) => e.type === "ws:close")).toHaveLength(1);
+      expect(events.at(-1)).toMatchObject({
+        type: "segment:settle",
+        error: { message: "factory exploded" },
       });
     } finally {
       vi.useRealTimers();

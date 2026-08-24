@@ -231,7 +231,20 @@ async function* streamChatEventsLoop(
 
     attempt += 1;
     emit?.({ type: "ws:dial", chatId, attempt, url, timestamp: Date.now() });
-    const ws = factory(url, { headers: { "Coder-Session-Token": token } });
+    let ws: WebSocketLike;
+    try {
+      ws = factory(url, { headers: { "Coder-Session-Token": token } });
+    } catch (err) {
+      // A synchronously-throwing factory is a terminal reader failure (as
+      // before the hooks); keep the observability invariants on the way out —
+      // the emitted dial still gets its error and exactly-one close.
+      if (emit) {
+        const message = err instanceof Error ? err.message : String(err);
+        emit({ type: "ws:error", chatId, attempt, message, timestamp: Date.now() });
+        emit({ type: "ws:close", chatId, attempt, timestamp: Date.now() });
+      }
+      throw err;
+    }
 
     const onAbort = () => {
       finished = true;

@@ -892,12 +892,8 @@ describe("TurnTranslator — earlier-message revision reconciliation (#57)", () 
       { type: "tool-call", tool_call_id: "s1", tool_name: "run", args: {} },
     ]);
     const { parts } = run([
-      msg(2, "assistant", [
-        { type: "tool-call", tool_call_id: "s1", tool_name: "run", args: {} },
-      ]),
-      msg(3, "tool", [
-        { type: "tool-result", tool_call_id: "s1", tool_name: "run", result: {} },
-      ]),
+      msg(2, "assistant", [{ type: "tool-call", tool_call_id: "s1", tool_name: "run", args: {} }]),
+      msg(3, "tool", [{ type: "tool-result", tool_call_id: "s1", tool_name: "run", result: {} }]),
       part("assistant", { type: "text", text: "Result: " }),
       revised, // mid-race: must claim nothing
       msg(4, "assistant", [{ type: "text", text: "Result: ok" }]),

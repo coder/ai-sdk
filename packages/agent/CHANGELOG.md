@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/coder/ai-sdk/compare/agent-v0.4.3...agent-v0.5.0) (2026-08-24)
+
+Turn segments now share a single chat stream instead of opening a new one per segment, improving efficiency during multi-segment turns.
+
+### Highlights
+
+- The agent reuses one chat stream across turn segments rather than creating a separate stream for each. ([#64](https://github.com/coder/ai-sdk/pull/64))
+
+### Features
+
+* **agent:** reuse one chat stream across turn segments ([#64](https://github.com/coder/ai-sdk/issues/64)) ([7986e0c](https://github.com/coder/ai-sdk/commit/7986e0c28f22e6efa0f57f0f07a607b6e8498831))
+
 ## [0.4.3](https://github.com/coder/ai-sdk/compare/agent-v0.4.2...agent-v0.4.3) (2026-08-24)
 
 This patch fixes several agent reliability issues around streaming and event handling, including recovering dropped chat streams and lost action_required events. It also exports TERMINAL_STATUSES at runtime and refreshes documentation.

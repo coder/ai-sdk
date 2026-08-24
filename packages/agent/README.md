@@ -317,8 +317,10 @@ generating during the gap, so a transient drop costs nothing and the run is
 **not** interrupted. Only when the stream cannot be re‑established (several
 consecutive failed attempts, ~15s) is the server run interrupted and the call
 rejected with a `CoderStreamError` — an AI SDK `APICallError` with
-`isRetryable: true`, so setting `maxRetries` makes the SDK retry it
-automatically. A non‑transient 4xx upgrade rejection (bad/expired token,
+`isRetryable: true`, so `generate()` calls with `maxRetries` set retry it
+automatically. (For `stream()`, a mid‑stream failure surfaces on the stream
+itself, outside the SDK's retry wrapper — handle it in your consumption loop.)
+A non‑transient 4xx upgrade rejection (bad/expired token,
 deleted chat) fails fast with a `CoderApiError` instead of retrying; 408/425/429
 consume the redial budget like any other transient failure.
 
@@ -358,8 +360,9 @@ carry structured detail you can branch on:
 - **`CoderChatError`** — a turn ended in an error, timed out, or lost its stream. Fields: `kind`, `retryable`, `statusCode`, `provider`.
 - **`CoderStreamError`** — the event stream dropped and could not be re‑established
   within its redial budget. Extends the AI SDK's `APICallError` (not
-  `CoderAgentError`) with `isRetryable: true`, so the SDK's own `maxRetries`
-  machinery recognizes it; the last transport failure is in `cause`.
+  `CoderAgentError`) with `isRetryable: true`, so `generate()`'s `maxRetries`
+  machinery recognizes it (a failure mid‑`stream()` surfaces on the stream,
+  outside the retry wrapper); the last transport failure is in `cause`.
 
 ```ts
 import { CoderApiError, CoderChatError } from "@coder/ai-sdk-agent";

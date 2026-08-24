@@ -39,8 +39,10 @@ export class CoderApiError extends CoderAgentError {
  * redial budget. Extends the AI SDK's {@link APICallError} with
  * `isRetryable: true` because the `ai` package's retry machinery (`maxRetries`)
  * only honors `APICallError`/`GatewayError`-branded errors — plain `Error`
- * subclasses are never retried no matter what they claim. The last underlying
- * transport failure is preserved as `cause`.
+ * subclasses are never retried no matter what they claim. Note the retry
+ * wrapper only sees errors that reject the model call itself (`generate()`);
+ * a failure mid-`stream()` surfaces on the stream, past that wrapper. The last
+ * underlying transport failure is preserved as `cause`.
  *
  * NOTE: this is deliberately NOT a {@link CoderAgentError} (single
  * inheritance); match it with `APICallError.isInstance(err)` or `err.name`.

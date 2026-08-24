@@ -749,6 +749,36 @@ describe("TurnTranslator — commit-during-disconnect reconciliation (#60)", () 
     expect(reasoning).toBe("Think");
   });
 
+  it("recovers missing snapshot content in wire-part order, not open-block-first", () => {
+    // Only text streamed before the drop; the committed snapshot interleaves
+    // an unseen reasoning part BETWEEN the seen text and the text tail. The
+    // recovered blocks must follow the snapshot's part order (A, Think, B) —
+    // not emit the whole text tail first because the text block was open.
+    const { parts } = run([
+      part("assistant", { type: "text", text: "A" }),
+      // — drop; commit during the gap; redial replays the snapshot —
+      msg(2, "assistant", [
+        { type: "text", text: "A" },
+        { type: "reasoning", text: "Think" },
+        { type: "text", text: "B" },
+      ]),
+      status("waiting"),
+    ]);
+    expect(parts.map((p) => p.type)).toEqual([
+      "text-start",
+      "text-delta", // streamed "A"
+      "text-end",
+      "reasoning-start",
+      "reasoning-delta", // recovered "Think"
+      "reasoning-end",
+      "text-start",
+      "text-delta", // recovered "B"
+      "text-end",
+      "finish",
+    ]);
+    expect(textBlocks(parts)).toEqual(["A", "B"]);
+  });
+
   it("recovers the tail when an announced message commits during the disconnect (same-id snapshot)", () => {
     // chatd can announce a message with an empty snapshot before its deltas.
     // If the message then commits while the stream is down, the reconnect's

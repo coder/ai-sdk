@@ -565,31 +565,35 @@ export class TurnTranslator {
         // next, still-uncommitted message, and a later snapshot naming them
         // settles the attribution instead.
         const rec = known ?? { text: "", reasoning: "", substantive: false };
-        const reconcileText = (): void => {
-          const attributed = rec.text + this.#text.pending;
-          if (!fullText.startsWith(attributed)) return;
-          if (fullText.length > attributed.length) {
-            this.#emitTextDelta(out, fullText.slice(attributed.length));
+        // Per-kind gates: a kind reconciles only when the snapshot's full
+        // content extends what was already attributed + pending for it.
+        const textAttributed = rec.text + this.#text.pending;
+        const reasoningAttributed = rec.reasoning + this.#reasoning.pending;
+        const textOk = fullText.startsWith(textAttributed);
+        const reasoningOk = fullReasoning.startsWith(reasoningAttributed);
+        // Emit each part's missing sub-span walking the snapshot in WIRE
+        // order, so recovered blocks interleave the way the model produced
+        // them (text→reasoning→text stays that way even when the drop left
+        // the text block open) — opening a kind closes the other, and the
+        // ledger, unlike a block cursor, loses nothing to the close.
+        let seenText = 0;
+        let seenReasoning = 0;
+        for (const p of content) {
+          if (p.type === "text") {
+            const end = seenText + (p.text ?? "").length;
+            const from = Math.max(seenText, textAttributed.length);
+            if (textOk && end > from) this.#emitTextDelta(out, fullText.slice(from, end));
+            seenText = end;
+          } else if (p.type === "reasoning") {
+            const end = seenReasoning + (p.text ?? "").length;
+            const from = Math.max(seenReasoning, reasoningAttributed.length);
+            if (reasoningOk && end > from)
+              this.#emitReasoningDelta(out, fullReasoning.slice(from, end));
+            seenReasoning = end;
           }
-          rec.text = fullText;
-        };
-        const reconcileReasoning = (): void => {
-          const attributed = rec.reasoning + this.#reasoning.pending;
-          if (!fullReasoning.startsWith(attributed)) return;
-          if (fullReasoning.length > attributed.length) {
-            this.#emitReasoningDelta(out, fullReasoning.slice(attributed.length));
-          }
-          rec.reasoning = fullReasoning;
-        };
-        // The currently open block reconciles FIRST: emitting the other kind
-        // closes it, and the block order should match the wire order.
-        if (this.#reasoning.id) {
-          reconcileReasoning();
-          reconcileText();
-        } else {
-          reconcileText();
-          reconcileReasoning();
         }
+        if (textOk) rec.text = fullText;
+        if (reasoningOk) rec.reasoning = fullReasoning;
         // Reaching this path means THIS snapshot owns the pending deltas (the
         // race guard above intercepts the one ambiguous ordering), so they
         // are settled even when reconciliation failed: a rewrite-on-commit

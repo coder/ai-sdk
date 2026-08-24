@@ -80,7 +80,9 @@ try {
   // For large or non-allowlisted files (a 20 MiB zip of assets, a dataset, a
   // binary) — material for the agent to *operate on* rather than read — write it
   // to the workspace instead. Bind the chat to a workspace and supply a
-  // `workspaceFiles` adapter (e.g. over a @coder/ai-sdk-eve-sandbox session):
+  // `workspaceFiles` adapter (e.g. writes over a `CoderWorkspaceSession` from
+  // `@coder/ai-sdk-sandbox`, with the workspace UUID `ws.id` retained from
+  // `ensureCoderWorkspace`):
   //
   //   const agent = new CoderAgent({ ..., workspaceId: ws.id, workspaceFiles });
   //   const { path } = await agent.uploadToWorkspace({

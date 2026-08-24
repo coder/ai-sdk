@@ -1,10 +1,10 @@
 # Contributing
 
-`coder/ai-sdk` is a pnpm monorepo of two independent, independently-published
-packages — see the [README](./README.md) for what each one is. The two target
-different Vercel AI SDK generations (`@coder/ai-sdk-sandbox` on v7,
-`@coder/ai-sdk-agent` on v6); pnpm isolates their dependency trees, so both `ai`
-versions coexist without conflict.
+`coder/ai-sdk` is a pnpm monorepo of three independent, independently-published
+packages — `@coder/ai-sdk-sandbox`, `@coder/ai-sdk-agent`, and
+`@coder/ai-sdk-provider`; see the [README](./README.md) for what each one is.
+All three target Vercel AI SDK v7, and pnpm keeps their dependency trees
+isolated.
 
 ## Setup
 
@@ -88,7 +88,7 @@ Releases are fully automated with
 [release-please](https://github.com/googleapis/release-please) — no manual version
 bumps or `npm publish`. It reads Conventional Commit history and opens a release PR
 per package; merging that PR versions the package, tags it (`sandbox-vX.Y.Z` /
-`agent-vX.Y.Z`), and publishes to npm with provenance. The two packages version and
-release independently.
+`agent-vX.Y.Z` / `provider-vX.Y.Z`), and publishes to npm with provenance. The
+three packages version and release independently.
 
 [cc]: https://www.conventionalcommits.org

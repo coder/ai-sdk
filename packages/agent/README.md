@@ -613,7 +613,7 @@ what's available.
 ```
 CoderAgent  (implements ai.Agent)
   └─ ToolLoopAgent (ai)            ← inherits generate()/stream(), loop control
-       └─ CoderLanguageModel       ← implements @ai-sdk/provider LanguageModelV3
+       └─ CoderLanguageModel       ← implements @ai-sdk/provider LanguageModelV4
             └─ CoderChatClient      ← REST + WebSocket to /api/experimental/chats
                  └─ Coder Agents     ← runs the agent loop SERVER-side
 ```

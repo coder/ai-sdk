@@ -9,7 +9,7 @@ export default defineConfig({
   target: "es2022",
   // The AI SDK chain stays external: `ai`/`zod` are peers, and the
   // sub-providers we compose are real runtime dependencies — never bundle them
-  // (bundling would fork the LanguageModelV3 type identity from the consumer's).
+  // (bundling would fork the LanguageModelV4 type identity from the consumer's).
   external: [
     "ai",
     "zod",

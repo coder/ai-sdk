@@ -586,6 +586,31 @@ describe("TurnTranslator — redial replay", () => {
     expect(finish.usage.inputTokens.total).toBe(5);
   });
 
+  it("recovers a reasoning suffix when reasoning was the open block at the drop", () => {
+    // The drop happens while REASONING is still streaming; the message commits
+    // during the gap with completed reasoning plus final text. The open
+    // reasoning block must reconcile before snapshot text opens its own block
+    // (which closes reasoning and would discard its length cursor).
+    const { parts } = run([
+      part("assistant", { type: "reasoning", text: "Think" }),
+      // — drop; commit during the gap; redial replays the snapshot —
+      msg(2, "assistant", [
+        { type: "reasoning", text: "Thinking hard" },
+        { type: "text", text: "Answer" },
+      ]),
+      status("waiting"),
+    ]);
+    const reasoning = parts
+      .filter((p) => p.type === "reasoning-delta")
+      .map((p) => ("delta" in p ? p.delta : ""))
+      .join("");
+    expect(reasoning).toBe("Thinking hard");
+    expect(textBlocks(parts)).toEqual(["Answer"]);
+    // Block order preserved: reasoning completes before text opens.
+    const types = parts.map((p) => p.type);
+    expect(types.indexOf("reasoning-end")).toBeLessThan(types.indexOf("text-start"));
+  });
+
   it("does not double-emit content, tool calls, or usage when a reconnect replays the turn", () => {
     // A dropped/redialed stream can replay events the translator already saw:
     // the committed snapshot of a message whose deltas streamed, and the

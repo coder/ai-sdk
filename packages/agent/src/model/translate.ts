@@ -452,20 +452,33 @@ export class TurnTranslator {
       // never received (the message committed while a dropped stream was
       // redialing), so emit the missing suffix instead of losing it. Once the
       // block is closed the length cursor is gone, and the snapshot must be
-      // skipped as before.
-      if (!this.#text.sawDelta || this.#text.id) {
-        const full = content
-          .filter((p) => p.type === "text")
-          .map((p) => p.text ?? "")
-          .join("");
-        if (full.length > 0) this.#emitTextUpTo(out, full);
-      }
-      if (!this.#reasoning.sawDelta || this.#reasoning.id) {
-        const full = content
-          .filter((p) => p.type === "reasoning")
-          .map((p) => p.text ?? "")
-          .join("");
-        if (full.length > 0) this.#emitReasoningUpTo(out, full);
+      // skipped as before. The currently open block reconciles FIRST: opening
+      // the other kind closes it (resetting its length cursor), which would
+      // silently drop its gap suffix.
+      const emitSnapshotText = (): void => {
+        if (!this.#text.sawDelta || this.#text.id) {
+          const full = content
+            .filter((p) => p.type === "text")
+            .map((p) => p.text ?? "")
+            .join("");
+          if (full.length > 0) this.#emitTextUpTo(out, full);
+        }
+      };
+      const emitSnapshotReasoning = (): void => {
+        if (!this.#reasoning.sawDelta || this.#reasoning.id) {
+          const full = content
+            .filter((p) => p.type === "reasoning")
+            .map((p) => p.text ?? "")
+            .join("");
+          if (full.length > 0) this.#emitReasoningUpTo(out, full);
+        }
+      };
+      if (this.#reasoning.id) {
+        emitSnapshotReasoning();
+        emitSnapshotText();
+      } else {
+        emitSnapshotText();
+        emitSnapshotReasoning();
       }
       // Tool calls/results and sources are id-deduped, so snapshots process them
       // unconditionally (even when the snapshot is a text/reasoning no-op).

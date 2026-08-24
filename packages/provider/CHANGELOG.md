@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.2](https://github.com/coder/ai-sdk/compare/provider-v0.3.1...provider-v0.3.2) (2026-08-24)
+
+Documentation-only release that corrects inconsistencies across the README and CONTRIBUTING files.
+
+### Highlights
+
+- Fixed documentation drift across the READMEs and CONTRIBUTING guide. ([#51](https://github.com/coder/ai-sdk/pull/51))
+
+### Documentation
+
+* fix drift across READMEs and CONTRIBUTING ([#51](https://github.com/coder/ai-sdk/issues/51)) ([6c0001b](https://github.com/coder/ai-sdk/commit/6c0001b612830ca4d653a7ef828a7cd89c6b1f70))
+
 ## [0.3.1](https://github.com/coder/ai-sdk/compare/provider-v0.3.0...provider-v0.3.1) (2026-08-18)
 
 A maintenance release with no user-facing changes.

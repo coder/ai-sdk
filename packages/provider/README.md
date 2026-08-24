@@ -129,9 +129,9 @@ client does, and documented in the
 ### Data flow
 
 ```text
-your app ──HTTPS──▶ your Coder deployment ──▶ upstream provider
- (this package)     (AI Gateway intercepts    (Anthropic, OpenAI,
-                     /api/v2/aibridge/…)       Bedrock, Copilot, …)
+your app ──HTTP(S)──▶ your Coder deployment ──▶ upstream provider
+ (this package)       (AI Gateway intercepts    (Anthropic, OpenAI,
+                       /api/v2/aibridge/…)       Bedrock, Copilot, …)
 ```
 
 **What leaves your app.** This package's only network destination is the
@@ -150,6 +150,11 @@ normal provider call:
   sampling parameters. Prompt content is visible to the Gateway — that is what
   enables auditing.
 - Anything you add via the `headers` option.
+
+Transport security follows the scheme of your `baseURL` — the client does not
+enforce `https://` (an `http://` URL sends tokens, keys, and prompts in
+plaintext). Always use an HTTPS deployment URL outside trusted local
+environments.
 
 **What the Gateway does before forwarding** _(server-side —
 [authentication docs](https://coder.com/docs/ai-coder/ai-gateway/auth))_: it

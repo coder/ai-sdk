@@ -363,10 +363,16 @@ export class CoderLanguageModel implements LanguageModelV4 {
    * event is emitted in a `finally`, so every started segment settles exactly
    * once: cleanly (with the terminal status carried by the `finish` part that
    * streamed through), with an `error` summary, or — when the consumer tears
-   * the stream down mid-segment — with neither.
+   * the stream down mid-segment — with neither. Consumer teardown has two
+   * shapes: a plain generator return (no catch runs), and a
+   * `ReadableStream.cancel()` that {@link doStream} routes through an abort to
+   * unblock a pending socket read — the latter surfaces here as an abort
+   * throw, so `isConsumerCancel` (supplied by `doStream`) reclassifies it as
+   * teardown rather than a failed segment.
    */
   async *#runTurn(
     options: LanguageModelV4CallOptions,
+    isConsumerCancel?: () => boolean,
   ): AsyncGenerator<LanguageModelV4StreamPart, void, void> {
     const emit = this.#emitTransportEvent;
     if (!emit) {
@@ -391,8 +397,12 @@ export class CoderLanguageModel implements LanguageModelV4 {
         yield part;
       }
     } catch (err) {
-      failure = err;
-      failed = true;
+      // An intentional consumer cancel is a teardown, not a failed segment —
+      // even though it reaches the turn as an abort (see the doc comment).
+      if (!isConsumerCancel?.()) {
+        failure = err;
+        failed = true;
+      }
       throw err;
     } finally {
       const settleEvent: SegmentSettleTransportEvent = {
@@ -927,7 +937,7 @@ export class CoderLanguageModel implements LanguageModelV4 {
     const abortSignal = options.abortSignal
       ? AbortSignal.any([options.abortSignal, cancelController.signal])
       : cancelController.signal;
-    const gen = this.#runTurn({ ...options, abortSignal });
+    const gen = this.#runTurn({ ...options, abortSignal }, () => cancelController.signal.aborted);
     const stream = new ReadableStream<LanguageModelV4StreamPart>({
       async pull(controller) {
         try {

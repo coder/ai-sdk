@@ -738,6 +738,36 @@ describe("transport events: isolation and overhead", () => {
     expect(safeTransportEmitter(undefined)).toBeUndefined();
   });
 
+  it("a consumer cancel settles the segment as a teardown (no status, no error)", async () => {
+    vi.useFakeTimers();
+    try {
+      const { events, model, sockets } = harness();
+      const { stream } = await model.doStream(newTurnOptions());
+      const reader = (stream as ReadableStream<unknown>).getReader();
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("message", streamFrame(status("running"), delta(1, 1, "Hel")));
+      await vi.advanceTimersByTimeAsync(0);
+      // Consume what's buffered, then cancel while the next read is blocked
+      // on the socket — the documented consumer-teardown path.
+      await reader.read(); // stream-start
+      const cancelled = reader.cancel();
+      await vi.advanceTimersByTimeAsync(0);
+      await cancelled;
+
+      const settle = events.find((e) => e.type === "segment:settle") as Extract<
+        CoderTransportEvent,
+        { type: "segment:settle" }
+      >;
+      expect(settle).toBeDefined();
+      expect(settle.error).toBeUndefined();
+      expect(settle.status).toBeUndefined();
+      expect(settle.finishReason).toBeUndefined();
+      expect(settle.durationMs).toBeGreaterThanOrEqual(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("an aborted segment settles with the abort error", async () => {
     vi.useFakeTimers();
     try {

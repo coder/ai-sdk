@@ -209,10 +209,14 @@ the deployment dashboard under `/ai-gateway/sessions`.
 - **Do developers ever handle raw provider keys?** Centralized mode: no —
   developers only ever hold a Coder token. BYOK mode: they supply their own
   personal key, which is forwarded per request without entering central custody.
-- **What is the blast radius of a leaked Coder token?** It cannot authenticate
-  to upstream vendors — the Gateway strips it and it never leaves your
-  deployment. Until revoked or expired it can spend AI usage through your
-  Gateway, fully attributed to that user; revoke it like any Coder API token.
+- **What is the blast radius of a leaked Coder token?** A Coder API token is
+  not an AI-only credential — it grants the bearer the user's **full Coder API
+  permissions** (workspaces, templates, and anything else that user's roles
+  allow), and, until revoked or expired, AI usage through your Gateway (fully
+  attributed to that user). What it can _not_ do is authenticate to upstream
+  vendors: the Gateway strips it and it never leaves your deployment. Treat a
+  leak as a Coder account compromise — revoke the token — and prefer
+  short-lived, dedicated tokens for AI workloads.
 - **Is model output stored?** No — assistant-generated text is discarded.
   Auditing keeps the last user prompt, token counts, tool-call arguments, and
   model reasoning.

@@ -126,13 +126,18 @@ export class CoderLanguageModel implements LanguageModelV4 {
    * id, so this runs before the chat exists). Pre-uploaded files carried via
    * `providerOptions.coder.fileId` are referenced without re-uploading.
    */
-  #buildContent(content: UserContent, signal?: AbortSignal): Promise<ChatInputPart[]> {
+  #buildContent(
+    content: UserContent,
+    signal?: AbortSignal,
+    onUpload?: () => void,
+  ): Promise<ChatInputPart[]> {
     const uploadFile: FilePartUploader = async (f) => {
       const uploaded = await this.#config.client.uploadChatFile(
         this.#config.organizationId,
         { content: dataContentToFileContent(f.data), mediaType: f.mediaType, name: f.filename },
         signal,
       );
+      onUpload?.();
       return uploaded.id;
     };
     return userContentToInputParts(content, uploadFile);
@@ -240,6 +245,10 @@ export class CoderLanguageModel implements LanguageModelV4 {
       // whole-call retry after a stream failure is safe (see the
       // CoderStreamError handling below).
       let turnCreatedChat = false;
+      // Whether this call uploaded inline file attachments — an external
+      // effect a whole-call retry would repeat, creating redundant file
+      // records (pre-uploaded `fileId` references don't set this).
+      let uploadedAttachment = false;
 
       // A fresh instance resuming an existing chat (config.chatId) has no
       // message cursor yet. Without one, a queued submission or a tool-result
@@ -263,7 +272,9 @@ export class CoderLanguageModel implements LanguageModelV4 {
         // resolve file parts to `file` input parts referencing their uploaded ids.)
         const [modelConfigId, content] = await Promise.all([
           this.#resolveModelConfigId(signal),
-          this.#buildContent(action.content, signal),
+          this.#buildContent(action.content, signal, () => {
+            uploadedAttachment = true;
+          }),
         ]);
         if (!this.#chatId) {
           const req: CreateChatRequest = {
@@ -368,12 +379,14 @@ export class CoderLanguageModel implements LanguageModelV4 {
             discardSession = true;
           }
           const effectful =
-            Boolean(this.#config.workspaceId) || Boolean(this.#config.mcpServerIds?.length);
+            Boolean(this.#config.workspaceId) ||
+            Boolean(this.#config.mcpServerIds?.length) ||
+            uploadedAttachment;
           if (turnCreatedChat && !effectful) throw err;
           throw new CoderStreamError({
             message: `${err.message}; automatic retry is disabled because ${
               turnCreatedChat
-                ? "the chat has server-side tools (workspace/MCP) that may already have executed"
+                ? "the turn has server-side effects a replay would repeat (workspace/MCP tools that may have executed, or freshly uploaded attachments)"
                 : "the chat has prior state (a retry would resubmit this turn's prompt as a new user turn)"
             }`,
             url: err.url,

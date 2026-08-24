@@ -947,6 +947,47 @@ describe("CoderLanguageModel stream redial (real reader)", () => {
     }
   });
 
+  it("downgrades exhaustion to non-retryable when the turn uploaded attachments", async () => {
+    vi.useFakeTimers();
+    try {
+      // An inline file part is uploaded before the chat exists; an automatic
+      // replay would upload it AGAIN, accumulating redundant file records.
+      const { model, sockets } = redialModel();
+      const { stream } = await model.doStream({
+        prompt: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "hi" },
+              {
+                type: "file",
+                data: { type: "data", data: new Uint8Array([1, 2, 3]) },
+                mediaType: "text/plain",
+                filename: "a.txt",
+              },
+            ],
+          },
+        ],
+      } as never);
+      const done = drain(stream.getReader()).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("message", streamFrame(status("running")));
+      await vi.advanceTimersByTimeAsync(0);
+      for (let i = 0; i < 5; i++) {
+        sockets.at(-1)?.emit("close", { code: 1006 });
+        await vi.advanceTimersByTimeAsync(30_000);
+      }
+      const err = await done;
+      expect(err).toMatchObject({ name: "CoderStreamError", isRetryable: false });
+      expect(model.chatId).toBeUndefined(); // the dead fresh chat is still discarded
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("downgrades exhaustion to non-retryable when the chat has prior state", async () => {
     vi.useFakeTimers();
     try {

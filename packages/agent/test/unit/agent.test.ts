@@ -31,9 +31,17 @@ class FakeClient {
   submitted: SubmitToolResultsRequest[] = [];
   uploads: ChatFileInput[] = [];
   #nextMessageId = 1000;
+  /** streamEvents() invocations — one per dialed socket. */
+  dials = 0;
+  #live: { queue: ChatStreamEvent[]; wake: (() => void) | undefined; open: boolean } | undefined;
 
   constructor(turns: ChatStreamEvent[][]) {
     this.turns = turns;
+  }
+
+  /** Whether the most recently dialed stream is still open. */
+  get liveOpen(): boolean {
+    return this.#live?.open ?? false;
   }
 
   async resolveModelConfigId(): Promise<string | undefined> {
@@ -54,6 +62,15 @@ class FakeClient {
 
   async submitToolResults(_chatId: string, req: SubmitToolResultsRequest): Promise<void> {
     this.submitted.push(req);
+    // The resumed generation's events arrive on the LIVE stream — the model
+    // retains the socket across the requires_action pause (#44), so the next
+    // scripted batch is pushed rather than served by a fresh dial. Without a
+    // live stream (never dialed, or already closed) the batch waits for the
+    // next dial instead.
+    if (this.#live?.open) {
+      this.#live.queue.push(...(this.turns[this.#turnIndex++] ?? []));
+      this.#live.wake?.();
+    }
   }
 
   async uploadChatFile(_orgId: string, file: ChatFileInput): Promise<UploadedChatFile> {
@@ -65,13 +82,46 @@ class FakeClient {
     };
   }
 
-  async *streamEvents(): AsyncGenerator<ChatStreamEvent, void, void> {
-    const events = this.turns[this.#turnIndex++] ?? [];
-    for (const ev of events) {
-      // Simulate async delivery.
-      await Promise.resolve();
-      yield ev;
-    }
+  /**
+   * A live-subscription stand-in for the real stream reader: each dial
+   * delivers the next scripted batch and then stays open (chatd's stream
+   * outlives a settled turn), waiting for batches pushed by
+   * {@link submitToolResults} on the retained socket. Ends only when the
+   * stream's lifetime signal aborts (session close) or on generator teardown.
+   */
+  streamEvents(
+    _chatId: string,
+    opts?: { afterId?: number; signal?: AbortSignal },
+  ): AsyncGenerator<ChatStreamEvent, void, void> {
+    this.dials += 1;
+    const chan = {
+      queue: [...(this.turns[this.#turnIndex++] ?? [])],
+      wake: undefined as (() => void) | undefined,
+      open: true,
+    };
+    this.#live = chan;
+    const signal = opts?.signal;
+    return (async function* () {
+      try {
+        while (!signal?.aborted) {
+          while (chan.queue.length > 0) {
+            // Simulate async delivery.
+            await Promise.resolve();
+            yield chan.queue.shift() as ChatStreamEvent;
+          }
+          // Idle live subscription: wait for the next pushed batch, waking on
+          // the lifetime signal so close() can settle a pending read.
+          await new Promise<void>((resolve) => {
+            chan.wake = resolve;
+            if (signal?.aborted) resolve();
+            else signal?.addEventListener("abort", () => resolve(), { once: true });
+          });
+          chan.wake = undefined;
+        }
+      } finally {
+        chan.open = false;
+      }
+    })();
   }
 
   async getMessages(): Promise<ChatMessagesResponse> {
@@ -244,8 +294,96 @@ describe("CoderAgent integration (mock client)", () => {
     expect(result.steps).toHaveLength(2);
     expect(result.text).toContain("21");
 
+    // ONE stream for the whole turn (#44): the requires_action pause retained
+    // the socket and the resume segment read from it — no re-dial.
+    expect(fake.dials).toBe(1);
+
     // The custom tool was registered as a chatd dynamic tool at chat creation.
     expect(fake.createdChats[0]?.unsafe_dynamic_tools?.map((t) => t.name)).toEqual(["getWeather"]);
+  });
+
+  it("interrupt() during tool execution closes the paused stream; the resume dials fresh", async () => {
+    // agent.interrupt() between segments (while a client tool runs) kills the
+    // paused turn: the retained socket must not survive it — it would buffer
+    // the interrupt's own settle events, which the resume would then consume
+    // as if they were the resumed generation's — so the resume re-dials.
+    const interrupted: string[] = [];
+    class InterruptibleClient extends FakeClient {
+      override async interruptChat(chatId: string): Promise<Chat> {
+        interrupted.push(chatId);
+        return chatStub(chatId);
+      }
+    }
+    const fake = new InterruptibleClient([
+      [
+        status("running"),
+        status("requires_action"),
+        {
+          type: "action_required",
+          chat_id: "chat-1",
+          action_required: {
+            tool_calls: [{ tool_call_id: "tc1", tool_name: "getWeather", args: '{"city":"P"}' }],
+          },
+        },
+      ],
+      // Delivered AFTER the interrupt — on the fresh dial, not the dead pause.
+      [
+        status("running"),
+        msg(3, "assistant", [{ type: "text", text: "Cut short." }]),
+        status("waiting"),
+      ],
+    ]);
+    let agent!: ReturnType<typeof makeAgent<Record<string, unknown>>>;
+    const tools = {
+      getWeather: tool({
+        description: "Get weather",
+        inputSchema: z.object({ city: z.string() }),
+        execute: async () => {
+          await agent.interrupt();
+          return { temp: 0 };
+        },
+      }),
+    };
+    agent = makeAgent(fake, tools);
+
+    const result = await agent.generate({ prompt: "weather?" });
+    expect(interrupted).toEqual(["chat-1"]);
+    // The paused socket was closed by the interrupt, so the resumed segment
+    // dialed a fresh stream (which delivered the post-interrupt batch).
+    expect(fake.dials).toBe(2);
+    expect(result.text).toBe("Cut short.");
+  });
+
+  it("archive() releases a socket retained by an abandoned client-tool pause", async () => {
+    // A tool WITHOUT an execute handler: the AI SDK stops after the pause and
+    // returns the tool calls to the caller — the retained socket has no
+    // resume coming. archive(), the guaranteed-cleanup path, must release it.
+    const tools = {
+      getWeather: tool({
+        description: "Get weather",
+        inputSchema: z.object({ city: z.string() }),
+      }),
+    };
+    const fake = new FakeClient([
+      [
+        status("running"),
+        status("requires_action"),
+        {
+          type: "action_required",
+          chat_id: "chat-1",
+          action_required: {
+            tool_calls: [{ tool_call_id: "tc1", tool_name: "getWeather", args: '{"city":"P"}' }],
+          },
+        },
+      ],
+    ]);
+    const agent = makeAgent(fake, tools);
+    const result = await agent.generate({ prompt: "weather?" });
+    expect(result.finishReason).toBe("tool-calls");
+    expect(fake.liveOpen).toBe(true); // paused, awaiting a resume that never comes
+
+    await agent.archive();
+    expect(fake.liveOpen).toBe(false);
   });
 
   it("streams text deltas via stream()", async () => {
@@ -578,10 +716,22 @@ describe("CoderAgent cancellation & failures", () => {
   });
 
   it("errors (not a silent stop) when the stream ends before a terminal status", async () => {
-    // No terminal status — the socket closed mid-run.
-    const fake = new FakeClient([[status("running"), textPart("partial…")]]);
+    // No terminal status — the reader ended mid-run (with redial internal to
+    // the real reader, a clean `done` means the stream was torn down
+    // underneath the segment). Ends the generator explicitly: the FakeClient
+    // models a live subscription that never ends on its own.
+    const client = {
+      resolveModelConfigId: async () => undefined,
+      createChat: async () => chatStub("chat-1"),
+      interruptChat: async (id: string) => chatStub(id),
+      streamEvents: () =>
+        (async function* () {
+          yield status("running");
+          yield textPart("partial…");
+        })(),
+    };
     const model = new CoderLanguageModel({
-      client: fake as unknown as CoderChatClient,
+      client: client as unknown as CoderChatClient,
       organizationId: "o",
     });
 
@@ -615,6 +765,33 @@ describe("CoderAgent cancellation & failures", () => {
     expect(err?.name).toBe("TimeoutError");
     expect(err).not.toBeInstanceOf(CoderChatError);
     expect(interrupted).toEqual(["chat-1"]);
+  });
+
+  it("resetSession() mid-segment still interrupts the orphaned server run", async () => {
+    // Reset closes the attached stream and clears the session id; the failing
+    // segment's teardown must interrupt THIS turn's run via its captured chat
+    // id — otherwise the server generation keeps burning with no listener.
+    let reached!: () => void;
+    const midStream = new Promise<void>((r) => {
+      reached = r;
+    });
+    const { client, interrupted } = stallingClient(reached);
+    const model = new CoderLanguageModel({
+      client: client as CoderChatClient,
+      organizationId: "o",
+    });
+    const { stream } = await model.doStream({
+      prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    } as never);
+    const err = drain(stream.getReader()).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    await midStream;
+    model.resetSession();
+    expect(await err).toMatchObject({ name: "CoderChatError", kind: "stream_closed" });
+    expect(interrupted).toEqual(["chat-1"]);
+    expect(model.chatId).toBeUndefined();
   });
 
   it("surfaces a mid-turn stream transport error as a retryable stream_closed", async () => {
@@ -699,13 +876,17 @@ type StreamListener = (ev: unknown) => void;
 /** A scripted WebSocket for driving the REAL stream reader (redial) end-to-end. */
 class FakeStreamSocket {
   readonly url: string;
+  /** Whether the CLIENT closed this socket (reader teardown). */
+  closed = false;
   #listeners = new Map<string, Set<StreamListener>>();
 
   constructor(url: string) {
     this.url = url;
   }
   send(_data: string): void {}
-  close(_code?: number): void {}
+  close(_code?: number): void {
+    this.closed = true;
+  }
   addEventListener(type: string, cb: StreamListener): void {
     let set = this.#listeners.get(type);
     if (!set) {
@@ -735,8 +916,12 @@ function redialModel(config?: {
   serverAssignsWorkspace?: boolean;
   /** Scripted GET /messages body (cursor seeding and the requires_action REST fallback). */
   messagesResponse?: () => ChatMessagesResponse | Promise<ChatMessagesResponse>;
+  /** Fail this many POST /tool-results calls with a 500 before succeeding. */
+  toolResultsFailures?: number;
 }) {
   const { serverAssignsWorkspace, messagesResponse, ...modelConfig } = config ?? {};
+  let toolResultsFailures = config?.toolResultsFailures ?? 0;
+  delete (modelConfig as { toolResultsFailures?: number }).toolResultsFailures;
   const sockets: FakeStreamSocket[] = [];
   const factory: WebSocketFactory = (url) => {
     const s = new FakeStreamSocket(url);
@@ -770,6 +955,15 @@ function redialModel(config?: {
           ),
         );
       });
+    }
+    if (init.method === "POST" && pathname.endsWith("/tool-results") && toolResultsFailures > 0) {
+      toolResultsFailures -= 1;
+      return Promise.resolve(
+        new Response(JSON.stringify({ message: "boom" }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
     }
     const body = {
       ...chatStub("chat-1"),
@@ -1646,28 +1840,426 @@ describe("CoderLanguageModel requires_action REST fallback (real reader)", () =>
       expect(sockets).toHaveLength(1);
       sockets[0]?.emit("message", streamFrame(status("running"), status("requires_action")));
       await vi.advanceTimersByTimeAsync(GRACE_MS);
-      // Segment 1 recovered; the AI SDK executes the tool and resumes.
+      // Segment 1 recovered; the AI SDK executes the tool and resumes ON THE
+      // RETAINED SOCKET (#44) — no second dial.
       await vi.advanceTimersByTimeAsync(0);
       expect(execute).toHaveBeenCalledTimes(1);
       expect(execute.mock.calls[0]?.[0]).toEqual({ city: "Paris" });
       expect(fetchCalls.filter((c) => c.includes("/tool-results"))).toHaveLength(1);
-      expect(sockets).toHaveLength(2);
-      // The recovered snapshot (id 3) advanced the cursor even though the
-      // stream never delivered it.
-      expect(sockets[1]?.url).toContain("after_id=3");
+      expect(sockets).toHaveLength(1);
 
-      sockets[1]?.emit(
+      // The resumed generation arrives on the same socket. The recovered
+      // snapshot (id 3) advanced the cursor even though the stream never
+      // delivered it — a late replay of it must be a no-op for the resume
+      // segment, not duplicated text.
+      sockets[0]?.emit(
         "message",
         streamFrame(
           status("running"),
+          msg(3, "assistant", [{ type: "text", text: "Checking." }, pendingCall]),
           msg(5, "assistant", [{ type: "text", text: "It is 21C in Paris." }]),
           status("waiting"),
         ),
       );
       await vi.advanceTimersByTimeAsync(0);
       const result = await resultPromise;
-      expect(result.text).toContain("21");
+      expect(result.text).toBe("It is 21C in Paris.");
       expect(result.steps).toHaveLength(2);
+      // The terminal settle closed the retained socket.
+      expect(sockets[0]?.closed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("CoderLanguageModel stream reuse across segments (#44)", () => {
+  const weatherTools = [
+    {
+      type: "function",
+      name: "getWeather",
+      description: "Get weather",
+      inputSchema: { type: "object" },
+    },
+  ];
+  const newTurnOptions = (abortSignal?: AbortSignal) =>
+    ({
+      prompt: [{ role: "user", content: [{ type: "text", text: "weather?" }] }],
+      tools: weatherTools,
+      ...(abortSignal ? { abortSignal } : {}),
+    }) as never;
+  /** The AI SDK's follow-up call after executing the client tool. */
+  const resumeOptions = () =>
+    ({
+      prompt: [
+        { role: "user", content: [{ type: "text", text: "weather?" }] },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: "c1",
+              toolName: "getWeather",
+              input: { city: "Paris" },
+            },
+          ],
+        },
+        {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "c1",
+              toolName: "getWeather",
+              output: { type: "json", value: { temp: 21 } },
+            },
+          ],
+        },
+      ],
+      tools: weatherTools,
+    }) as never;
+  const delta = (hv: number, seq: number, text: string): ChatStreamEvent => ({
+    type: "message_part",
+    chat_id: "chat-1",
+    message_part: {
+      role: "assistant",
+      part: { type: "text", text },
+      history_version: hv,
+      generation_attempt: 1,
+      seq,
+    },
+  });
+  const actionRequired: ChatStreamEvent = {
+    type: "action_required",
+    chat_id: "chat-1",
+    action_required: {
+      tool_calls: [{ tool_call_id: "c1", tool_name: "getWeather", args: '{"city":"Paris"}' }],
+    },
+  };
+  /** Segment 1 of the scripted turn: streams text, then pauses for the tool. */
+  const segmentOne = [
+    status("running"),
+    delta(1, 1, "Checking."),
+    msg(3, "assistant", [
+      { type: "text", text: "Checking." },
+      { type: "tool-call", tool_call_id: "c1", tool_name: "getWeather", args: { city: "Paris" } },
+    ]),
+    status("requires_action"),
+    actionRequired,
+  ];
+  /** The resumed generation (a NEW episode: history_version bumped). */
+  const segmentTwo = [
+    status("running"),
+    msg(4, "tool", [
+      { type: "tool-result", tool_call_id: "c1", tool_name: "getWeather", result: { temp: 21 } },
+    ]),
+    delta(2, 1, "It is 21C."),
+    msg(5, "assistant", [{ type: "text", text: "It is 21C." }]),
+    status("waiting"),
+  ];
+  const collect = (stream: ReadableStream<unknown>) => {
+    const parts: Record<string, unknown>[] = [];
+    const done = (async () => {
+      const reader = stream.getReader();
+      for (;;) {
+        const { value, done: d } = await reader.read();
+        if (d) break;
+        parts.push(value as Record<string, unknown>);
+      }
+    })();
+    return { parts, done };
+  };
+  const textOf = (parts: Record<string, unknown>[]) =>
+    parts
+      .filter((p) => p.type === "text-delta")
+      .map((p) => p.delta)
+      .join("");
+
+  it("reuses ONE socket across requires_action → resume → terminal settle", async () => {
+    vi.useFakeTimers();
+    try {
+      const { model, sockets, fetchCalls } = redialModel();
+
+      // Segment 1: new turn, settles at the client-tool pause.
+      const s1 = collect((await model.doStream(newTurnOptions())).stream);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sockets).toHaveLength(1);
+      sockets[0]?.emit("message", streamFrame(...segmentOne));
+      await vi.advanceTimersByTimeAsync(0);
+      await s1.done;
+      expect(s1.parts.filter((p) => p.type === "tool-call")).toHaveLength(1);
+      // The pause RETAINED the socket instead of closing it.
+      expect(sockets[0]?.closed).toBe(false);
+
+      // Segment 2: the tool-result resume reads the SAME socket — no re-dial.
+      const s2 = collect((await model.doStream(resumeOptions())).stream);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchCalls.filter((c) => c.includes("/tool-results"))).toHaveLength(1);
+      expect(sockets).toHaveLength(1);
+      sockets[0]?.emit("message", streamFrame(...segmentTwo));
+      await vi.advanceTimersByTimeAsync(0);
+      await s2.done;
+
+      expect(textOf(s2.parts)).toBe("It is 21C.");
+      // No duplicate tool calls or text leaked across the boundary.
+      expect(s2.parts.filter((p) => p.type === "tool-call")).toHaveLength(0);
+      // The terminal settle closed the retained socket; the healthy paused run
+      // was never interrupted.
+      expect(sockets).toHaveLength(1);
+      expect(sockets[0]?.closed).toBe(true);
+      expect(fetchCalls.filter((c) => c.includes("/interrupt"))).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("delivers events buffered while paused (adopted pending read; nothing lost)", async () => {
+    vi.useFakeTimers();
+    try {
+      const { model, sockets } = redialModel();
+      const s1 = collect((await model.doStream(newTurnOptions())).stream);
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("message", streamFrame(...segmentOne));
+      await vi.advanceTimersByTimeAsync(0);
+      await s1.done;
+
+      // The whole resumed generation arrives BEFORE the resume segment
+      // attaches (the client was busy running the tool): it lands in the
+      // paused stream's prefetched read + reader queue.
+      sockets[0]?.emit("message", streamFrame(...segmentTwo));
+      await vi.advanceTimersByTimeAsync(0);
+
+      const s2 = collect((await model.doStream(resumeOptions())).stream);
+      await vi.advanceTimersByTimeAsync(0);
+      await s2.done;
+      expect(textOf(s2.parts)).toBe("It is 21C.");
+      expect(sockets).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("redials a drop during the pause with the TURN's cursor; the resume attaches to the redial", async () => {
+    vi.useFakeTimers();
+    try {
+      // Resume an existing chat so the turn has a real starting cursor (the
+      // newest committed message, id 2) that must be reused verbatim on the
+      // redial — NOT the advanced per-segment cursor.
+      const { model, sockets, fetchCalls } = redialModel({
+        chatId: "chat-1",
+        messagesResponse: () => ({
+          messages: [historyMsg(2, "assistant", [])],
+          queued_messages: [],
+          has_more: false,
+        }),
+      });
+      const s1 = collect((await model.doStream(newTurnOptions())).stream);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sockets).toHaveLength(1);
+      expect(sockets[0]?.url).toContain("after_id=2");
+      sockets[0]?.emit("message", streamFrame(...segmentOne));
+      await vi.advanceTimersByTimeAsync(0);
+      await s1.done;
+
+      // The socket drops while the client tool executes. The paused stream's
+      // outstanding read keeps the redial machinery live: it redials in the
+      // BACKGROUND (after backoff) with the turn's original cursor.
+      sockets[0]?.emit("close", { code: 1006 });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(sockets).toHaveLength(2);
+      expect(sockets[1]?.url).toContain("after_id=2");
+
+      // The reconnect's initial sync replays the turn so far — including the
+      // already-answered pause (chatd re-sends `action_required` while the
+      // chat is still requires_action) — before the resumed generation.
+      const s2 = collect((await model.doStream(resumeOptions())).stream);
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[1]?.emit(
+        "message",
+        streamFrame(
+          status("requires_action"),
+          msg(3, "assistant", [
+            { type: "text", text: "Checking." },
+            {
+              type: "tool-call",
+              tool_call_id: "c1",
+              tool_name: "getWeather",
+              args: { city: "Paris" },
+            },
+          ]),
+          actionRequired,
+          ...segmentTwo,
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      await s2.done;
+
+      // The replayed snapshot and pause must be no-ops for the resume segment:
+      // no duplicated text, and — critically — no re-emitted tool call for the
+      // already-submitted result (the SDK would execute the tool again).
+      expect(textOf(s2.parts)).toBe("It is 21C.");
+      expect(s2.parts.filter((p) => p.type === "tool-call")).toHaveLength(0);
+      const finish = s2.parts.find((p) => p.type === "finish") as {
+        finishReason: { unified: string };
+      };
+      expect(finish.finishReason.unified).toBe("stop");
+      expect(fetchCalls.filter((c) => c.includes("/interrupt"))).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a per-segment abort closes the shared socket (never reusable); the next turn dials fresh", async () => {
+    vi.useFakeTimers();
+    try {
+      const { model, sockets, fetchCalls } = redialModel();
+      const abort = new AbortController();
+      const s1 = (await model.doStream(newTurnOptions(abort.signal))).stream;
+      const err1 = drain(s1.getReader()).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("message", streamFrame(status("running"), delta(1, 1, "Hel")));
+      await vi.advanceTimersByTimeAsync(0);
+
+      abort.abort();
+      expect(await err1).toMatchObject({ name: "AbortError" });
+      // The abort interrupted the server run AND closed the retained socket:
+      // its half-read episode could never be reused, so keeping it open would
+      // only leak the connection until session teardown.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchCalls.filter((c) => c.includes("/interrupt"))).toHaveLength(1);
+      expect(sockets[0]?.closed).toBe(true);
+
+      // The next turn dials fresh; no stale content leaks into it.
+      const s2 = collect((await model.doStream(newTurnOptions())).stream);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sockets).toHaveLength(2);
+      sockets[1]?.emit(
+        "message",
+        streamFrame(
+          status("running"),
+          msg(6, "assistant", [{ type: "text", text: "Fresh." }]),
+          status("waiting"),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      await s2.done;
+      expect(textOf(s2.parts)).toBe("Fresh.");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("closes the paused stream when the resume's tool-result submission fails; a retry dials fresh", async () => {
+    vi.useFakeTimers();
+    try {
+      const { model, sockets, fetchCalls } = redialModel({ toolResultsFailures: 1 });
+      const s1 = collect((await model.doStream(newTurnOptions())).stream);
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("message", streamFrame(...segmentOne));
+      await vi.advanceTimersByTimeAsync(0);
+      await s1.done;
+      expect(sockets[0]?.closed).toBe(false); // paused, retained
+
+      // The resume dies in the REST phase, BEFORE it takes ownership of the
+      // retained stream. The dead turn must not leave the paused socket
+      // behind: the run is interrupted (pushing interrupt-era events into its
+      // buffer), so a retry attaching there would end before the resumed
+      // generation. It must be closed instead.
+      const failed = (await model.doStream(resumeOptions())).stream;
+      const err = await drain(failed.getReader()).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      expect(err).toMatchObject({ name: "CoderApiError", status: 500 });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sockets[0]?.closed).toBe(true);
+      expect(fetchCalls.filter((c) => c.includes("/interrupt"))).toHaveLength(1);
+
+      // A retry re-submits (the failed ids were never marked submitted) and
+      // dials FRESH instead of attaching to the dead stream's buffer.
+      const s2 = collect((await model.doStream(resumeOptions())).stream);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchCalls.filter((c) => c.includes("/tool-results"))).toHaveLength(2);
+      expect(sockets).toHaveLength(2);
+      sockets[1]?.emit("message", streamFrame(...segmentTwo));
+      await vi.advanceTimersByTimeAsync(0);
+      await s2.done;
+      expect(textOf(s2.parts)).toBe("It is 21C.");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retain the stream when an abort lands while the pause's tool calls are being yielded", async () => {
+    vi.useFakeTimers();
+    try {
+      const { model, sockets } = redialModel();
+      const abort = new AbortController();
+      const reader = (await model.doStream(newTurnOptions(abort.signal))).stream.getReader();
+      // Pull until the tool-call part is out — the turn generator is then
+      // suspended mid-settle, with retainStream about to be computed. (The
+      // pulls also drive the turn to dial the socket in the first place.)
+      const untilToolCall = (async () => {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done || (value as { type: string }).type === "tool-call") return;
+        }
+      })();
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("message", streamFrame(...segmentOne));
+      await untilToolCall;
+      abort.abort();
+      const err = await drain(reader).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      expect(err).toMatchObject({ name: "AbortError" });
+
+      // The segment rejected, so its pause was never delivered to the SDK: the
+      // socket must be closed, not left paused-reusable — a retry attaching
+      // would wait forever (the consumed requires_action events are not
+      // re-sent without a reconnect).
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sockets[0]?.closed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("[Symbol.asyncDispose] closes a socket retained by a client-tool pause", async () => {
+    vi.useFakeTimers();
+    try {
+      const { model, sockets } = redialModel();
+      const s1 = collect((await model.doStream(newTurnOptions())).stream);
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("message", streamFrame(...segmentOne));
+      await vi.advanceTimersByTimeAsync(0);
+      await s1.done;
+      expect(sockets[0]?.closed).toBe(false);
+
+      await model[Symbol.asyncDispose]();
+      expect(sockets[0]?.closed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("resetSession() closes the retained socket", async () => {
+    vi.useFakeTimers();
+    try {
+      const { model, sockets } = redialModel();
+      const s1 = collect((await model.doStream(newTurnOptions())).stream);
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("message", streamFrame(...segmentOne));
+      await vi.advanceTimersByTimeAsync(0);
+      await s1.done;
+
+      model.resetSession();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sockets[0]?.closed).toBe(true);
     } finally {
       vi.useRealTimers();
     }

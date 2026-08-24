@@ -413,7 +413,15 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
    */
   async interrupt(opts?: { signal?: AbortSignal }): Promise<void> {
     const id = this.#model.chatId;
-    if (id) await this.#client.interruptChat(id, opts?.signal);
+    if (!id) return;
+    // A stream paused for client tools dies with the run it was following:
+    // close it FIRST so a later resume dials fresh instead of consuming the
+    // interrupt's settle events as the resumed generation's, and so the
+    // socket cannot outlive an explicit interrupt when the tool loop never
+    // resumes. (A stream an active segment is reading is left to that
+    // segment, which observes the settle and closes it.) Local and instant.
+    await this.#model.closePausedStream();
+    await this.#client.interruptChat(id, opts?.signal);
   }
 
   /**
@@ -428,6 +436,12 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
   async archive(opts?: { signal?: AbortSignal }): Promise<void> {
     const id = this.#model.chatId;
     if (!id) return;
+    // The guaranteed-cleanup path also releases a stream retained by a
+    // client-tool pause the caller abandoned (e.g. `stopWhen` ended the tool
+    // loop, or a tool had no execute handler) — the socket must not outlive
+    // the archived chat. Local and instant; an actively-read stream is left
+    // to its segment, which closes it when the run settles.
+    await this.#model.closePausedStream();
     await archiveWhenSettled(this.#client, id, {
       deadlineMs: this.#settleDeadlineMs,
       retryDelayMs: this.#settleRetryDelayMs,
@@ -452,6 +466,15 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
    * ```
    */
   async [Symbol.asyncDispose](): Promise<void> {
+    // Release the session's retained event stream first (issue #44): a turn
+    // that paused for client tools, aborted, or timed out leaves its WebSocket
+    // open for reuse, and scope exit is where it must be freed. Local-only and
+    // instant; never throws.
+    try {
+      await this.#model[Symbol.asyncDispose]();
+    } catch {
+      /* best-effort cleanup */
+    }
     // archive() only soft-hides the chat; it does not stop a generation. If the
     // scope exits mid-turn (e.g. generate() threw, or an early return), interrupt
     // first so chatd stops generating and releases the workspace, then archive.

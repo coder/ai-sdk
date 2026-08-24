@@ -722,3 +722,43 @@ describe("TurnTranslator — redial replay", () => {
     expect(finish.finishReason.unified).toBe("tool-calls");
   });
 });
+
+describe("TurnTranslator — retained-stream replays (#44)", () => {
+  it("clears a stale terminal status when a non-terminal transition follows", () => {
+    // A stream retained across a client-tool pause can redial mid-resume:
+    // the reconnect's status snapshot may still say `requires_action` from
+    // the PREVIOUS segment's pause. The later `running` transition proves the
+    // chat is generating again — the stale settle must not survive it, or the
+    // segment loop would treat the whole resumed generation as post-settle.
+    const t = new TurnTranslator({ dynamicToolNames: new Set() });
+    t.ingest(status("requires_action"));
+    expect(t.terminalStatus).toBe("requires_action");
+    t.ingest(status("running"));
+    expect(t.terminalStatus).toBeUndefined();
+    t.ingest(status("waiting"));
+    expect(t.terminalStatus).toBe("waiting");
+  });
+
+  it("suppresses replayed action_required calls whose results were already submitted", () => {
+    // A redial while the chat is still flipping out of requires_action can
+    // replay the previous segment's `action_required`; re-emitting a call the
+    // session already answered would make the AI SDK run the tool twice.
+    const t = new TurnTranslator({
+      dynamicToolNames: new Set(["myTool"]),
+      submittedToolCallIds: new Set(["tc-answered"]),
+    });
+    const parts = t.ingest({
+      type: "action_required",
+      chat_id: "c",
+      action_required: {
+        tool_calls: [
+          { tool_call_id: "tc-answered", tool_name: "myTool", args: "{}" },
+          { tool_call_id: "tc-new", tool_name: "myTool", args: "{}" },
+        ],
+      },
+    });
+    const calls = parts.filter((p) => p.type === "tool-call");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ toolCallId: "tc-new" });
+  });
+});

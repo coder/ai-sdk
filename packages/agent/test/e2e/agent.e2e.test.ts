@@ -1,7 +1,8 @@
 import { tool } from "ai";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import NodeWebSocket from "ws";
 import { z } from "zod";
-import { CoderAgent, CoderChatClient } from "../../src/index.js";
+import { CoderAgent, CoderChatClient, type WebSocketLike } from "../../src/index.js";
 
 /**
  * Live end-to-end tests against a real Coder deployment.
@@ -146,6 +147,56 @@ suite("CoderAgent e2e (live Coder)", () => {
       Math.max(...result.steps.map((s) => s.usage.inputTokens ?? 0)),
     );
   }, 180_000);
+
+  it("reuses ONE WebSocket across a multi-tool-step turn (#44)", async () => {
+    // Count dialed sockets — the decisive check that client-tool round trips
+    // no longer pay a fresh TLS+upgrade handshake each: one turn with two
+    // sequential tool pauses (three segments) must ride a single socket.
+    const dialed: string[] = [];
+    const countingClient = new CoderChatClient({
+      baseUrl: baseUrl as string,
+      token: token as string,
+      webSocketFactory: (url, { headers }) => {
+        dialed.push(url);
+        return new NodeWebSocket(url, { headers }) as unknown as WebSocketLike;
+      },
+    });
+    const calls: string[] = [];
+    const agent = new CoderAgent({
+      client: countingClient,
+      organizationId,
+      model: process.env.CODER_TOOL_MODEL ?? "sonnet",
+      instructions:
+        "You must call the provided tools to look up information you do not already know. Look up one topic per call.",
+      tools: {
+        lookup: tool({
+          description:
+            "Look up the secret value for a topic. You must call this; the value is not knowable otherwise. One topic per call.",
+          inputSchema: z.object({ topic: z.string() }),
+          execute: async ({ topic }) => {
+            calls.push(topic);
+            return { value: `SECRET-${topic}-${topic.length}` };
+          },
+        }),
+      },
+    });
+
+    const result = await agent.generate({
+      prompt:
+        "Use the lookup tool for topic 'alpha', then (in a separate call) for topic 'beta'. Reply with both values.",
+    });
+    if (agent.chatId) cleanup.push(agent.chatId);
+
+    // Both tools actually round-tripped (values are unguessable).
+    expect(calls).toContain("alpha");
+    expect(calls).toContain("beta");
+    expect(result.text).toContain("SECRET-alpha-5");
+    expect(result.text).toContain("SECRET-beta-4");
+    // At least two client-tool pauses → at least three segments…
+    expect(result.steps.length).toBeGreaterThanOrEqual(3);
+    // …all on ONE socket: the requires_action pauses retained it (#44).
+    expect(dialed).toHaveLength(1);
+  }, 240_000);
 
   it("uploads and downloads a chat file (round-trip)", async () => {
     const text = "hello from the e2e suite\n";

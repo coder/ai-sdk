@@ -131,6 +131,7 @@ function jsonResult(value: unknown): NonNullable<unknown> {
  */
 export class TurnTranslator {
   readonly #dynamicToolNames: ReadonlySet<string>;
+  readonly #submittedToolCallIds: ReadonlySet<string>;
 
   #seq = 0;
   #text = { id: undefined as string | undefined, len: 0, sawDelta: false };
@@ -169,9 +170,22 @@ export class TurnTranslator {
    */
   readonly #turnCursor: number;
 
-  constructor(opts: { dynamicToolNames: ReadonlySet<string>; turnCursor?: number }) {
+  constructor(opts: {
+    dynamicToolNames: ReadonlySet<string>;
+    turnCursor?: number;
+    /**
+     * Tool-call ids whose results the session already submitted. With the
+     * stream retained across segments (and redialed with the turn's original
+     * cursor), a reconnect can replay a previous segment's `action_required`
+     * snapshot; re-emitting an already-answered call would make the AI SDK
+     * execute the tool a second time. A live reference — the set grows as
+     * later segments submit results.
+     */
+    submittedToolCallIds?: ReadonlySet<string>;
+  }) {
     this.#dynamicToolNames = opts.dynamicToolNames;
     this.#turnCursor = opts.turnCursor ?? 0;
+    this.#submittedToolCallIds = opts.submittedToolCallIds ?? new Set();
   }
 
   get terminalStatus(): ChatStatus | undefined {
@@ -342,6 +356,9 @@ export class TurnTranslator {
       case "action_required":
         for (const tc of ev.action_required?.tool_calls ?? []) {
           if (this.#clientToolCalls.has(tc.tool_call_id)) continue;
+          // A replayed pause snapshot for a call this session already
+          // answered (see the constructor doc) — not this segment's work.
+          if (this.#submittedToolCallIds.has(tc.tool_call_id)) continue;
           this.#closeText(out);
           this.#closeReasoning(out);
           this.#clientToolCalls.add(tc.tool_call_id);
@@ -363,8 +380,22 @@ export class TurnTranslator {
         }
         break;
       case "status":
-        if (ev.status && TERMINAL_STATUSES.has(ev.status.status)) {
-          this.#terminalStatus = ev.status.status;
+        if (ev.status) {
+          if (TERMINAL_STATUSES.has(ev.status.status)) {
+            this.#terminalStatus = ev.status.status;
+          } else {
+            // A non-terminal transition means the chat is generating again:
+            // any previously recorded settle is stale. This matters for a
+            // stream that outlives its segment — a redial during the
+            // tool-result resume replays the connect-time status snapshot,
+            // which can still say `requires_action` from the previous
+            // segment's pause; without the clear, the segment loop would
+            // treat every later event as post-settle and truncate the
+            // resumed generation via its safety valve. Real terminal
+            // statuses are unaffected: the segment breaks on them
+            // immediately, before any transition could arrive.
+            this.#terminalStatus = undefined;
+          }
         }
         break;
       default:

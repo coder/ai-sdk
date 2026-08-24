@@ -832,6 +832,72 @@ describe("CoderLanguageModel stream redial (real reader)", () => {
     }
   });
 
+  it("does not duplicate earlier steps when a multi-step turn redials mid-turn", async () => {
+    vi.useFakeTimers();
+    try {
+      const { model, sockets, fetchCalls } = redialModel();
+      const { stream } = await model.doStream({
+        prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      } as never);
+      const parts: { type: string; delta?: string }[] = [];
+      const done = (async () => {
+        const reader = stream.getReader();
+        for (;;) {
+          const { value, done: d } = await reader.read();
+          if (d) break;
+          parts.push(value as { type: string; delta?: string });
+        }
+      })();
+
+      const step1 = msg(
+        2,
+        "assistant",
+        [
+          { type: "text", text: "Step one" },
+          { type: "tool-call", tool_call_id: "s1", tool_name: "web_search", args: { q: "x" } },
+        ],
+        { input_tokens: 10, output_tokens: 2 },
+      );
+      const toolMsg = msg(3, "tool", [
+        { type: "tool-result", tool_call_id: "s1", tool_name: "web_search", result: { hits: 1 } },
+      ]);
+      await vi.advanceTimersByTimeAsync(0);
+      // Step one commits (text + server tool round), then the socket drops.
+      sockets[0]?.emit("message", streamFrame(status("running"), step1, toolMsg));
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("close", { code: 1006 });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(sockets).toHaveLength(2);
+      // The redial replays the whole turn from the original cursor, then the
+      // turn finishes with step two.
+      sockets[1]?.emit(
+        "message",
+        streamFrame(
+          status("running"),
+          step1,
+          toolMsg,
+          msg(4, "assistant", [{ type: "text", text: "Step two" }], {
+            input_tokens: 20,
+            output_tokens: 3,
+          }),
+          status("waiting"),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      await done;
+
+      const text = parts
+        .filter((p) => p.type === "text-delta")
+        .map((p) => p.delta)
+        .join("");
+      expect(text).toBe("Step oneStep two");
+      expect(parts.filter((p) => p.type === "tool-call")).toHaveLength(1);
+      expect(fetchCalls.filter((c) => c.includes("/interrupt"))).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("emits text committed while the stream was disconnected (snapshot longer than deltas)", async () => {
     vi.useFakeTimers();
     try {

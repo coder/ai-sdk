@@ -586,6 +586,46 @@ describe("TurnTranslator — redial replay", () => {
     expect(finish.usage.inputTokens.total).toBe(5);
   });
 
+  it("does not re-emit earlier steps when a multi-step turn replays from the original cursor", () => {
+    // Two committed steps (a server-tool round), then a drop: the redial
+    // replays BOTH snapshots from the turn's original after_id. The earlier
+    // message must not re-trigger the boundary logic and re-emit its text.
+    const step1 = msg(
+      2,
+      "assistant",
+      [
+        { type: "text", text: "Step one" },
+        { type: "tool-call", tool_call_id: "s1", tool_name: "web_search", args: { q: "x" } },
+      ],
+      { input_tokens: 10, output_tokens: 2 },
+    );
+    const toolMsg = msg(3, "tool", [
+      { type: "tool-result", tool_call_id: "s1", tool_name: "web_search", result: { hits: 1 } },
+    ]);
+    const step2 = msg(4, "assistant", [{ type: "text", text: "Step two" }], {
+      input_tokens: 20,
+      output_tokens: 3,
+    });
+    const { parts } = run([
+      step1,
+      toolMsg,
+      step2,
+      // — drop; redial replays the whole turn —
+      step1,
+      toolMsg,
+      step2,
+      status("waiting"),
+    ]);
+
+    expect(textBlocks(parts)).toEqual(["Step one", "Step two"]);
+    expect(parts.filter((p) => p.type === "tool-call")).toHaveLength(1);
+    expect(parts.filter((p) => p.type === "tool-result")).toHaveLength(1);
+    const finish = parts.at(-1)!;
+    if (finish.type !== "finish") return;
+    expect(finish.usage.inputTokens.total).toBe(30);
+    expect(finish.usage.outputTokens.total).toBe(5);
+  });
+
   it("recovers a reasoning suffix when reasoning was the open block at the drop", () => {
     // The drop happens while REASONING is still streaming; the message commits
     // during the gap with completed reasoning plus final text. The open

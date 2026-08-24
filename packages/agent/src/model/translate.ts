@@ -151,6 +151,11 @@ export class TurnTranslator {
   // the same message replaces its earlier entry instead of double-counting
   // (chatd re-sends full snapshots on revision bumps and history resets).
   readonly #usageByMessageId = new Map<number, ChatMessageUsage>();
+  // Assistant snapshots already processed once. A redial replays the turn
+  // from its original cursor, so earlier messages arrive again — without this,
+  // re-running the boundary logic on them would reset the emitted-length
+  // cursors and re-emit their entire text (see #ingestMessage).
+  readonly #snapshotSeen = new Set<number>();
   #error: ChatErrorPayload | undefined;
   #terminalStatus: ChatStatus | undefined;
   #maxMessageId = 0;
@@ -424,6 +429,25 @@ export class TurnTranslator {
     const content = message.content ?? [];
 
     if (message.role === "assistant") {
+      // A snapshot already processed once — a redial's original-cursor replay,
+      // or a revision bump of an earlier message: the boundary logic below
+      // would close and reset the emitted-length cursors and re-emit the whole
+      // message. Suppress its text/reasoning entirely (replays are
+      // byte-identical, and the revisions that matter in practice update usage
+      // or tool results, which are id-keyed and still processed). The CURRENT
+      // message stays on the normal path: its block's length cursor dedupes
+      // progressive/trailing snapshots and recovers gap suffixes.
+      if (this.#snapshotSeen.has(message.id) && message.id !== this.#currentAssistantId) {
+        for (const part of content) {
+          if (part.type === "tool-call" && !this.#isClientTool(part.tool_name))
+            this.#emitServerToolCall(out, part);
+          else if (part.type === "tool-result" && !this.#isClientTool(part.tool_name))
+            this.#emitServerToolResult(out, part);
+          else if (part.type === "source") this.#emitSource(out, part);
+        }
+        return;
+      }
+      this.#snapshotSeen.add(message.id);
       // New assistant message boundary: close prior blocks and reset cursors.
       // Skipped when deltas arrived since the previous assistant snapshot:
       // deltas carry no message id, so they belong to the message THIS snapshot

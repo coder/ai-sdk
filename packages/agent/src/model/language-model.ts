@@ -188,13 +188,17 @@ export class CoderLanguageModel implements LanguageModelV4 {
     afterId: number | undefined,
     signal?: AbortSignal,
   ): Promise<ChatStreamEvent[]> {
-    const { messages } = await this.#config.client.getMessages(
-      chatId,
-      afterId !== undefined ? { after_id: afterId } : undefined,
-      signal,
-    );
-    // The endpoint pages newest-first; the translator expects id order.
-    const turnMessages = [...messages].sort((a, b) => a.id - b.id);
+    // Fetch WITHOUT an `after_id` cursor: cursored reads page ASCENDING
+    // (oldest first), so a long turn would truncate away the newest messages
+    // — exactly where the pending call lives. A cursor-less read pages
+    // newest-first, which guarantees the last assistant message and
+    // everything after it (the inputs of the derivation below) are on the
+    // FIRST page; `has_more` then only refers to older history we don't
+    // need. The turn filter is applied client-side instead.
+    const { messages } = await this.#config.client.getMessages(chatId, { limit: 200 }, signal);
+    // Restrict to this turn's messages (the translator would skip older ids
+    // anyway, but the derivation must not see earlier turns), in id order.
+    const turnMessages = messages.filter((m) => m.id > (afterId ?? 0)).sort((a, b) => a.id - b.id);
     // Mirror chatd's own derivation (`actionRequiredFromHistory` →
     // `unresolvedToolCallsFromHistory`): the pending calls are the LAST
     // assistant message's non-provider-executed dynamic tool-call parts,
@@ -222,8 +226,10 @@ export class CoderLanguageModel implements LanguageModelV4 {
         tool_name: part.tool_name,
         // `action_required` carries args as their raw JSON text (chatd sends
         // `string(part.Args)` of the history part's json.RawMessage);
-        // re-encoding the snapshot's parsed JSON value reconstructs it.
-        args: JSON.stringify(part.args ?? {}),
+        // re-encoding the snapshot's parsed JSON value reconstructs it. A
+        // JSON `null` is a legitimate argument value and must survive; only
+        // an ABSENT args field falls back to empty-object args.
+        args: JSON.stringify(part.args === undefined ? {} : part.args),
       });
     }
     if (toolCalls.length === 0) return [];

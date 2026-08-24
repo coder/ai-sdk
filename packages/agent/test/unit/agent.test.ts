@@ -745,8 +745,8 @@ function redialModel(config?: {
   };
   const fetchCalls: string[] = [];
   const fetchFn = ((url: string, init: RequestInit) => {
-    const pathname = new URL(url).pathname;
-    fetchCalls.push(`${init.method} ${pathname}`);
+    const { pathname, search } = new URL(url);
+    fetchCalls.push(`${init.method} ${pathname}${search}`);
     if (init.method === "GET" && pathname.endsWith("/messages")) {
       const body = messagesResponse?.() ?? { messages: [], queued_messages: [], has_more: false };
       // Mirror real fetch: reject when the request signal aborts (the
@@ -1177,7 +1177,10 @@ function historyMsg(
 
 describe("CoderLanguageModel requires_action REST fallback (real reader)", () => {
   const GRACE_MS = 2_000;
-  const GET_MESSAGES = "GET /api/experimental/chats/chat-1/messages";
+  // The exact recovery request: cursor-less (newest-first — an `after_id`
+  // cursor would page oldest-first and could truncate away the pending call)
+  // at the endpoint's maximum page size.
+  const GET_MESSAGES = "GET /api/experimental/chats/chat-1/messages?limit=200";
   const pendingCall: ChatMessagePart = {
     type: "tool-call",
     tool_call_id: "c1",
@@ -1405,6 +1408,71 @@ describe("CoderLanguageModel requires_action REST fallback (real reader)", () =>
 
       expect(parts.filter((p) => p.type === "tool-call")).toEqual([
         expect.objectContaining({ toolCallId: "c1", toolName: "getWeather" }),
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("recovers from a truncated history page — the pending call rides the newest-first page", async () => {
+    vi.useFakeTimers();
+    try {
+      const { model, sockets, fetchCalls } = redialModel({
+        // A turn too long for one page: only the newest messages are present
+        // and has_more is set. The derivation needs only the tail (the last
+        // assistant message and anything after it), which a cursor-less
+        // newest-first read guarantees on the first page.
+        messagesResponse: () => ({
+          messages: [
+            historyMsg(60, "assistant", [pendingCall]),
+            historyMsg(59, "assistant", [{ type: "text", text: "an earlier step" }]),
+          ],
+          queued_messages: [],
+          has_more: true,
+        }),
+      });
+      const { stream } = await model.doStream(weatherOptions());
+      const { parts, done } = collect(stream);
+
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("message", streamFrame(status("running"), status("requires_action")));
+      await vi.advanceTimersByTimeAsync(GRACE_MS);
+      await done;
+
+      expect(fetchCalls.filter((c) => c === GET_MESSAGES)).toHaveLength(1);
+      expect(parts.filter((p) => p.type === "tool-call")).toEqual([
+        expect.objectContaining({ toolCallId: "c1", toolName: "getWeather" }),
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("preserves a JSON null tool argument during recovery", async () => {
+    vi.useFakeTimers();
+    try {
+      const { model, sockets } = redialModel({
+        messagesResponse: () => ({
+          messages: [
+            historyMsg(3, "assistant", [
+              { type: "tool-call", tool_call_id: "c1", tool_name: "getWeather", args: null },
+            ]),
+          ],
+          queued_messages: [],
+          has_more: false,
+        }),
+      });
+      const { stream } = await model.doStream(weatherOptions());
+      const { parts, done } = collect(stream);
+
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("message", streamFrame(status("running"), status("requires_action")));
+      await vi.advanceTimersByTimeAsync(GRACE_MS);
+      await done;
+
+      // chatd would send the raw JSON text "null" — recovery must too, not "{}".
+      expect(parts.filter((p) => p.type === "tool-call")).toEqual([
+        expect.objectContaining({ toolCallId: "c1", input: "null" }),
       ]);
     } finally {
       vi.useRealTimers();

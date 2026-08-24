@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.3](https://github.com/coder/ai-sdk/compare/provider-v0.3.2...provider-v0.3.3) (2026-08-24)
+
+Adds an enterprise governance and security reference to the provider documentation.
+
+### Highlights
+
+- New documentation covering enterprise governance and security for the provider. ([#68](https://github.com/coder/ai-sdk/pull/68))
+
+### Documentation
+
+* **provider:** add enterprise governance & security reference ([#68](https://github.com/coder/ai-sdk/issues/68)) ([ed44fea](https://github.com/coder/ai-sdk/commit/ed44fea4385584e93fe25510fc3d52f04ac71ef1))
+
 ## [0.3.2](https://github.com/coder/ai-sdk/compare/provider-v0.3.1...provider-v0.3.2) (2026-08-24)
 
 Documentation-only release that corrects inconsistencies across the README and CONTRIBUTING files.

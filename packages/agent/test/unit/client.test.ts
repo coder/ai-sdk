@@ -704,6 +704,43 @@ describe("CoderChatClient.streamEvents (redial)", () => {
     expect(sockets).toHaveLength(1);
   });
 
+  it("re-enables redial once untrackable deltas are finalized by a committed message", async () => {
+    vi.useFakeTimers();
+    try {
+      const { c, sockets } = streamClient();
+      const iter = c.streamEvents("c1");
+      const p1 = iter.next();
+      await vi.advanceTimersByTimeAsync(0);
+      // A coordinate-less delta arrives, but its message then commits: the
+      // content now lives at ids ≤ cursor, so a later drop is redialable
+      // again — after_id excludes everything the replay could duplicate.
+      sockets[0]?.emit("message", {
+        data: JSON.stringify([
+          {
+            type: "message_part",
+            chat_id: "c1",
+            message_part: { role: "assistant", part: { type: "text", text: "Hel" } },
+          },
+          message(7, "Hello"),
+        ]),
+      });
+      expect((await p1).value).toMatchObject({ type: "message_part" });
+      expect((await iter.next()).value).toMatchObject({ type: "message", message: { id: 7 } });
+
+      const p3 = iter.next();
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("close", { code: 1006 });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(sockets).toHaveLength(2);
+      expect(sockets[1]?.url).toBe("wss://x/api/experimental/chats/c1/stream?after_id=7");
+      sockets[1]?.emit("message", frame(statusEv("waiting")));
+      expect((await p3).value).toMatchObject({ type: "status" });
+      await iter.return(undefined);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("throws a terminal error on an unparseable frame instead of replaying it forever", async () => {
     const { c, sockets } = streamClient();
     const iter = c.streamEvents("c1");

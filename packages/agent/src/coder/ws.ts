@@ -92,10 +92,11 @@ const TRANSIENT_UPGRADE_STATUSES: ReadonlySet<number> = new Set([408, 425, 429])
  * rejection (terminal {@link CoderApiError} — bad/expired token or a deleted
  * chat cannot succeed on retry, while 408/425/429 consume the redial budget),
  * an unparseable frame (terminal {@link CoderAgentError} — a redial would
- * replay the same frame forever), a drop after deltas WITHOUT episode
- * coordinates (older chatd; terminal {@link CoderAgentError}, because a replay
- * could not be deduped and would double-emit), or the redial budget running
- * out (a retryable {@link CoderStreamError}).
+ * replay the same frame forever), a drop while deltas WITHOUT episode
+ * coordinates are outstanding (older chatd; terminal {@link CoderAgentError},
+ * because a replay could not be deduped and would double-emit — a committed
+ * `message` advancing the cursor finalizes them and re-enables redial), or the
+ * redial budget running out (a retryable {@link CoderStreamError}).
  */
 export async function* streamChatEvents(
   options: StreamChatEventsOptions,
@@ -114,8 +115,11 @@ export async function* streamChatEvents(
   let lastGenerationAttempt: number | undefined;
   let lastSeq: number | undefined;
   // Deltas missing those coordinates (older servers) cannot be deduped on
-  // replay: seeing one makes any later drop terminal instead of redialed —
-  // the pre-redial behavior — because a replay would double-emit them.
+  // replay: while any are outstanding, a drop is terminal instead of redialed
+  // — the pre-redial behavior — because a replay would double-emit them. A
+  // committed `message` advancing the cursor finalizes them (their content
+  // then lives at ids ≤ cursor, excluded by `after_id`), making redial safe
+  // again.
   let sawUntrackableDelta = false;
 
   let backoffMs = STREAM_BACKOFF_INITIAL_MS;
@@ -242,6 +246,10 @@ export async function* streamChatEvents(
             if (cursor === undefined || next.message.id > cursor) {
               cursor = next.message.id;
               progress = true;
+              // This commit finalizes the in-progress deltas: everything
+              // streamed so far now lives at ids ≤ cursor, so a replay can no
+              // longer duplicate coordinate-less deltas seen before it.
+              sawUntrackableDelta = false;
             }
           }
           if (progress) {

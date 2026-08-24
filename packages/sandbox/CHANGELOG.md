@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.1](https://github.com/coder/ai-sdk/compare/sandbox-v0.4.0...sandbox-v0.4.1) (2026-08-24)
+
+Documentation-only release that corrects inconsistencies across the READMEs and CONTRIBUTING files.
+
+### Highlights
+
+- Fixed documentation drift across the READMEs and CONTRIBUTING guide. ([#51](https://github.com/coder/ai-sdk/pull/51))
+
+### Documentation
+
+* fix drift across READMEs and CONTRIBUTING ([#51](https://github.com/coder/ai-sdk/issues/51)) ([6c0001b](https://github.com/coder/ai-sdk/commit/6c0001b612830ca4d653a7ef828a7cd89c6b1f70))
+
 ## [0.4.0](https://github.com/coder/ai-sdk/compare/sandbox-v0.3.0...sandbox-v0.4.0) (2026-08-18)
 
 Adds a native Coder transport to the sandbox package, expanding how sandboxes can connect and run.

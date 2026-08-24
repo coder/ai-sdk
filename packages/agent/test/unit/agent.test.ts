@@ -733,8 +733,10 @@ function redialModel(config?: {
   workspaceId?: string;
   /** Simulate a deployment that auto-assigns a workspace on chat creation. */
   serverAssignsWorkspace?: boolean;
+  /** Scripted GET /messages body (cursor seeding and the requires_action REST fallback). */
+  messagesResponse?: () => ChatMessagesResponse | Promise<ChatMessagesResponse>;
 }) {
-  const { serverAssignsWorkspace, ...modelConfig } = config ?? {};
+  const { serverAssignsWorkspace, messagesResponse, ...modelConfig } = config ?? {};
   const sockets: FakeStreamSocket[] = [];
   const factory: WebSocketFactory = (url) => {
     const s = new FakeStreamSocket(url);
@@ -745,13 +747,32 @@ function redialModel(config?: {
   const fetchFn = ((url: string, init: RequestInit) => {
     const pathname = new URL(url).pathname;
     fetchCalls.push(`${init.method} ${pathname}`);
-    const body =
-      init.method === "GET" && pathname.endsWith("/messages")
-        ? { messages: [], queued_messages: [], has_more: false }
-        : {
-            ...chatStub("chat-1"),
-            ...(serverAssignsWorkspace ? { workspace_id: "ws-server" } : {}),
-          };
+    if (init.method === "GET" && pathname.endsWith("/messages")) {
+      const body = messagesResponse?.() ?? { messages: [], queued_messages: [], has_more: false };
+      // Mirror real fetch: reject when the request signal aborts (the
+      // requires_action fallback passes the turn signal through getMessages).
+      return new Promise<Response>((resolve, reject) => {
+        const signal = init.signal;
+        if (signal) {
+          const onAbort = () =>
+            reject(signal.reason ?? new DOMException("The operation was aborted.", "AbortError"));
+          if (signal.aborted) return onAbort();
+          signal.addEventListener("abort", onAbort, { once: true });
+        }
+        void Promise.resolve(body).then((b) =>
+          resolve(
+            new Response(JSON.stringify(b), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          ),
+        );
+      });
+    }
+    const body = {
+      ...chatStub("chat-1"),
+      ...(serverAssignsWorkspace ? { workspace_id: "ws-server" } : {}),
+    };
     return Promise.resolve(
       new Response(JSON.stringify(body), {
         status: 200,
@@ -766,7 +787,7 @@ function redialModel(config?: {
     webSocketFactory: factory,
   });
   const model = new CoderLanguageModel({ client, organizationId: "org-1", ...modelConfig });
-  return { model, sockets, fetchCalls };
+  return { model, client, sockets, fetchCalls };
 }
 
 const streamFrame = (...events: ChatStreamEvent[]) => ({ data: JSON.stringify(events) });
@@ -1141,6 +1162,401 @@ describe("CoderLanguageModel stream redial (real reader)", () => {
     await tick();
     expect(fetchCalls.filter((c) => c.includes("/interrupt"))).toHaveLength(1);
     expect(sockets).toHaveLength(1); // the budget expired before any redial
+  });
+});
+
+/** A raw {@link ChatMessage} as returned by GET /messages (the REST fallback source). */
+function historyMsg(
+  id: number,
+  role: ChatMessage["role"],
+  content: ChatMessagePart[],
+  usage?: ChatMessage["usage"],
+): ChatMessage {
+  return { id, chat_id: "chat-1", role, created_at: "", content, usage };
+}
+
+describe("CoderLanguageModel requires_action REST fallback (real reader)", () => {
+  const GRACE_MS = 2_000;
+  const GET_MESSAGES = "GET /api/experimental/chats/chat-1/messages";
+  const pendingCall: ChatMessagePart = {
+    type: "tool-call",
+    tool_call_id: "c1",
+    tool_name: "getWeather",
+    args: { city: "Paris" },
+  };
+  const weatherOptions = () =>
+    ({
+      prompt: [{ role: "user", content: [{ type: "text", text: "weather?" }] }],
+      tools: [
+        {
+          type: "function",
+          name: "getWeather",
+          description: "Get weather",
+          inputSchema: { type: "object" },
+        },
+      ],
+    }) as never;
+  const collect = (stream: ReadableStream<unknown>) => {
+    const parts: Record<string, unknown>[] = [];
+    const done = (async () => {
+      const reader = stream.getReader();
+      for (;;) {
+        const { value, done: d } = await reader.read();
+        if (d) break;
+        parts.push(value as Record<string, unknown>);
+      }
+    })();
+    return { parts, done };
+  };
+
+  it("recovers pending tool calls from history when action_required never arrives", async () => {
+    vi.useFakeTimers();
+    try {
+      const content: ChatMessagePart[] = [{ type: "text", text: "Checking." }, pendingCall];
+      const usage = { input_tokens: 7, output_tokens: 2 };
+      const { model, sockets, fetchCalls } = redialModel({
+        messagesResponse: () => ({
+          messages: [historyMsg(3, "assistant", content, usage)],
+          queued_messages: [],
+          has_more: false,
+        }),
+      });
+      const { stream } = await model.doStream(weatherOptions());
+      const { parts, done } = collect(stream);
+
+      await vi.advanceTimersByTimeAsync(0);
+      // The turn settles into requires_action; the assistant snapshot arrived
+      // (it is DB-backed and replayed on reconnects) but the action_required
+      // event never does — consumed by a previous connection.
+      sockets[0]?.emit(
+        "message",
+        streamFrame(
+          status("running"),
+          msg(3, "assistant", content, usage),
+          status("requires_action"),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+
+      // Within the grace period nothing fires — no polling, no REST call.
+      await vi.advanceTimersByTimeAsync(GRACE_MS - 1);
+      expect(fetchCalls.filter((c) => c === GET_MESSAGES)).toHaveLength(0);
+
+      // Grace expiry: one REST fetch recovers the pending tool call.
+      await vi.advanceTimersByTimeAsync(1);
+      await done;
+      expect(fetchCalls.filter((c) => c === GET_MESSAGES)).toHaveLength(1);
+
+      const toolCalls = parts.filter((p) => p.type === "tool-call");
+      expect(toolCalls).toEqual([
+        expect.objectContaining({
+          toolCallId: "c1",
+          toolName: "getWeather",
+          input: '{"city":"Paris"}',
+        }),
+      ]);
+      // Re-ingesting the REST snapshot of a message the stream already
+      // delivered must not duplicate its text or double-count its usage.
+      const text = parts
+        .filter((p) => p.type === "text-delta")
+        .map((p) => p.delta)
+        .join("");
+      expect(text).toBe("Checking.");
+      const finish = parts.find((p) => p.type === "finish") as {
+        finishReason: { unified: string; raw: string };
+        usage: { inputTokens: { noCache?: number } };
+      };
+      expect(finish.finishReason).toEqual({ unified: "tool-calls", raw: "requires_action" });
+      expect(finish.usage.inputTokens.noCache).toBe(7);
+      // The server run is legitimately paused for tool results — no interrupt.
+      expect(fetchCalls.filter((c) => c.includes("/interrupt"))).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never fires the fallback when action_required arrives promptly (fast path)", async () => {
+    vi.useFakeTimers();
+    try {
+      const { model, sockets, fetchCalls } = redialModel();
+      const { stream } = await model.doStream(weatherOptions());
+      const { parts, done } = collect(stream);
+
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit(
+        "message",
+        streamFrame(
+          status("running"),
+          msg(3, "assistant", [pendingCall]),
+          status("requires_action"),
+          {
+            type: "action_required",
+            chat_id: "chat-1",
+            action_required: {
+              tool_calls: [
+                { tool_call_id: "c1", tool_name: "getWeather", args: '{"city":"Paris"}' },
+              ],
+            },
+          },
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      await done;
+
+      expect(parts.filter((p) => p.type === "tool-call")).toHaveLength(1);
+      // Long after the segment completed: the canceled grace timer must not
+      // have left anything behind that fetches.
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(fetchCalls.filter((c) => c === GET_MESSAGES)).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a late action_required within the grace period wins the race — no REST call, no duplicates", async () => {
+    vi.useFakeTimers();
+    try {
+      const { model, sockets, fetchCalls } = redialModel();
+      const { stream } = await model.doStream(weatherOptions());
+      const { parts, done } = collect(stream);
+
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit(
+        "message",
+        streamFrame(
+          status("running"),
+          msg(3, "assistant", [pendingCall]),
+          status("requires_action"),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(GRACE_MS - 500);
+      sockets[0]?.emit("message", {
+        data: JSON.stringify([
+          {
+            type: "action_required",
+            chat_id: "chat-1",
+            action_required: {
+              tool_calls: [
+                { tool_call_id: "c1", tool_name: "getWeather", args: '{"city":"Paris"}' },
+              ],
+            },
+          },
+        ]),
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      await done;
+
+      expect(parts.filter((p) => p.type === "tool-call")).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(fetchCalls.filter((c) => c === GET_MESSAGES)).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("emits no duplicates when the stream delivers the event while the recovery fetch is in flight", async () => {
+    vi.useFakeTimers();
+    try {
+      const { model, sockets, fetchCalls } = redialModel({
+        // The REST response takes 500ms — the WS event lands in that window.
+        messagesResponse: () =>
+          new Promise((resolve) =>
+            setTimeout(
+              () =>
+                resolve({
+                  messages: [historyMsg(3, "assistant", [pendingCall])],
+                  queued_messages: [],
+                  has_more: false,
+                }),
+              500,
+            ),
+          ),
+      });
+      const { stream } = await model.doStream(weatherOptions());
+      const { parts, done } = collect(stream);
+
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit(
+        "message",
+        streamFrame(
+          status("running"),
+          msg(3, "assistant", [pendingCall]),
+          status("requires_action"),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(GRACE_MS);
+      expect(fetchCalls.filter((c) => c === GET_MESSAGES)).toHaveLength(1);
+      // The lost event shows up after all, mid-fetch.
+      sockets[0]?.emit("message", {
+        data: JSON.stringify([
+          {
+            type: "action_required",
+            chat_id: "chat-1",
+            action_required: {
+              tool_calls: [
+                { tool_call_id: "c1", tool_name: "getWeather", args: '{"city":"Paris"}' },
+              ],
+            },
+          },
+        ]),
+      });
+      await vi.advanceTimersByTimeAsync(500);
+      await done;
+
+      expect(parts.filter((p) => p.type === "tool-call")).toEqual([
+        expect.objectContaining({ toolCallId: "c1", toolName: "getWeather" }),
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("is one-shot: an empty recovery keeps waiting on the stream without polling", async () => {
+    vi.useFakeTimers();
+    try {
+      const { model, sockets, fetchCalls } = redialModel();
+      const { stream } = await model.doStream(weatherOptions());
+      const { parts, done } = collect(stream);
+
+      await vi.advanceTimersByTimeAsync(0);
+      // History shows nothing pending (default empty messagesResponse).
+      sockets[0]?.emit("message", streamFrame(status("running"), status("requires_action")));
+      await vi.advanceTimersByTimeAsync(GRACE_MS);
+      expect(fetchCalls.filter((c) => c === GET_MESSAGES)).toHaveLength(1);
+      // Much later: still exactly one fetch — no retry loop, no polling.
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(fetchCalls.filter((c) => c === GET_MESSAGES)).toHaveLength(1);
+
+      // The stream can still complete the segment afterwards.
+      sockets[0]?.emit("message", {
+        data: JSON.stringify([
+          {
+            type: "action_required",
+            chat_id: "chat-1",
+            action_required: {
+              tool_calls: [
+                { tool_call_id: "c1", tool_name: "getWeather", args: '{"city":"Paris"}' },
+              ],
+            },
+          },
+        ]),
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      await done;
+      expect(parts.filter((p) => p.type === "tool-call")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("respects a caller abort that lands during the recovery fetch", async () => {
+    vi.useFakeTimers();
+    try {
+      const { model, sockets, fetchCalls } = redialModel({
+        // The recovery fetch hangs; only the abort settles it.
+        messagesResponse: () => new Promise<ChatMessagesResponse>(() => {}),
+      });
+      const abort = new AbortController();
+      const { stream } = await model.doStream({
+        ...(weatherOptions() as Record<string, unknown>),
+        abortSignal: abort.signal,
+      } as never);
+      const done = drain(stream.getReader()).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("message", streamFrame(status("running"), status("requires_action")));
+      await vi.advanceTimersByTimeAsync(GRACE_MS);
+      expect(fetchCalls.filter((c) => c === GET_MESSAGES)).toHaveLength(1);
+
+      abort.abort();
+      const err = await done;
+      expect(err).toMatchObject({ name: "AbortError" });
+      // The abort interrupts the server run (standard abort policy).
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchCalls.filter((c) => c.includes("/interrupt"))).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("requestTimeoutMs still bounds a requires_action wait shorter than the grace period", async () => {
+    // Real timers: AbortSignal.timeout is not under vitest's fake-timer control.
+    const { model, sockets, fetchCalls } = redialModel({ requestTimeoutMs: 50 });
+    const { stream } = await model.doStream(weatherOptions());
+    const done = drain(stream.getReader()).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await tick();
+    sockets[0]?.emit("message", streamFrame(status("running"), status("requires_action")));
+    // The 50ms budget expires long before the 2s grace: the timeout wins and
+    // the fallback never fires.
+    const err = await done;
+    expect(err).toMatchObject({ name: "CoderChatError", kind: "timeout" });
+    expect(fetchCalls.filter((c) => c === GET_MESSAGES)).toHaveLength(0);
+    await tick();
+    expect(fetchCalls.filter((c) => c.includes("/interrupt"))).toHaveLength(1);
+  });
+
+  it("completes a full tool round-trip when segment 1 recovers via the fallback", async () => {
+    vi.useFakeTimers();
+    try {
+      const execute = vi.fn(async ({ city }: { city: string }) => ({ city, tempC: 21 }));
+      const tools = {
+        getWeather: tool({
+          description: "Get the weather for a city",
+          inputSchema: z.object({ city: z.string() }),
+          execute,
+        }),
+      };
+      // The stream loses BOTH the assistant snapshot and the action_required
+      // event; history is the sole source. Recovery must also advance the
+      // message cursor so the resume segment does not replay the snapshot.
+      const { client, sockets, fetchCalls } = redialModel({
+        messagesResponse: () => ({
+          messages: [
+            historyMsg(3, "assistant", [{ type: "text", text: "Checking." }, pendingCall]),
+          ],
+          queued_messages: [],
+          has_more: false,
+        }),
+      });
+      const agent = new CoderAgent({ client, organizationId: "org-1", tools });
+      const resultPromise = agent.generate({ prompt: "weather in Paris?" });
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sockets).toHaveLength(1);
+      sockets[0]?.emit("message", streamFrame(status("running"), status("requires_action")));
+      await vi.advanceTimersByTimeAsync(GRACE_MS);
+      // Segment 1 recovered; the AI SDK executes the tool and resumes.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(execute.mock.calls[0]?.[0]).toEqual({ city: "Paris" });
+      expect(fetchCalls.filter((c) => c.includes("/tool-results"))).toHaveLength(1);
+      expect(sockets).toHaveLength(2);
+      // The recovered snapshot (id 3) advanced the cursor even though the
+      // stream never delivered it.
+      expect(sockets[1]?.url).toContain("after_id=3");
+
+      sockets[1]?.emit(
+        "message",
+        streamFrame(
+          status("running"),
+          msg(5, "assistant", [{ type: "text", text: "It is 21C in Paris." }]),
+          status("waiting"),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      const result = await resultPromise;
+      expect(result.text).toContain("21");
+      expect(result.steps).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

@@ -11,7 +11,12 @@ import type {
 import { assertSupportedAiVersion } from "../ai-version.js";
 import { CoderAgentError, CoderApiError, CoderChatError, CoderStreamError } from "../errors.js";
 import { CoderChatClient } from "../coder/client.js";
-import type { ChatInputPart, CreateChatRequest } from "../coder/types.js";
+import type {
+  ChatInputPart,
+  ChatStreamEvent,
+  ChatStreamToolCall,
+  CreateChatRequest,
+} from "../coder/types.js";
 import { dataContentToFileContent } from "../files.js";
 import {
   classifyTurnAction,
@@ -23,6 +28,27 @@ import {
   userContentToInputParts,
 } from "./prompt.js";
 import { TurnTranslator } from "./translate.js";
+
+/**
+ * How long a segment that has settled into `requires_action` waits for the
+ * `action_required` event before recovering the pending tool calls from chat
+ * history over REST (see `#recoverRequiresAction`). Long enough that the
+ * normal fast path — the event follows the status on the same connection,
+ * typically within milliseconds — never fires it; short enough to turn a lost
+ * event from a `requestTimeoutMs`-sized hang into a ~2s hiccup.
+ */
+const ACTION_REQUIRED_GRACE_MS = 2_000;
+
+/** Sentinel resolved by the grace timer, distinguishable from a stream read. */
+const GRACE_EXPIRED = Symbol("action-required-grace-expired");
+
+function startGraceTimer(ms: number) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<typeof GRACE_EXPIRED>((resolve) => {
+    timer = setTimeout(() => resolve(GRACE_EXPIRED), ms);
+  });
+  return { expired, cancel: () => clearTimeout(timer) };
+}
 
 const EMPTY_USAGE: LanguageModelV4Usage = {
   inputTokens: {
@@ -141,6 +167,77 @@ export class CoderLanguageModel implements LanguageModelV4 {
       return uploaded.id;
     };
     return userContentToInputParts(content, uploadFile);
+  }
+
+  /**
+   * REST fallback for a `requires_action` segment whose `action_required`
+   * event never arrived: recover the turn's pending client tool calls from
+   * committed chat history (`GET /chats/{id}/messages`) — the same history
+   * chatd itself derives `action_required` from server-side. Returns synthetic
+   * stream events for the translator: the turn's message snapshots first (so
+   * text, usage, and the message cursor stay consistent even if the stream
+   * also missed a commit — the translator's id-keyed dedup makes re-ingesting
+   * already-delivered ones a no-op), then one `action_required` event carrying
+   * the unresolved dynamic tool calls. Returns `[]` when history shows no
+   * pending calls — nothing to recover, the caller keeps waiting on the
+   * stream, bounded by `requestTimeoutMs`/abort.
+   */
+  async #recoverRequiresAction(
+    chatId: string,
+    dynamicNames: ReadonlySet<string>,
+    afterId: number | undefined,
+    signal?: AbortSignal,
+  ): Promise<ChatStreamEvent[]> {
+    const { messages } = await this.#config.client.getMessages(
+      chatId,
+      afterId !== undefined ? { after_id: afterId } : undefined,
+      signal,
+    );
+    // The endpoint pages newest-first; the translator expects id order.
+    const turnMessages = [...messages].sort((a, b) => a.id - b.id);
+    // Mirror chatd's own derivation (`actionRequiredFromHistory` →
+    // `unresolvedToolCallsFromHistory`): the pending calls are the LAST
+    // assistant message's non-provider-executed dynamic tool-call parts,
+    // minus ids already handled by later messages' tool results.
+    const lastAssistant = turnMessages.findLast((m) => m.role === "assistant");
+    if (!lastAssistant) return [];
+    const handled = new Set<string>();
+    for (const message of turnMessages) {
+      if (message.id <= lastAssistant.id) continue;
+      for (const part of message.content ?? []) {
+        if (part.type === "tool-result" && part.tool_call_id) handled.add(part.tool_call_id);
+      }
+    }
+    const toolCalls: ChatStreamToolCall[] = [];
+    for (const part of lastAssistant.content ?? []) {
+      if (part.type !== "tool-call" || part.provider_executed) continue;
+      if (!part.tool_call_id || !part.tool_name) continue;
+      if (!dynamicNames.has(part.tool_name)) continue;
+      if (handled.has(part.tool_call_id)) continue;
+      // A call whose result this instance already submitted must not be
+      // re-emitted — the AI SDK would execute the tool a second time.
+      if (this.#submittedToolCallIds.has(part.tool_call_id)) continue;
+      toolCalls.push({
+        tool_call_id: part.tool_call_id,
+        tool_name: part.tool_name,
+        // `action_required` carries args as their raw JSON text (chatd sends
+        // `string(part.Args)` of the history part's json.RawMessage);
+        // re-encoding the snapshot's parsed JSON value reconstructs it.
+        args: JSON.stringify(part.args ?? {}),
+      });
+    }
+    if (toolCalls.length === 0) return [];
+    const events: ChatStreamEvent[] = turnMessages.map((message) => ({
+      type: "message",
+      chat_id: chatId,
+      message,
+    }));
+    events.push({
+      type: "action_required",
+      chat_id: chatId,
+      action_required: { tool_calls: toolCalls },
+    });
+    return events;
   }
 
   async *#runTurn(
@@ -331,18 +428,79 @@ export class CoderLanguageModel implements LanguageModelV4 {
       // a mid-turn history reset re-sends them again. Constructing the
       // translator with the cursor makes it impossible to ingest before the
       // boundary is known.
+      const dynamicNames = dynamicToolNames(options.tools);
       translator = new TurnTranslator({
-        dynamicToolNames: dynamicToolNames(options.tools),
+        dynamicToolNames: dynamicNames,
         turnCursor: afterId ?? 0,
       });
       // chatd emits the `requires_action` status BEFORE the `action_required`
       // event that carries the pending tool calls, so for that status we keep
       // reading until the client tool calls have actually been emitted (bounded
-      // by a safety counter, since the stream is a live subscription).
+      // by a safety counter, since the stream is a live subscription). The
+      // event can also never arrive at all — consumed by a previous connection
+      // across a reconnect race, or a server-side hiccup between the status
+      // flip and the history-derived event — and on a quiet socket the read
+      // would then block until requestTimeoutMs (minutes) and fail a turn
+      // whose tool calls have been sitting fully committed in chat history
+      // the whole time. So once `requires_action` settles without a client
+      // tool call, a grace timer races the pending read; if it expires, the
+      // tool calls are recovered from history over REST instead
+      // (#recoverRequiresAction) — one shot per segment, never on the fast
+      // path, still bounded by requestTimeoutMs/abort.
       let sinceRequiresAction = 0;
+      let grace: ReturnType<typeof startGraceTimer> | undefined;
+      let recoveryAttempted = false;
+      const stream = this.#config.client.streamEvents(chatId, { afterId, signal });
       try {
-        for await (const ev of this.#config.client.streamEvents(chatId, { afterId, signal })) {
-          for (const part of translator.ingest(ev)) yield part;
+        let next = stream.next();
+        for (;;) {
+          let result: IteratorResult<ChatStreamEvent, void>;
+          if (
+            translator.terminalStatus === "requires_action" &&
+            !translator.clientToolCallSeen &&
+            !recoveryAttempted
+          ) {
+            // One timer for the whole wait (not per event), so a server that
+            // keeps sending unrelated events cannot postpone the fallback.
+            grace ??= startGraceTimer(ACTION_REQUIRED_GRACE_MS);
+            const raced = await Promise.race([next, grace.expired]);
+            if (raced === GRACE_EXPIRED) {
+              recoveryAttempted = true;
+              // Defensive: the reader settles its read on abort, but if the
+              // grace timer won that race, classify before fetching.
+              throwIfAborted();
+              let recovered: ChatStreamEvent[] = [];
+              try {
+                recovered = await this.#recoverRequiresAction(
+                  chatId,
+                  dynamicNames,
+                  afterId,
+                  signal,
+                );
+              } catch {
+                throwIfAborted();
+                // Best-effort: a failed recovery fetch must not kill a segment
+                // that a late stream event could still complete; without one
+                // the segment stays bounded by requestTimeoutMs/abort as
+                // before.
+              }
+              for (const ev of recovered) for (const part of translator.ingest(ev)) yield part;
+              if (translator.clientToolCallSeen) {
+                // The abandoned read stays pending on the quiet socket until
+                // the teardown below settles it; tag it handled in case that
+                // surfaces as a rejection instead.
+                void next.catch(() => {});
+                break;
+              }
+              continue; // nothing recovered — keep waiting on the same read
+            }
+            result = raced;
+          } else {
+            result = await next;
+          }
+          if (result.done) break;
+          next = stream.next();
+          for (const part of translator.ingest(result.value)) yield part;
           const status = translator.terminalStatus;
           if (status) {
             if (status !== "requires_action") break;
@@ -410,6 +568,13 @@ export class CoderLanguageModel implements LanguageModelV4 {
           });
         }
         throw err;
+      } finally {
+        grace?.cancel();
+        // Manual iteration (unlike for-await) does not close the stream on
+        // break/throw. The reader's return() wakes its own pending read, so
+        // this cannot hang, and its teardown errors are not the turn's
+        // problem.
+        await stream.return(undefined).catch(() => {});
       }
 
       // The stream loop exits cleanly when the socket closes on abort, so classify

@@ -695,7 +695,7 @@ describe("CoderChatClient.streamEvents (redial)", () => {
     }
   });
 
-  it("resets the redial budget once a connection delivers an event", async () => {
+  it("resets the redial budget once a connection makes progress", async () => {
     vi.useFakeTimers();
     try {
       const { c, sockets } = streamClient();
@@ -708,9 +708,9 @@ describe("CoderChatClient.streamEvents (redial)", () => {
         await vi.advanceTimersByTimeAsync(30_000);
       }
       expect(sockets).toHaveLength(5);
-      // …then a live one: the delivered event resets the budget…
-      sockets.at(-1)?.emit("message", frame(statusEv("running")));
-      expect((await p1).value).toMatchObject({ type: "status" });
+      // …then one that progresses (a newly committed message resets the budget)…
+      sockets.at(-1)?.emit("message", frame(message(1, "committed")));
+      expect((await p1).value).toMatchObject({ type: "message" });
 
       const p2 = iter.next().then(
         () => undefined,
@@ -725,6 +725,42 @@ describe("CoderChatClient.streamEvents (redial)", () => {
       expect(sockets).toHaveLength(10);
       sockets.at(-1)?.emit("close", { code: 1006 });
       expect(await p2).toMatchObject({ name: "CoderStreamError" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not reset the budget on replayed events (a half-dead connection cannot redial forever)", async () => {
+    vi.useFakeTimers();
+    try {
+      const { c, sockets } = streamClient();
+      const iter = c.streamEvents("c1");
+      const seen: ChatStreamEvent[] = [];
+      const result = (async () => {
+        for await (const ev of iter) seen.push(ev);
+      })().then(
+        () => "completed",
+        (e: unknown) => e,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      // The first connection makes real progress (a new delta)…
+      sockets[0]?.emit("message", frame(delta(1, "Hel")));
+      await vi.advanceTimersByTimeAsync(0);
+      // …then the network half-dies: every reconnect replays the status and
+      // the already-seen delta, then drops. chatd re-sends those on every
+      // connect, so they are not progress — the budget must accrue and give
+      // up instead of redialing forever.
+      for (let i = 0; i < 5; i++) {
+        sockets.at(-1)?.emit("close", { code: 1006 });
+        await vi.advanceTimersByTimeAsync(30_000);
+        sockets.at(-1)?.emit("message", frame(statusEv("running"), delta(1, "Hel")));
+        await vi.advanceTimersByTimeAsync(0);
+      }
+      sockets.at(-1)?.emit("close", { code: 1006 });
+      expect(await result).toMatchObject({ name: "CoderStreamError" });
+      expect(sockets).toHaveLength(6);
+      // The replayed delta was suppressed every round — yielded exactly once.
+      expect(seen.filter((e) => e.type === "message_part")).toHaveLength(1);
     } finally {
       vi.useRealTimers();
     }

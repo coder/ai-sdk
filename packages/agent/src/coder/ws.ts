@@ -51,10 +51,13 @@ export interface StreamChatEventsOptions {
 const STREAM_BACKOFF_INITIAL_MS = 1_000;
 const STREAM_BACKOFF_CAP_MS = 30_000;
 /**
- * Consecutive event-less connection failures tolerated before a dropped
- * per-chat stream gives up (a connection that delivered at least one event
- * resets the count). With 1s→2s→4s→8s backoff between the five attempts this
- * bounds a dead network to ~15s of redialing even without a caller signal or
+ * Consecutive progress-less connection failures tolerated before a dropped
+ * per-chat stream gives up. Only forward progress — a newly committed message
+ * or a new (unsuppressed) delta — resets the count; chatd replays a `status`
+ * and the in-progress episode on every reconnect, so counting mere receipt
+ * would let a half-dead connection (connects, replays, drops) redial forever.
+ * With 1s→2s→4s→8s backoff between the five attempts this bounds a
+ * non-progressing network to ~15s of redialing even without a caller signal or
  * `requestTimeoutMs`.
  */
 const STREAM_MAX_CONSECUTIVE_FAILURES = 5;
@@ -116,7 +119,7 @@ export async function* streamChatEvents(
     let finished = false;
     let failure: Error | undefined;
     let parseFailure = false;
-    let received = false;
+    let progressed = false;
 
     const wake = () => {
       resolveNext?.();
@@ -189,10 +192,12 @@ export async function* streamChatEvents(
       while (true) {
         while (queue.length > 0) {
           const next = queue.shift() as ChatStreamEvent;
-          // Receiving an event proves the connection works — reset the budget.
-          received = true;
-          failures = 0;
-          backoffMs = STREAM_BACKOFF_INITIAL_MS;
+          // Only forward progress resets the redial budget: a new delta or a
+          // newly committed message. Replays (chatd re-sends a `status` and the
+          // in-progress episode on every reconnect) don't count — otherwise a
+          // half-dead connection that connects, replays, and drops would reset
+          // the budget each round and redial forever.
+          let progress = false;
           if (next.type === "message_part") {
             const mp = next.message_part;
             const hv = mp?.history_version;
@@ -211,8 +216,17 @@ export async function* streamChatEvents(
               lastGenerationAttempt = ga;
               lastSeq = seq;
             }
+            progress = true;
           } else if (next.type === "message" && next.message) {
-            if (cursor === undefined || next.message.id > cursor) cursor = next.message.id;
+            if (cursor === undefined || next.message.id > cursor) {
+              cursor = next.message.id;
+              progress = true;
+            }
+          }
+          if (progress) {
+            progressed = true;
+            failures = 0;
+            backoffMs = STREAM_BACKOFF_INITIAL_MS;
           }
           yield next;
         }
@@ -242,11 +256,11 @@ export async function* streamChatEvents(
     if (failure instanceof CoderApiError) throw failure;
     if (parseFailure && failure) throw failure;
     if (failure) lastFailure = failure;
-    if (!received) {
+    if (!progressed) {
       failures += 1;
       if (failures >= STREAM_MAX_CONSECUTIVE_FAILURES) {
         throw new CoderStreamError({
-          message: `Coder chat stream ${path} could not be (re-)established after ${failures} consecutive connection failures`,
+          message: `Coder chat stream ${path} could not be (re-)established after ${failures} consecutive connection failures without progress`,
           url,
           cause: lastFailure,
         });

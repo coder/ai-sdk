@@ -838,12 +838,14 @@ describe("CoderLanguageModel stream redial (real reader)", () => {
       await vi.advanceTimersByTimeAsync(0);
       sockets[0]?.emit("message", streamFrame(status("running")));
       await vi.advanceTimersByTimeAsync(0);
-      // The network dies for good: the eventful connection drops, then five
-      // consecutive redials fail without delivering anything.
-      for (let i = 0; i < 6; i++) {
+      // The network dies for good. The first connection only ever delivered a
+      // status — chatd replays one on every connect, so that is not progress —
+      // and five progress-less connections exhaust the budget.
+      for (let i = 0; i < 5; i++) {
         sockets.at(-1)?.emit("close", { code: 1006 });
         await vi.advanceTimersByTimeAsync(30_000);
       }
+      expect(sockets).toHaveLength(5);
       const err = await done;
       expect(err).toMatchObject({ name: "CoderStreamError", isRetryable: true });
       expect(APICallError.isInstance(err)).toBe(true);

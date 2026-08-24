@@ -754,8 +754,10 @@ function redialModel(config?: {
       return new Promise<Response>((resolve, reject) => {
         const signal = init.signal;
         if (signal) {
-          const onAbort = () =>
+          const onAbort = () => {
+            fetchCalls.push(`ABORT ${pathname}${search}`);
             reject(signal.reason ?? new DOMException("The operation was aborted.", "AbortError"));
+          };
           if (signal.aborted) return onAbort();
           signal.addEventListener("abort", onAbort, { once: true });
         }
@@ -1448,6 +1450,11 @@ describe("CoderLanguageModel requires_action REST fallback (real reader)", () =>
       await vi.advanceTimersByTimeAsync(0);
       await done;
       expect(parts.filter((p) => p.type === "tool-call")).toHaveLength(1);
+      // The losing (hung) recovery request was canceled at segment exit — it
+      // must not outlive the turn and leak its connection.
+      expect(
+        fetchCalls.filter((c) => c.startsWith("ABORT ") && c.includes("/messages")),
+      ).toHaveLength(1);
     } finally {
       vi.useRealTimers();
     }

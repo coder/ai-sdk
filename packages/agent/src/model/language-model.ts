@@ -463,6 +463,7 @@ export class CoderLanguageModel implements LanguageModelV4 {
       // Failures resolve to [] (best-effort): the segment then keeps waiting
       // on the stream, bounded by requestTimeoutMs/abort as before.
       let recovery: Promise<ChatStreamEvent[]> | undefined;
+      let recoveryAbort: AbortController | undefined;
       let recoveryAttempted = false;
       const stream = this.#config.client.streamEvents(chatId, { afterId, signal });
       try {
@@ -481,9 +482,17 @@ export class CoderLanguageModel implements LanguageModelV4 {
               // Defensive: the reader settles its read on abort, but if the
               // grace timer won that race, classify before fetching.
               throwIfAborted();
-              recovery = this.#recoverRequiresAction(chatId, dynamicNames, afterId, signal).catch(
-                () => [],
-              );
+              // A recovery-specific controller (chained to the turn signal)
+              // so the losing fetch is canceled when the stream wins or the
+              // turn tears down — a hung request must not outlive the
+              // segment and leak its connection.
+              recoveryAbort = new AbortController();
+              recovery = this.#recoverRequiresAction(
+                chatId,
+                dynamicNames,
+                afterId,
+                signal ? AbortSignal.any([signal, recoveryAbort.signal]) : recoveryAbort.signal,
+              ).catch(() => []);
               continue;
             }
             result = raced;
@@ -580,6 +589,10 @@ export class CoderLanguageModel implements LanguageModelV4 {
         throw err;
       } finally {
         grace?.cancel();
+        // Cancel a still-pending (losing) recovery fetch: the segment's exit
+        // must not leave its HTTP request alive. (Settled/consumed recovery
+        // makes this a no-op; the fetch rejection resolves to [] above.)
+        recoveryAbort?.abort();
         // Manual iteration (unlike for-await) does not close the stream on
         // break/throw. The reader's return() wakes its own pending read, so
         // this cannot hang, and its teardown errors are not the turn's

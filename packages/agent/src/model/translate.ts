@@ -172,8 +172,14 @@ export class TurnTranslator {
   // so already-processed messages arrive again — the ledger is what lets a
   // byte-identical replay reconcile to a no-op while an APPENDING revision (or
   // a commit-during-disconnect snapshot) yields exactly its missing suffix
-  // (see #ingestMessage).
-  readonly #emittedByMessageId = new Map<number, { text: string; reasoning: string }>();
+  // (see #ingestMessage). `substantive` records whether any processed snapshot
+  // of the message carried content (text, reasoning, tools, or sources) —
+  // false only for announce-style empty snapshots, whose in-flight deltas are
+  // still claimable by a same-id commit.
+  readonly #emittedByMessageId = new Map<
+    number,
+    { text: string; reasoning: string; substantive: boolean }
+  >();
   #error: ChatErrorPayload | undefined;
   #terminalStatus: ChatStatus | undefined;
   #maxMessageId = 0;
@@ -508,22 +514,19 @@ export class TurnTranslator {
         // step streams, #currentAssistantId still names the last committed
         // one and its pending deltas must join the reconciliation below.
         this.#reconcileRevision(out, known, fullText, fullReasoning);
-      } else if (
-        known &&
-        this.#deltasSinceSnapshot &&
-        (known.text !== "" || known.reasoning !== "")
-      ) {
+      } else if (known && this.#deltasSinceSnapshot && known.substantive) {
         // A same-id snapshot racing the NEXT step's open deltas. A message
-        // whose earlier snapshot already carried content never streams more
-        // deltas (content changes to committed messages arrive only as
-        // revision snapshots), so the pending deltas belong to the next,
-        // still-uncommitted message — they must NOT be claimed here, even
-        // when the revised content happens to share their prefix. Emit
-        // nothing and claim nothing: a mid-race revision suffix is deferred
-        // until the next step commits and a re-sent snapshot takes the
-        // earlier-message path above. Announce-style commits (the earlier
-        // snapshot was EMPTY) stay on the attribution path below — their
-        // deltas ARE this message's content.
+        // whose earlier snapshot already carried content — text, reasoning,
+        // or only tools/sources — never streams more deltas (content changes
+        // to committed messages arrive only as revision snapshots), so the
+        // pending deltas belong to the next, still-uncommitted message —
+        // they must NOT be claimed here, even when the revised content
+        // happens to share their prefix. Emit nothing and claim nothing: a
+        // mid-race revision suffix is deferred until the next step commits
+        // and a re-sent snapshot takes the earlier-message path above.
+        // Announce-style commits (the earlier snapshot was EMPTY) stay on
+        // the attribution path below — their deltas ARE this message's
+        // content.
       } else {
         // First sight of this message, or a re-snapshot of the CURRENT one —
         // progressive snapshot-mode growth, or an announce-style commit
@@ -555,7 +558,7 @@ export class TurnTranslator {
         // nothing and emits nothing: the pending deltas may belong to the
         // next, still-uncommitted message, and a later snapshot naming them
         // settles the attribution instead.
-        const rec = known ?? { text: "", reasoning: "" };
+        const rec = known ?? { text: "", reasoning: "", substantive: false };
         const reconcileText = (): void => {
           const attributed = rec.text + this.#text.pending;
           if (!fullText.startsWith(attributed)) return;
@@ -583,6 +586,9 @@ export class TurnTranslator {
           reconcileText();
           reconcileReasoning();
         }
+        rec.substantive ||= content.some((p) =>
+          p.type === "text" || p.type === "reasoning" ? (p.text ?? "").length > 0 : true,
+        );
         this.#emittedByMessageId.set(message.id, rec);
         this.#deltasSinceSnapshot = false;
       }

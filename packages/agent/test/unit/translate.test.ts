@@ -881,6 +881,33 @@ describe("TurnTranslator — earlier-message revision reconciliation (#57)", () 
     expect(textBlocks(parts)).toEqual(["AB", "BX"]);
   });
 
+  it("treats a tool-only snapshot as substantive: its revision cannot claim next-step deltas", () => {
+    // Message 2 committed with only a tool call (no text/reasoning). That is
+    // a SUBSTANTIVE commit, not an announce: a later same-id revision racing
+    // the next step's open deltas must not claim them just because the
+    // message's text ledger is empty. The revision reconciles only after the
+    // next step commits, in its own bracketed block.
+    const revised = msg(2, "assistant", [
+      { type: "text", text: "Result: 42" },
+      { type: "tool-call", tool_call_id: "s1", tool_name: "run", args: {} },
+    ]);
+    const { parts } = run([
+      msg(2, "assistant", [
+        { type: "tool-call", tool_call_id: "s1", tool_name: "run", args: {} },
+      ]),
+      msg(3, "tool", [
+        { type: "tool-result", tool_call_id: "s1", tool_name: "run", result: {} },
+      ]),
+      part("assistant", { type: "text", text: "Result: " }),
+      revised, // mid-race: must claim nothing
+      msg(4, "assistant", [{ type: "text", text: "Result: ok" }]),
+      revised, // after the race resolves: reconciles, bracketed
+      status("waiting"),
+    ]);
+    expect(textBlocks(parts)).toEqual(["Result: ok", "Result: 42"]);
+    expect(parts.filter((p) => p.type === "tool-call")).toHaveLength(1);
+  });
+
   it("keeps suppressing a rewrite revision that cannot be expressed as a suffix", () => {
     // A revision that REWRITES already-emitted content cannot be reconciled
     // in a delta stream (emitted text cannot be retracted) — the safe side is

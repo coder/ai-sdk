@@ -390,15 +390,16 @@ and a full Claude Code turn with tool use (`scripts/e2e-claude.ts`).
 ## Development
 
 ```bash
+# From this package's directory (packages/sandbox):
 pnpm install
 pnpm typecheck   # tsc against the real harness types
 pnpm test        # vitest: unit + local integration (fake `coder` + `ssh`)
 pnpm build       # tsup → dist/ (ESM + d.ts)
 
-# Formatting & linting (root-level scripts, run from the repo root):
-pnpm format      # oxfmt (apply formatting)
-pnpm lint        # oxlint (report lint issues)
-pnpm check       # format check + lint + typecheck (CI gate)
+# Formatting & linting are root-level scripts (`-w` runs them from anywhere in the repo):
+pnpm -w format   # oxfmt (apply formatting)
+pnpm -w lint     # oxlint (report lint issues)
+pnpm -w check    # format check + lint + typecheck (CI gate)
 
 # End-to-end against a real workspace (needs the coder CLI + a running workspace):
 pnpm verify:real my-ws

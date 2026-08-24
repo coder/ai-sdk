@@ -436,6 +436,12 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
   async archive(opts?: { signal?: AbortSignal }): Promise<void> {
     const id = this.#model.chatId;
     if (!id) return;
+    // The guaranteed-cleanup path also releases a stream retained by a
+    // client-tool pause the caller abandoned (e.g. `stopWhen` ended the tool
+    // loop, or a tool had no execute handler) — the socket must not outlive
+    // the archived chat. Local and instant; an actively-read stream is left
+    // to its segment, which closes it when the run settles.
+    await this.#model.closePausedStream();
     await archiveWhenSettled(this.#client, id, {
       deadlineMs: this.#settleDeadlineMs,
       retryDelayMs: this.#settleRetryDelayMs,

@@ -39,6 +39,11 @@ class FakeClient {
     this.turns = turns;
   }
 
+  /** Whether the most recently dialed stream is still open. */
+  get liveOpen(): boolean {
+    return this.#live?.open ?? false;
+  }
+
   async resolveModelConfigId(): Promise<string | undefined> {
     return undefined;
   }
@@ -347,6 +352,38 @@ describe("CoderAgent integration (mock client)", () => {
     // dialed a fresh stream (which delivered the post-interrupt batch).
     expect(fake.dials).toBe(2);
     expect(result.text).toBe("Cut short.");
+  });
+
+  it("archive() releases a socket retained by an abandoned client-tool pause", async () => {
+    // A tool WITHOUT an execute handler: the AI SDK stops after the pause and
+    // returns the tool calls to the caller — the retained socket has no
+    // resume coming. archive(), the guaranteed-cleanup path, must release it.
+    const tools = {
+      getWeather: tool({
+        description: "Get weather",
+        inputSchema: z.object({ city: z.string() }),
+      }),
+    };
+    const fake = new FakeClient([
+      [
+        status("running"),
+        status("requires_action"),
+        {
+          type: "action_required",
+          chat_id: "chat-1",
+          action_required: {
+            tool_calls: [{ tool_call_id: "tc1", tool_name: "getWeather", args: '{"city":"P"}' }],
+          },
+        },
+      ],
+    ]);
+    const agent = makeAgent(fake, tools);
+    const result = await agent.generate({ prompt: "weather?" });
+    expect(result.finishReason).toBe("tool-calls");
+    expect(fake.liveOpen).toBe(true); // paused, awaiting a resume that never comes
+
+    await agent.archive();
+    expect(fake.liveOpen).toBe(false);
   });
 
   it("streams text deltas via stream()", async () => {
@@ -728,6 +765,33 @@ describe("CoderAgent cancellation & failures", () => {
     expect(err?.name).toBe("TimeoutError");
     expect(err).not.toBeInstanceOf(CoderChatError);
     expect(interrupted).toEqual(["chat-1"]);
+  });
+
+  it("resetSession() mid-segment still interrupts the orphaned server run", async () => {
+    // Reset closes the attached stream and clears the session id; the failing
+    // segment's teardown must interrupt THIS turn's run via its captured chat
+    // id — otherwise the server generation keeps burning with no listener.
+    let reached!: () => void;
+    const midStream = new Promise<void>((r) => {
+      reached = r;
+    });
+    const { client, interrupted } = stallingClient(reached);
+    const model = new CoderLanguageModel({
+      client: client as CoderChatClient,
+      organizationId: "o",
+    });
+    const { stream } = await model.doStream({
+      prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    } as never);
+    const err = drain(stream.getReader()).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    await midStream;
+    model.resetSession();
+    expect(await err).toMatchObject({ name: "CoderChatError", kind: "stream_closed" });
+    expect(interrupted).toEqual(["chat-1"]);
+    expect(model.chatId).toBeUndefined();
   });
 
   it("surfaces a mid-turn stream transport error as a retryable stream_closed", async () => {

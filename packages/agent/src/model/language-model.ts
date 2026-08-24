@@ -389,8 +389,13 @@ export class CoderLanguageModel implements LanguageModelV4 {
     // `cancel()` and premature close, neither of which aborts the signal. A chat
     // whose id we never received (createChat aborted mid-flight) can't be reached.
     let interruptSent = false;
+    // The turn's own chat id, captured once known: the interrupt must reach
+    // THIS turn's run even after a concurrent resetSession() cleared the
+    // session id mid-segment (which also closes the attached stream and fails
+    // the segment — whose teardown then still stops the orphaned server run).
+    let turnChatId: string | undefined;
     const interrupt = (): void => {
-      const id = this.#chatId;
+      const id = turnChatId ?? this.#chatId;
       if (interruptSent || !id) return;
       interruptSent = true;
       void this.#config.client.interruptChat(id).catch(() => {});
@@ -527,6 +532,7 @@ export class CoderLanguageModel implements LanguageModelV4 {
       }
 
       const chatId = this.#chatId as string;
+      turnChatId = chatId;
       // Only messages past the turn's starting cursor belong to this turn —
       // resuming a chat replays earlier turns' messages (usage included), and
       // a mid-turn history reset re-sends them again. Constructing the

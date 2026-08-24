@@ -914,12 +914,15 @@ function redialModel(config?: {
   workspaceId?: string;
   /** Simulate a deployment that auto-assigns a workspace on chat creation. */
   serverAssignsWorkspace?: boolean;
+  /** Simulate a deployment that auto-attaches MCP servers on chat creation. */
+  serverAssignsMcpServers?: boolean;
   /** Scripted GET /messages body (cursor seeding and the requires_action REST fallback). */
   messagesResponse?: () => ChatMessagesResponse | Promise<ChatMessagesResponse>;
   /** Fail this many POST /tool-results calls with a 500 before succeeding. */
   toolResultsFailures?: number;
 }) {
-  const { serverAssignsWorkspace, messagesResponse, ...modelConfig } = config ?? {};
+  const { serverAssignsWorkspace, serverAssignsMcpServers, messagesResponse, ...modelConfig } =
+    config ?? {};
   let toolResultsFailures = config?.toolResultsFailures ?? 0;
   delete (modelConfig as { toolResultsFailures?: number }).toolResultsFailures;
   const sockets: FakeStreamSocket[] = [];
@@ -968,6 +971,7 @@ function redialModel(config?: {
     const body = {
       ...chatStub("chat-1"),
       ...(serverAssignsWorkspace ? { workspace_id: "ws-server" } : {}),
+      ...(serverAssignsMcpServers ? { mcp_server_ids: ["mcp-server"] } : {}),
     };
     return Promise.resolve(
       new Response(JSON.stringify(body), {
@@ -1243,6 +1247,36 @@ describe("CoderLanguageModel stream redial (real reader)", () => {
       // creation (createChat's response carries workspace_id): its tools are
       // just as non-idempotent as an explicitly configured workspace's.
       const { model, sockets } = redialModel({ serverAssignsWorkspace: true });
+      const { stream } = await model.doStream({
+        prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      } as never);
+      const done = drain(stream.getReader()).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("message", streamFrame(status("running")));
+      await vi.advanceTimersByTimeAsync(0);
+      for (let i = 0; i < 5; i++) {
+        sockets.at(-1)?.emit("close", { code: 1006 });
+        await vi.advanceTimersByTimeAsync(30_000);
+      }
+      const err = await done;
+      expect(err).toMatchObject({ name: "CoderStreamError", isRetryable: false });
+      expect(model.chatId).toBeUndefined(); // the dead fresh chat is still discarded
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("downgrades exhaustion to non-retryable when the server auto-attached MCP servers", async () => {
+    vi.useFakeTimers();
+    try {
+      // No mcpServerIds configured, but the deployment auto-attaches MCP
+      // servers at chat creation (createChat's response carries
+      // mcp_server_ids): their tools are just as non-idempotent as a
+      // configured server's, so the exhaustion must not stay auto-retryable.
+      const { model, sockets } = redialModel({ serverAssignsMcpServers: true });
       const { stream } = await model.doStream({
         prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
       } as never);

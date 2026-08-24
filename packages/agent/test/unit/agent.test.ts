@@ -1414,6 +1414,45 @@ describe("CoderLanguageModel requires_action REST fallback (real reader)", () =>
     }
   });
 
+  it("a hanging recovery fetch does not block a late stream event from completing the segment", async () => {
+    vi.useFakeTimers();
+    try {
+      const { model, sockets, fetchCalls } = redialModel({
+        // The REST request never settles; only the stream can finish the turn.
+        messagesResponse: () => new Promise<ChatMessagesResponse>(() => {}),
+      });
+      const { stream } = await model.doStream(weatherOptions());
+      const { parts, done } = collect(stream);
+
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("message", streamFrame(status("running"), status("requires_action")));
+      await vi.advanceTimersByTimeAsync(GRACE_MS);
+      expect(fetchCalls.filter((c) => c === GET_MESSAGES)).toHaveLength(1);
+      // Long after the fetch hung, the lost event arrives over the stream —
+      // it must still complete the segment (no requestTimeoutMs is set, so a
+      // serial await on the fetch would hang this turn forever).
+      await vi.advanceTimersByTimeAsync(30_000);
+      sockets[0]?.emit("message", {
+        data: JSON.stringify([
+          {
+            type: "action_required",
+            chat_id: "chat-1",
+            action_required: {
+              tool_calls: [
+                { tool_call_id: "c1", tool_name: "getWeather", args: '{"city":"Paris"}' },
+              ],
+            },
+          },
+        ]),
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      await done;
+      expect(parts.filter((p) => p.type === "tool-call")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("recovers from a truncated history page — the pending call rides the newest-first page", async () => {
     vi.useFakeTimers();
     try {

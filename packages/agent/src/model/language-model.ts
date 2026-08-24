@@ -455,17 +455,23 @@ export class CoderLanguageModel implements LanguageModelV4 {
       // path, still bounded by requestTimeoutMs/abort.
       let sinceRequiresAction = 0;
       let grace: ReturnType<typeof startGraceTimer> | undefined;
+      // The in-flight recovery fetch. It races the pending stream read rather
+      // than being awaited serially: a slow or hanging REST request must not
+      // block a late stream event from completing the segment (with
+      // requestTimeoutMs unset, a serial await could hang the turn on the
+      // fetch indefinitely — the very failure mode this fallback removes).
+      // Failures resolve to [] (best-effort): the segment then keeps waiting
+      // on the stream, bounded by requestTimeoutMs/abort as before.
+      let recovery: Promise<ChatStreamEvent[]> | undefined;
       let recoveryAttempted = false;
       const stream = this.#config.client.streamEvents(chatId, { afterId, signal });
       try {
         let next = stream.next();
         for (;;) {
           let result: IteratorResult<ChatStreamEvent, void>;
-          if (
-            translator.terminalStatus === "requires_action" &&
-            !translator.clientToolCallSeen &&
-            !recoveryAttempted
-          ) {
+          const awaitingActionRequired =
+            translator.terminalStatus === "requires_action" && !translator.clientToolCallSeen;
+          if (awaitingActionRequired && !recoveryAttempted) {
             // One timer for the whole wait (not per event), so a server that
             // keeps sending unrelated events cannot postpone the fallback.
             grace ??= startGraceTimer(ACTION_REQUIRED_GRACE_MS);
@@ -475,22 +481,20 @@ export class CoderLanguageModel implements LanguageModelV4 {
               // Defensive: the reader settles its read on abort, but if the
               // grace timer won that race, classify before fetching.
               throwIfAborted();
-              let recovered: ChatStreamEvent[] = [];
-              try {
-                recovered = await this.#recoverRequiresAction(
-                  chatId,
-                  dynamicNames,
-                  afterId,
-                  signal,
-                );
-              } catch {
-                throwIfAborted();
-                // Best-effort: a failed recovery fetch must not kill a segment
-                // that a late stream event could still complete; without one
-                // the segment stays bounded by requestTimeoutMs/abort as
-                // before.
-              }
-              for (const ev of recovered) for (const part of translator.ingest(ev)) yield part;
+              recovery = this.#recoverRequiresAction(chatId, dynamicNames, afterId, signal).catch(
+                () => [],
+              );
+              continue;
+            }
+            result = raced;
+          } else if (awaitingActionRequired && recovery) {
+            const raced = await Promise.race([next, recovery]);
+            if (Array.isArray(raced)) {
+              recovery = undefined;
+              // An aborted fetch resolves [] through the catch above —
+              // classify instead of silently waiting out the timeout.
+              throwIfAborted();
+              for (const ev of raced) for (const part of translator.ingest(ev)) yield part;
               if (translator.clientToolCallSeen) {
                 // The abandoned read stays pending on the quiet socket until
                 // the teardown below settles it; tag it handled in case that
@@ -498,7 +502,7 @@ export class CoderLanguageModel implements LanguageModelV4 {
                 void next.catch(() => {});
                 break;
               }
-              continue; // nothing recovered — keep waiting on the same read
+              continue; // nothing recovered — keep waiting on the stream
             }
             result = raced;
           } else {

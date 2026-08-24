@@ -445,14 +445,22 @@ export class TurnTranslator {
       }
       this.#currentAssistantId = message.id;
 
-      if (!this.#text.sawDelta) {
+      // Snapshot mode diffs the full text against the emitted length. Delta
+      // mode normally treats the trailing snapshot as a no-op — but only while
+      // the block is still OPEN can the emitted length vouch for that: a
+      // snapshot carrying MORE text than was emitted means deltas this client
+      // never received (the message committed while a dropped stream was
+      // redialing), so emit the missing suffix instead of losing it. Once the
+      // block is closed the length cursor is gone, and the snapshot must be
+      // skipped as before.
+      if (!this.#text.sawDelta || this.#text.id) {
         const full = content
           .filter((p) => p.type === "text")
           .map((p) => p.text ?? "")
           .join("");
         if (full.length > 0) this.#emitTextUpTo(out, full);
       }
-      if (!this.#reasoning.sawDelta) {
+      if (!this.#reasoning.sawDelta || this.#reasoning.id) {
         const full = content
           .filter((p) => p.type === "reasoning")
           .map((p) => p.text ?? "")

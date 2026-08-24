@@ -49,12 +49,15 @@ export class CoderApiError extends CoderAgentError {
  */
 export class CoderStreamError extends APICallError {
   override name = "CoderStreamError";
-  constructor(args: { message: string; url: string; cause?: unknown }) {
+  constructor(args: { message: string; url: string; cause?: unknown; isRetryable?: boolean }) {
     super({
       message: args.message,
       url: args.url,
       requestBodyValues: undefined,
-      isRetryable: true,
+      // Retries re-invoke the model with the SAME prompt, so the model layer
+      // downgrades this to false whenever the failed chat has prior state a
+      // re-submission would corrupt (see #runTurn).
+      isRetryable: args.isRetryable ?? true,
       cause: args.cause,
     });
   }

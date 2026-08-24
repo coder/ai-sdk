@@ -727,7 +727,7 @@ class FakeStreamSocket {
  * and WebSocket factory, so turns exercise the actual stream reader — redial,
  * replay suppression, and the interrupt policy — not a fake `streamEvents`.
  */
-function redialModel(config?: { requestTimeoutMs?: number }) {
+function redialModel(config?: { requestTimeoutMs?: number; chatId?: string }) {
   const sockets: FakeStreamSocket[] = [];
   const factory: WebSocketFactory = (url) => {
     const s = new FakeStreamSocket(url);
@@ -736,10 +736,15 @@ function redialModel(config?: { requestTimeoutMs?: number }) {
   };
   const fetchCalls: string[] = [];
   const fetchFn = ((url: string, init: RequestInit) => {
-    fetchCalls.push(`${init.method} ${new URL(url).pathname}`);
+    const pathname = new URL(url).pathname;
+    fetchCalls.push(`${init.method} ${pathname}`);
+    const body =
+      init.method === "GET" && pathname.endsWith("/messages")
+        ? { messages: [], queued_messages: [], has_more: false }
+        : chatStub("chat-1");
     return Promise.resolve(
-      new Response(JSON.stringify(chatStub("chat-1")), {
-        status: 201,
+      new Response(JSON.stringify(body), {
+        status: 200,
         headers: { "Content-Type": "application/json" },
       }),
     );
@@ -823,6 +828,54 @@ describe("CoderLanguageModel stream redial (real reader)", () => {
     }
   });
 
+  it("emits text committed while the stream was disconnected (snapshot longer than deltas)", async () => {
+    vi.useFakeTimers();
+    try {
+      const { model, sockets, fetchCalls } = redialModel();
+      const { stream } = await model.doStream({
+        prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      } as never);
+      const parts: { type: string; delta?: string }[] = [];
+      const done = (async () => {
+        const reader = stream.getReader();
+        for (;;) {
+          const { value, done: d } = await reader.read();
+          if (d) break;
+          parts.push(value as { type: string; delta?: string });
+        }
+      })();
+
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("message", streamFrame(status("running"), deltaEv(1, "Hel")));
+      await vi.advanceTimersByTimeAsync(0);
+      // Drop; the message COMMITS during the gap, so the redialed stream
+      // replays only its full snapshot — no further deltas for that episode.
+      sockets[0]?.emit("close", { code: 1006 });
+      await vi.advanceTimersByTimeAsync(1000);
+      sockets[1]?.emit(
+        "message",
+        streamFrame(
+          msg(2, "assistant", [{ type: "text", text: "Hello world" }], {
+            input_tokens: 3,
+            output_tokens: 4,
+          }),
+          status("waiting"),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      await done;
+
+      const text = parts
+        .filter((p) => p.type === "text-delta")
+        .map((p) => p.delta)
+        .join("");
+      expect(text).toBe("Hello world");
+      expect(fetchCalls.filter((c) => c.includes("/interrupt"))).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("interrupts and surfaces an AI-SDK-retryable error once the redial budget is exhausted", async () => {
     vi.useFakeTimers();
     try {
@@ -852,6 +905,39 @@ describe("CoderLanguageModel stream redial (real reader)", () => {
       // Redial exhaustion abandons the run — THAT is an interrupt case.
       await vi.advanceTimersByTimeAsync(0);
       expect(fetchCalls.filter((c) => c.includes("/interrupt"))).toHaveLength(1);
+      // The dead session is discarded so an automatic retry (maxRetries) makes
+      // a FRESH chat instead of double-submitting the prompt into this one.
+      expect(model.chatId).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("downgrades exhaustion to non-retryable when the chat has prior state", async () => {
+    vi.useFakeTimers();
+    try {
+      // Resuming a pre-existing chat: an automatic re-invocation would submit
+      // the same prompt into it AGAIN as a new user turn, so isRetryable must
+      // be false and the session must be kept for the caller to decide.
+      const { model, sockets } = redialModel({ chatId: "chat-1" });
+      const { stream } = await model.doStream({
+        prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      } as never);
+      const done = drain(stream.getReader()).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("message", streamFrame(status("running")));
+      await vi.advanceTimersByTimeAsync(0);
+      for (let i = 0; i < 5; i++) {
+        sockets.at(-1)?.emit("close", { code: 1006 });
+        await vi.advanceTimersByTimeAsync(30_000);
+      }
+      const err = await done;
+      expect(err).toMatchObject({ name: "CoderStreamError", isRetryable: false });
+      expect(APICallError.isInstance(err)).toBe(true);
+      expect(model.chatId).toBe("chat-1");
     } finally {
       vi.useRealTimers();
     }

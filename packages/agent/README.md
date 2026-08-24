@@ -316,10 +316,15 @@ exponential backoff, resuming from the last received message — the server keep
 generating during the gap, so a transient drop costs nothing and the run is
 **not** interrupted. Only when the stream cannot be re‑established (several
 consecutive failed attempts, ~15s) is the server run interrupted and the call
-rejected with a `CoderStreamError` — an AI SDK `APICallError` with
-`isRetryable: true`, so `generate()` calls with `maxRetries` set retry it
-automatically. (For `stream()`, a mid‑stream failure surfaces on the stream
-itself, outside the SDK's retry wrapper — handle it in your consumption loop.)
+rejected with a `CoderStreamError` — an AI SDK `APICallError`. When the failed
+turn had just created its chat, the dead session is discarded and the error is
+`isRetryable: true`, so `generate()` calls with `maxRetries` set retry the whole
+turn on a fresh chat automatically. On a chat with prior state (resumed
+sessions, later turns, tool‑result segments) an automatic re‑invocation would
+resubmit the same prompt as a new user turn, so there the error is
+`isRetryable: false` and resuming is the caller's deliberate decision. (For
+`stream()`, a mid‑stream failure surfaces on the stream itself, outside the
+SDK's retry wrapper — handle it in your consumption loop.)
 A non‑transient 4xx upgrade rejection (bad/expired token,
 deleted chat) fails fast with a `CoderApiError` instead of retrying; 408/425/429
 consume the redial budget like any other transient failure.
@@ -360,9 +365,12 @@ carry structured detail you can branch on:
 - **`CoderChatError`** — a turn ended in an error, timed out, or lost its stream. Fields: `kind`, `retryable`, `statusCode`, `provider`.
 - **`CoderStreamError`** — the event stream dropped and could not be re‑established
   within its redial budget. Extends the AI SDK's `APICallError` (not
-  `CoderAgentError`) with `isRetryable: true`, so `generate()`'s `maxRetries`
-  machinery recognizes it (a failure mid‑`stream()` surfaces on the stream,
-  outside the retry wrapper); the last transport failure is in `cause`.
+  `CoderAgentError`), so `generate()`'s `maxRetries` machinery recognizes it.
+  `isRetryable` is `true` only when the failed turn created its chat (the dead
+  session is discarded, so a retry starts fresh); on a chat with prior state it
+  is `false` — a retry would resubmit the prompt as a new user turn. A failure
+  mid‑`stream()` surfaces on the stream, outside the retry wrapper. The last
+  transport failure is in `cause`.
 
 ```ts
 import { CoderApiError, CoderChatError } from "@coder/ai-sdk-agent";

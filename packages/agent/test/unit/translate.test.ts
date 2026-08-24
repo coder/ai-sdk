@@ -559,6 +559,33 @@ describe("TurnTranslator — usage cost metadata", () => {
 });
 
 describe("TurnTranslator — redial replay", () => {
+  it("recovers text and reasoning committed while the stream was disconnected", () => {
+    // Deltas stream part of the message, the connection drops, and the message
+    // COMMITS during the gap: the redialed stream replays only the full
+    // snapshot (no more deltas for that episode). The snapshot's surplus over
+    // the emitted length is exactly the content generated during the gap and
+    // must be emitted, not treated as a redundant trailing snapshot.
+    const { parts } = run([
+      part("assistant", { type: "reasoning", text: "Think" }),
+      part("assistant", { type: "text", text: "Hel" }),
+      // — drop; commit during the gap; redial replays the snapshot —
+      msg(
+        2,
+        "assistant",
+        [
+          { type: "reasoning", text: "Think" },
+          { type: "text", text: "Hello world" },
+        ],
+        { input_tokens: 5, output_tokens: 4 },
+      ),
+      status("waiting"),
+    ]);
+    expect(textBlocks(parts)).toEqual(["Hello world"]);
+    const finish = parts.at(-1)!;
+    if (finish.type !== "finish") return;
+    expect(finish.usage.inputTokens.total).toBe(5);
+  });
+
   it("does not double-emit content, tool calls, or usage when a reconnect replays the turn", () => {
     // A dropped/redialed stream can replay events the translator already saw:
     // the committed snapshot of a message whose deltas streamed, and the

@@ -9,7 +9,7 @@ import type {
   SharedV4Warning,
 } from "@ai-sdk/provider";
 import { assertSupportedAiVersion } from "../ai-version.js";
-import { CoderAgentError, CoderApiError, CoderChatError } from "../errors.js";
+import { CoderAgentError, CoderApiError, CoderChatError, CoderStreamError } from "../errors.js";
 import { CoderChatClient } from "../coder/client.js";
 import type { ChatInputPart, CreateChatRequest } from "../coder/types.js";
 import { dataContentToFileContent } from "../files.js";
@@ -172,6 +172,11 @@ export class CoderLanguageModel implements LanguageModelV4 {
     // only once the turn's starting message id is known (see `turnCursor`).
     let translator: TurnTranslator | undefined;
 
+    // Set when a stream failure kills a chat that THIS call created: the
+    // `finally` then drops the session (after interrupting the dead run) so an
+    // automatic whole-call retry replays the turn on a fresh chat.
+    let discardSession = false;
+
     // Interrupting the *server* run (not just closing the WebSocket) is what frees
     // the chat's workspace/resources. Fire it at most once — on abort/timeout, and
     // on teardown of an unsettled turn (see `finally`), which also covers stream
@@ -231,6 +236,10 @@ export class CoderLanguageModel implements LanguageModelV4 {
       }
 
       let afterId: number | undefined;
+      // Whether THIS call created the chat — the one case where an automatic
+      // whole-call retry after a stream failure is safe (see the
+      // CoderStreamError handling below).
+      let turnCreatedChat = false;
 
       // A fresh instance resuming an existing chat (config.chatId) has no
       // message cursor yet. Without one, a queued submission or a tool-result
@@ -272,6 +281,7 @@ export class CoderLanguageModel implements LanguageModelV4 {
           if (this.#config.planMode) req.plan_mode = this.#config.planMode;
           const chat = await this.#config.client.createChat(req, signal);
           this.#chatId = chat.id;
+          turnCreatedChat = true;
           afterId = this.#lastSeenMessageId > 0 ? this.#lastSeenMessageId : undefined;
         } else {
           const resp = await this.#config.client.createChatMessage(
@@ -329,11 +339,33 @@ export class CoderLanguageModel implements LanguageModelV4 {
         throwIfAborted();
         // The reader redials dropped connections internally (with `after_id`
         // catch-up), so what escapes it is terminal: a CoderApiError (4xx
-        // upgrade rejection), a CoderStreamError (redial budget exhausted;
-        // already AI-SDK-retryable) — both re-thrown as-is below — or a bare
-        // CoderAgentError (unparseable frame). Surface the latter as a
-        // retryable stream failure so a caller's `CoderChatError && retryable`
-        // retry path catches it instead of seeing a bare, non-retryable error.
+        // upgrade rejection, re-thrown as-is), a CoderStreamError (redial
+        // budget exhausted; handled below), or a bare CoderAgentError
+        // (unparseable frame / undedupable old-server deltas). Surface the
+        // latter as a retryable stream failure so a caller's
+        // `CoderChatError && retryable` retry path catches it instead of
+        // seeing a bare, non-retryable error.
+        //
+        // An AI-SDK `maxRetries` retry re-invokes this model with the SAME
+        // prompt, and `#runTurn` would submit it AGAIN as a new user turn.
+        // That is only safe when this very call created the chat: discard the
+        // dead session (its run is being interrupted anyway) so the retry
+        // replays the whole turn on a FRESH chat. A chat with prior state —
+        // resumed sessions, later turns, tool-result segments — would be
+        // corrupted by a re-submission, so there the error is downgraded to
+        // non-retryable and the caller owns the resume decision.
+        if (err instanceof CoderStreamError) {
+          if (turnCreatedChat) {
+            discardSession = true; // the finally interrupts the dead run, then drops the session
+            throw err;
+          }
+          throw new CoderStreamError({
+            message: `${err.message}; automatic retry is disabled because the chat has prior state (a retry would resubmit this turn's prompt as a new user turn)`,
+            url: err.url,
+            cause: err,
+            isRetryable: false,
+          });
+        }
         if (
           err instanceof CoderAgentError &&
           !(err instanceof CoderApiError) &&
@@ -390,6 +422,9 @@ export class CoderLanguageModel implements LanguageModelV4 {
       // unparseable frame), or a REST-phase error — all cases where the healthy
       // server run must not keep burning tokens on an audience of zero.
       if (!translator?.terminalStatus) interrupt();
+      // Ordered after the interrupt (which needs the chat id) and after the
+      // cursor advance above (which the reset zeroes out again).
+      if (discardSession) this.resetSession();
       this.#inFlight = false;
     }
   }

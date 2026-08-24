@@ -508,11 +508,26 @@ export class TurnTranslator {
         // step streams, #currentAssistantId still names the last committed
         // one and its pending deltas must join the reconciliation below.
         this.#reconcileRevision(out, known, fullText, fullReasoning);
+      } else if (
+        known &&
+        this.#deltasSinceSnapshot &&
+        (known.text !== "" || known.reasoning !== "")
+      ) {
+        // A same-id snapshot racing the NEXT step's open deltas. A message
+        // whose earlier snapshot already carried content never streams more
+        // deltas (content changes to committed messages arrive only as
+        // revision snapshots), so the pending deltas belong to the next,
+        // still-uncommitted message — they must NOT be claimed here, even
+        // when the revised content happens to share their prefix. Emit
+        // nothing and claim nothing: a mid-race revision suffix is deferred
+        // until the next step commits and a re-sent snapshot takes the
+        // earlier-message path above. Announce-style commits (the earlier
+        // snapshot was EMPTY) stay on the attribution path below — their
+        // deltas ARE this message's content.
       } else {
         // First sight of this message, or a re-snapshot of the CURRENT one —
-        // progressive snapshot-mode growth, an announce-style commit filling
-        // in content that (partially) streamed as deltas, or a replay racing
-        // the next step's deltas.
+        // progressive snapshot-mode growth, or an announce-style commit
+        // filling in content that (partially) streamed as deltas.
         //
         // New assistant message boundary: close the previous message's
         // blocks. Skipped when deltas arrived since the previous assistant

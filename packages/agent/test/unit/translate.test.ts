@@ -857,6 +857,30 @@ describe("TurnTranslator — earlier-message revision reconciliation (#57)", () 
     expect(textBlocks(parts)).toEqual(["A", "B", "C1", " — amended", "C2"]);
   });
 
+  it("does not let a same-id revision claim the next step's open deltas on a prefix collision", () => {
+    // Message 2 committed with "A"; the next step streams "B"; then a
+    // revision of message 2 arrives whose content is "ABX". #currentAssistantId
+    // still names message 2 (deltas carry no id), and the revision's content
+    // extends ledger + pending — but the pending "B" belongs to the NEXT,
+    // still-uncommitted message and must not be claimed (claiming would
+    // splice "X" into the open next-step block and desync both messages).
+    // The revision reconciles later, once the next step commits and a
+    // re-sent snapshot takes the earlier-message path.
+    const revised = msg(2, "assistant", [{ type: "text", text: "ABX" }]);
+    const { parts } = run([
+      msg(2, "assistant", [{ type: "text", text: "A" }]),
+      part("assistant", { type: "text", text: "B" }),
+      revised,
+      msg(4, "assistant", [{ type: "text", text: "B" }]),
+      // — chatd re-sends the revised snapshot (replay/revision bump) —
+      revised,
+      status("waiting"),
+    ]);
+    // The next step's "B" delta stays in its own stream; the revision suffix
+    // "BX" lands once, bracketed, after the race resolves.
+    expect(textBlocks(parts)).toEqual(["AB", "BX"]);
+  });
+
   it("keeps suppressing a rewrite revision that cannot be expressed as a suffix", () => {
     // A revision that REWRITES already-emitted content cannot be reconciled
     // in a delta stream (emitted text cannot be retracted) — the safe side is

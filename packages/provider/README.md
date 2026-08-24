@@ -207,10 +207,15 @@ the deployment dashboard under `/ai-gateway/sessions`.
 
 ### Security FAQ
 
-- **Does prompt data ever go anywhere other than my deployment?** Not from
-  this package — the only host it contacts is `baseURL`. Onward traffic to the
-  upstream vendor originates from your deployment (or its standalone gateway
-  replicas), using the providers your admins configured.
+- **Does prompt data ever go anywhere other than my deployment?** This package
+  only ever _initiates_ requests to `baseURL`; onward traffic to the upstream
+  vendor originates from your deployment (or its standalone gateway replicas),
+  using the providers your admins configured. One standard-`fetch` caveat:
+  redirects are followed by default, so a cross-origin redirect issued by your
+  deployment or an intermediary would resend the request — prompt body and
+  non-`Authorization` headers (in BYOK mode that includes `x-api-key` and the
+  governance token) — to the redirect target. To forbid this, supply a custom
+  fetch: `fetch: (url, init) => fetch(url, { ...init, redirect: "error" })`.
 - **Do developers ever handle raw provider keys?** Centralized mode: no —
   developers only ever hold a Coder token. BYOK mode: they supply their own
   personal key, which is forwarded per request without entering central custody.

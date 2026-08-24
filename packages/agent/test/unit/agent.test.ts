@@ -297,6 +297,58 @@ describe("CoderAgent integration (mock client)", () => {
     expect(fake.createdChats[0]?.unsafe_dynamic_tools?.map((t) => t.name)).toEqual(["getWeather"]);
   });
 
+  it("interrupt() during tool execution closes the paused stream; the resume dials fresh", async () => {
+    // agent.interrupt() between segments (while a client tool runs) kills the
+    // paused turn: the retained socket must not survive it — it would buffer
+    // the interrupt's own settle events, which the resume would then consume
+    // as if they were the resumed generation's — so the resume re-dials.
+    const interrupted: string[] = [];
+    class InterruptibleClient extends FakeClient {
+      override async interruptChat(chatId: string): Promise<Chat> {
+        interrupted.push(chatId);
+        return chatStub(chatId);
+      }
+    }
+    const fake = new InterruptibleClient([
+      [
+        status("running"),
+        status("requires_action"),
+        {
+          type: "action_required",
+          chat_id: "chat-1",
+          action_required: {
+            tool_calls: [{ tool_call_id: "tc1", tool_name: "getWeather", args: '{"city":"P"}' }],
+          },
+        },
+      ],
+      // Delivered AFTER the interrupt — on the fresh dial, not the dead pause.
+      [
+        status("running"),
+        msg(3, "assistant", [{ type: "text", text: "Cut short." }]),
+        status("waiting"),
+      ],
+    ]);
+    let agent!: ReturnType<typeof makeAgent<Record<string, unknown>>>;
+    const tools = {
+      getWeather: tool({
+        description: "Get weather",
+        inputSchema: z.object({ city: z.string() }),
+        execute: async () => {
+          await agent.interrupt();
+          return { temp: 0 };
+        },
+      }),
+    };
+    agent = makeAgent(fake, tools);
+
+    const result = await agent.generate({ prompt: "weather?" });
+    expect(interrupted).toEqual(["chat-1"]);
+    // The paused socket was closed by the interrupt, so the resumed segment
+    // dialed a fresh stream (which delivered the post-interrupt batch).
+    expect(fake.dials).toBe(2);
+    expect(result.text).toBe("Cut short.");
+  });
+
   it("streams text deltas via stream()", async () => {
     const fake = new FakeClient([
       [

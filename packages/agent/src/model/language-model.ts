@@ -177,6 +177,23 @@ export class CoderLanguageModel implements LanguageModelV4 {
   }
 
   /**
+   * Closes a stream retained by a client-tool pause. Called on explicit
+   * interrupts ({@link CoderAgent.interrupt}): an interrupted pause is dead —
+   * its buffer would otherwise collect the interrupt's own settle events,
+   * which a later tool-result resume would consume as if they were the
+   * resumed generation's (truncating the turn), and if the tool loop never
+   * resumes the socket would outlive the explicit interrupt. A stream a
+   * segment is actively reading is left alone: that segment observes the
+   * settle the interrupt produces and closes the stream itself.
+   */
+  async closePausedStream(): Promise<void> {
+    const stream = this.#retainedStream;
+    if (!stream || stream.attached) return;
+    this.#retainedStream = undefined;
+    await stream.close();
+  }
+
+  /**
    * The stream a segment reads: a resume segment re-attaches to the stream
    * its predecessor left paused at `requires_action` (the whole point of
    * retention — no re-dial per tool round trip); everything else — a new

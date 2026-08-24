@@ -413,7 +413,15 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
    */
   async interrupt(opts?: { signal?: AbortSignal }): Promise<void> {
     const id = this.#model.chatId;
-    if (id) await this.#client.interruptChat(id, opts?.signal);
+    if (!id) return;
+    // A stream paused for client tools dies with the run it was following:
+    // close it FIRST so a later resume dials fresh instead of consuming the
+    // interrupt's settle events as the resumed generation's, and so the
+    // socket cannot outlive an explicit interrupt when the tool loop never
+    // resumes. (A stream an active segment is reading is left to that
+    // segment, which observes the settle and closes it.) Local and instant.
+    await this.#model.closePausedStream();
+    await this.#client.interruptChat(id, opts?.signal);
   }
 
   /**

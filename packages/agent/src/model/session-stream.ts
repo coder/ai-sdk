@@ -61,6 +61,11 @@ export class SessionChatStream {
     return this.#closePromise !== undefined;
   }
 
+  /** Whether a segment is currently consuming this stream. */
+  get attached(): boolean {
+    return this.#attached;
+  }
+
   /** Whether a resume segment for `chatId` may {@link attach}. */
   canAttach(chatId: string): boolean {
     return !this.closed && this.#reusable && this.chatId === chatId;

@@ -65,12 +65,13 @@ const STREAM_BACKOFF_CAP_MS = 30_000;
 /**
  * Consecutive progress-less connection endings tolerated before a dropped
  * per-chat stream gives up — counting the drop that starts an outage. Only
- * forward progress — a newly committed message or a new (unsuppressed) delta —
- * resets the count; chatd replays a `status` and the in-progress episode on
- * every reconnect, so counting mere receipt would let a half-dead connection
- * (connects, replays, drops) redial forever. With 1s→2s→4s→8s backoff between
- * the five endings this bounds a non-progressing network to ~15s of redialing
- * even without a caller signal or `requestTimeoutMs`.
+ * forward progress — a newly committed or revised message, or a new
+ * (unsuppressed) delta — resets the count; chatd replays a `status` and the
+ * in-progress episode on every reconnect, so counting mere receipt would let
+ * a half-dead connection (connects, replays, drops) redial forever. With
+ * 1s→2s→4s→8s backoff between the five endings this bounds a non-progressing
+ * network to ~15s of redialing even without a caller signal or
+ * `requestTimeoutMs`.
  */
 const STREAM_MAX_CONSECUTIVE_FAILURES = 5;
 
@@ -195,6 +196,12 @@ async function* streamChatEventsLoop(
 
   // Highest committed message id yielded, for progress accounting only.
   let maxCommittedId = options.afterId;
+  // Last-yielded serialized form of each committed message, so a same-id
+  // REVISION snapshot (updated content, tool data, or usage on an
+  // already-committed message) counts as forward progress while a
+  // byte-identical replay does not. Revision numbers are not on the wire
+  // type, so content equality is the discriminator (#59).
+  const lastMessageJson = new Map<number, string>();
   // Last yielded delta position, for suppressing chatd's from-the-start replay
   // of the in-progress episode after a redial.
   let lastHistoryVersion: number | undefined;
@@ -388,9 +395,16 @@ async function* streamChatEventsLoop(
               sawUntrackableDelta = true;
             }
           } else if (next.type === "message" && next.message) {
+            // A message not seen in this exact form before — a new commit or
+            // a same-id revision — is forward progress; a byte-identical
+            // replay is not.
+            const serialized = JSON.stringify(next.message);
+            if (lastMessageJson.get(next.message.id) !== serialized) {
+              lastMessageJson.set(next.message.id, serialized);
+              progress = true;
+            }
             if (maxCommittedId === undefined || next.message.id > maxCommittedId) {
               maxCommittedId = next.message.id;
-              progress = true;
               // This commit finalizes the in-progress deltas: their content
               // now lives in committed snapshots, which consumers dedupe, so
               // a replay can no longer duplicate coordinate-less deltas.

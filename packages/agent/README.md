@@ -723,8 +723,12 @@ CoderAgent  (implements ai.Agent)
 - One `doStream` call advances the chat until it **settles** (`waiting`/`completed`) or
   **pauses** for a client tool (`requires_action`). The SDK loop and the server‑side loop
   mesh at the client‑tool boundary, so there's no double loop.
-- Streaming text is emitted from `message_part` deltas; fast turns that only produce a full
-  `message` snapshot are diffed against an emitted‑length cursor — so neither double‑counts.
+- Streaming text is emitted from `message_part` deltas; every `message` snapshot is then
+  reconciled against a per‑message emitted‑content ledger, so nothing double‑counts: a
+  trailing snapshot after deltas is a no‑op, a fast snapshot‑only turn emits in full, a
+  message that commits while the stream is redialing yields exactly its missing tail, and a
+  revision that appends to an earlier message yields the appended suffix (rewrites that
+  can't be expressed as deltas are safely suppressed).
 
 ## Durable workflows (Vercel Workflow, step functions, …)
 

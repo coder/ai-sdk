@@ -825,6 +825,86 @@ describe("CoderChatClient.streamEvents (redial)", () => {
     }
   });
 
+  it("counts a same-id revision snapshot as redial-budget progress (#59)", async () => {
+    vi.useFakeTimers();
+    try {
+      const { c, sockets } = streamClient();
+      const iter = c.streamEvents("c1");
+      const p1 = iter.next();
+      await vi.advanceTimersByTimeAsync(0);
+      sockets.at(-1)?.emit("message", frame(message(5, "step one")));
+      expect((await p1).value).toMatchObject({ type: "message", message: { id: 5 } });
+
+      const p2 = iter.next();
+      await vi.advanceTimersByTimeAsync(0);
+      // Four progress-less endings (one short of the budget)…
+      for (let i = 0; i < 4; i++) {
+        sockets.at(-1)?.emit("close", { code: 1006 });
+        await vi.advanceTimersByTimeAsync(30_000);
+      }
+      expect(sockets).toHaveLength(5);
+      // …then a connection whose ONLY new data is a same-id REVISION of the
+      // committed message (updated content/tool data/usage). That is genuine
+      // forward progress and must reset the budget — not count as the fifth
+      // failure when this connection drops too.
+      sockets.at(-1)?.emit("message", frame(message(5, "step one (revised)")));
+      expect((await p2).value).toMatchObject({
+        type: "message",
+        message: { id: 5, content: [{ text: "step one (revised)" }] },
+      });
+
+      const p3 = iter.next().then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      // A fresh budget of five progress-less endings (the revision-delivering
+      // connection's own drop counts as the first) applies before giving up.
+      for (let i = 0; i < 5; i++) {
+        sockets.at(-1)?.emit("close", { code: 1006 });
+        await vi.advanceTimersByTimeAsync(30_000);
+      }
+      expect(sockets).toHaveLength(9);
+      expect(await p3).toMatchObject({ name: "CoderStreamError" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not count a byte-identical replayed snapshot as progress", async () => {
+    vi.useFakeTimers();
+    try {
+      const { c, sockets } = streamClient();
+      const iter = c.streamEvents("c1");
+      const seen: ChatStreamEvent[] = [];
+      const result = (async () => {
+        for await (const ev of iter) seen.push(ev);
+      })().then(
+        () => "completed",
+        (e: unknown) => e,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("message", frame(message(5, "step one")));
+      await vi.advanceTimersByTimeAsync(0);
+      // Every reconnect replays the identical committed snapshot, then drops.
+      // Unlike a revision, a byte-identical replay is not progress — the
+      // budget must accrue and give up instead of redialing forever.
+      for (let i = 0; i < 5; i++) {
+        sockets.at(-1)?.emit("close", { code: 1006 });
+        await vi.advanceTimersByTimeAsync(30_000);
+        sockets.at(-1)?.emit("message", frame(message(5, "step one")));
+        await vi.advanceTimersByTimeAsync(0);
+      }
+      expect(await result).toMatchObject({ name: "CoderStreamError" });
+      expect(sockets).toHaveLength(5);
+      // Replayed snapshots are still YIELDED (consumers dedupe by id) — they
+      // just don't reset the budget.
+      expect(seen.filter((e) => e.type === "message")).toHaveLength(5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does not reset the budget on replayed events (a half-dead connection cannot redial forever)", async () => {
     vi.useFakeTimers();
     try {

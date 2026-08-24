@@ -723,6 +723,263 @@ describe("TurnTranslator — redial replay", () => {
   });
 });
 
+describe("TurnTranslator — commit-during-disconnect reconciliation (#60)", () => {
+  it("emits the text tail from a trailing snapshot when the text block was closed before the drop", () => {
+    // Text streamed, then reasoning opened (closing the text block), then the
+    // stream dropped; the message COMMITS during the gap with MORE text after
+    // the reasoning. The trailing snapshot must yield both remaining suffixes
+    // — a closed block's content is tracked in the per-message ledger, not
+    // lost with the block's cursor.
+    const { parts } = run([
+      part("assistant", { type: "text", text: "A" }),
+      part("assistant", { type: "reasoning", text: "Th" }),
+      // — drop; commit during the gap; redial replays the snapshot —
+      msg(2, "assistant", [
+        { type: "text", text: "A" },
+        { type: "reasoning", text: "Think" },
+        { type: "text", text: "B" },
+      ]),
+      status("waiting"),
+    ]);
+    expect(textBlocks(parts).join("")).toBe("AB");
+    const reasoning = parts
+      .filter((p) => p.type === "reasoning-delta")
+      .map((p) => ("delta" in p ? p.delta : ""))
+      .join("");
+    expect(reasoning).toBe("Think");
+  });
+
+  it("recovers missing snapshot content in wire-part order, not open-block-first", () => {
+    // Only text streamed before the drop; the committed snapshot interleaves
+    // an unseen reasoning part BETWEEN the seen text and the text tail. The
+    // recovered blocks must follow the snapshot's part order (A, Think, B) —
+    // not emit the whole text tail first because the text block was open.
+    const { parts } = run([
+      part("assistant", { type: "text", text: "A" }),
+      // — drop; commit during the gap; redial replays the snapshot —
+      msg(2, "assistant", [
+        { type: "text", text: "A" },
+        { type: "reasoning", text: "Think" },
+        { type: "text", text: "B" },
+      ]),
+      status("waiting"),
+    ]);
+    expect(parts.map((p) => p.type)).toEqual([
+      "text-start",
+      "text-delta", // streamed "A"
+      "text-end",
+      "reasoning-start",
+      "reasoning-delta", // recovered "Think"
+      "reasoning-end",
+      "text-start",
+      "text-delta", // recovered "B"
+      "text-end",
+      "finish",
+    ]);
+    expect(textBlocks(parts)).toEqual(["A", "B"]);
+  });
+
+  it("recovers the tail when an announced message commits during the disconnect (same-id snapshot)", () => {
+    // chatd can announce a message with an empty snapshot before its deltas.
+    // If the message then commits while the stream is down, the reconnect's
+    // full snapshot carries the SAME id the announce did — it must still fill
+    // in the tail the lost deltas never delivered.
+    const { parts } = run([
+      msg(2, "assistant", []),
+      part("assistant", { type: "text", text: "Hel" }),
+      // — drop; commit during the gap; redial replays the snapshot —
+      msg(2, "assistant", [{ type: "text", text: "Hello world" }]),
+      status("waiting"),
+    ]);
+    expect(textBlocks(parts).join("")).toBe("Hello world");
+  });
+
+  it("does not diff a delta-streamed step against the previous snapshot-only step's cursor", () => {
+    // Step 1 arrived snapshot-only (committed before the client connected);
+    // step 2 streams via deltas and its trailing snapshot arrives after a
+    // drop. The snapshot must reconcile against what was emitted FOR THAT
+    // MESSAGE — diffing against a block-length cursor polluted by step 1
+    // would emit a corrupt suffix ("e") and lose the tail.
+    const { parts } = run([
+      msg(
+        2,
+        "assistant",
+        [
+          { type: "text", text: "One" },
+          { type: "tool-call", tool_call_id: "s1", tool_name: "web_search", args: { q: "x" } },
+        ],
+        { input_tokens: 1, output_tokens: 1 },
+      ),
+      msg(3, "tool", [
+        { type: "tool-result", tool_call_id: "s1", tool_name: "web_search", result: { hits: 1 } },
+      ]),
+      part("assistant", { type: "text", text: "Two " }),
+      // — drop; commit during the gap; redial replays the snapshot —
+      msg(4, "assistant", [{ type: "text", text: "Two done" }]),
+      status("waiting"),
+    ]);
+    expect(textBlocks(parts).join("")).toBe("OneTwo done");
+    expect(parts.filter((p) => p.type === "tool-call")).toHaveLength(1);
+  });
+});
+
+describe("TurnTranslator — earlier-message revision reconciliation (#57)", () => {
+  it("emits the appended suffix when an earlier message's snapshot is revised mid-turn", () => {
+    const { parts } = run([
+      msg(2, "assistant", [
+        { type: "text", text: "First" },
+        { type: "tool-call", tool_call_id: "s1", tool_name: "web_search", args: { q: "x" } },
+      ]),
+      msg(3, "tool", [
+        { type: "tool-result", tool_call_id: "s1", tool_name: "web_search", result: { hits: 1 } },
+      ]),
+      msg(4, "assistant", [{ type: "text", text: "Second" }]),
+      // Revision bump: chatd re-streams message 2 with appended content.
+      msg(2, "assistant", [
+        { type: "text", text: "First — amended" },
+        { type: "tool-call", tool_call_id: "s1", tool_name: "web_search", args: { q: "x" } },
+      ]),
+      status("waiting"),
+    ]);
+    expect(textBlocks(parts)).toEqual(["First", "Second", " — amended"]);
+    expect(parts.filter((p) => p.type === "tool-call")).toHaveLength(1);
+  });
+
+  it("emits a revision suffix once even when the revised snapshot replays", () => {
+    const revised = msg(2, "assistant", [{ type: "text", text: "First!" }]);
+    const { parts } = run([
+      msg(2, "assistant", [{ type: "text", text: "First" }]),
+      msg(4, "assistant", [{ type: "text", text: "Second" }]),
+      revised,
+      // — redial replays the already-reconciled revision —
+      revised,
+      status("waiting"),
+    ]);
+    expect(textBlocks(parts)).toEqual(["First", "Second", "!"]);
+  });
+
+  it("brackets a revision suffix in its own block instead of splicing it into open deltas", () => {
+    const round = (id: number, text: string, callId: string): ChatStreamEvent[] => [
+      part("assistant", { type: "text", text }),
+      part("assistant", { type: "tool-call", tool_call_id: callId, tool_name: "run", args: {} }),
+      msg(id, "assistant", [
+        { type: "text", text },
+        { type: "tool-call", tool_call_id: callId, tool_name: "run", args: {} },
+      ]),
+      msg(id + 1, "tool", [
+        { type: "tool-result", tool_call_id: callId, tool_name: "run", result: {} },
+      ]),
+    ];
+    const { parts } = run([
+      ...round(2, "A", "s1"),
+      ...round(4, "B", "s2"),
+      part("assistant", { type: "text", text: "C1" }),
+      // Revision of step 1 lands while step 3's deltas are open: its suffix
+      // must land in its OWN block, not splice into the open step-3 block.
+      msg(2, "assistant", [
+        { type: "text", text: "A — amended" },
+        { type: "tool-call", tool_call_id: "s1", tool_name: "run", args: {} },
+      ]),
+      part("assistant", { type: "text", text: "C2" }),
+      msg(6, "assistant", [{ type: "text", text: "C1C2" }]),
+      status("waiting"),
+    ]);
+    expect(textBlocks(parts)).toEqual(["A", "B", "C1", " — amended", "C2"]);
+  });
+
+  it("does not let a same-id revision claim the next step's open deltas on a prefix collision", () => {
+    // Message 2 committed with "A"; the next step streams "B"; then a
+    // revision of message 2 arrives whose content is "ABX". #currentAssistantId
+    // still names message 2 (deltas carry no id), and the revision's content
+    // extends ledger + pending — but the pending "B" belongs to the NEXT,
+    // still-uncommitted message and must not be claimed (claiming would
+    // splice "X" into the open next-step block and desync both messages).
+    // The revision reconciles later, once the next step commits and a
+    // re-sent snapshot takes the earlier-message path.
+    const revised = msg(2, "assistant", [{ type: "text", text: "ABX" }]);
+    const { parts } = run([
+      msg(2, "assistant", [{ type: "text", text: "A" }]),
+      part("assistant", { type: "text", text: "B" }),
+      revised,
+      msg(4, "assistant", [{ type: "text", text: "B" }]),
+      // — chatd re-sends the revised snapshot (replay/revision bump) —
+      revised,
+      status("waiting"),
+    ]);
+    // The next step's "B" delta stays in its own stream; the revision suffix
+    // "BX" lands once, bracketed, after the race resolves.
+    expect(textBlocks(parts)).toEqual(["AB", "BX"]);
+  });
+
+  it("treats a tool-only snapshot as substantive: its revision cannot claim next-step deltas", () => {
+    // Message 2 committed with only a tool call (no text/reasoning). That is
+    // a SUBSTANTIVE commit, not an announce: a later same-id revision racing
+    // the next step's open deltas must not claim them just because the
+    // message's text ledger is empty. The revision reconciles only after the
+    // next step commits, in its own bracketed block.
+    const revised = msg(2, "assistant", [
+      { type: "text", text: "Result: 42" },
+      { type: "tool-call", tool_call_id: "s1", tool_name: "run", args: {} },
+    ]);
+    const { parts } = run([
+      msg(2, "assistant", [{ type: "tool-call", tool_call_id: "s1", tool_name: "run", args: {} }]),
+      msg(3, "tool", [{ type: "tool-result", tool_call_id: "s1", tool_name: "run", result: {} }]),
+      part("assistant", { type: "text", text: "Result: " }),
+      revised, // mid-race: must claim nothing
+      msg(4, "assistant", [{ type: "text", text: "Result: ok" }]),
+      revised, // after the race resolves: reconciles, bracketed
+      status("waiting"),
+    ]);
+    expect(textBlocks(parts)).toEqual(["Result: ok", "Result: 42"]);
+    expect(parts.filter((p) => p.type === "tool-call")).toHaveLength(1);
+  });
+
+  it("settles pending deltas on a suppressed rewrite commit so later messages reconcile", () => {
+    // A delta-streamed message commits with REWRITTEN content ("Hi" does not
+    // extend the emitted "Hello"): the rewrite itself stays suppressed, but
+    // the commit still settles ownership of the deltas — stale pending
+    // content must not poison the NEXT message's reconciliation.
+    const { parts } = run([
+      part("assistant", { type: "text", text: "Hello" }),
+      msg(2, "assistant", [{ type: "text", text: "Hi" }]),
+      msg(4, "assistant", [{ type: "text", text: "Next" }]),
+      status("waiting"),
+    ]);
+    expect(textBlocks(parts)).toEqual(["Hello", "Next"]);
+  });
+
+  it("reconciles a revision deferred during a delta race once the next step commits", () => {
+    // The mid-race revision arrives ONCE on a healthy connection — chatd does
+    // not re-send it later. Its suffix must be cached and reconciled when the
+    // next step's snapshot settles delta ownership, not wait for a replay
+    // that never comes.
+    const { parts } = run([
+      msg(2, "assistant", [{ type: "text", text: "A" }]),
+      part("assistant", { type: "text", text: "B" }),
+      msg(2, "assistant", [{ type: "text", text: "A+" }]), // mid-race, sent once
+      msg(4, "assistant", [{ type: "text", text: "B" }]), // resolves the race
+      status("waiting"),
+    ]);
+    // "A" and the step-2 delta share a block (snapshot-opened block stays
+    // open); the deferred revision suffix "+" lands bracketed after the race
+    // resolves.
+    expect(textBlocks(parts)).toEqual(["AB", "+"]);
+  });
+
+  it("keeps suppressing a rewrite revision that cannot be expressed as a suffix", () => {
+    // A revision that REWRITES already-emitted content cannot be reconciled
+    // in a delta stream (emitted text cannot be retracted) — the safe side is
+    // suppression, as before.
+    const { parts } = run([
+      msg(2, "assistant", [{ type: "text", text: "First" }]),
+      msg(4, "assistant", [{ type: "text", text: "Second" }]),
+      msg(2, "assistant", [{ type: "text", text: "Rewritten" }]),
+      status("waiting"),
+    ]);
+    expect(textBlocks(parts)).toEqual(["First", "Second"]);
+  });
+});
+
 describe("TurnTranslator — retained-stream replays (#44)", () => {
   it("clears a stale terminal status when a non-terminal transition follows", () => {
     // A stream retained across a client-tool pause can redial mid-resume:

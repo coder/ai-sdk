@@ -111,19 +111,29 @@ function jsonResult(value: unknown): NonNullable<unknown> {
   return (value ?? {}) as NonNullable<unknown>;
 }
 
+/** A snapshot's full content of one kind, in wire order. */
+function joinContent(content: readonly ChatMessagePart[], kind: "text" | "reasoning"): string {
+  let full = "";
+  for (const p of content) if (p.type === kind) full += p.text ?? "";
+  return full;
+}
+
 /**
  * Translates one chatd turn's {@link ChatStreamEvent} stream into a sequence of
  * `LanguageModelV4StreamPart`s for the AI SDK.
  *
- * Two text/reasoning modes, decided per assistant message from the wire
- * behavior:
- *  - **delta mode** — chatd streamed `message_part` deltas; we emit those and
- *    treat the message's trailing full `message` snapshot as a no-op for
- *    text/reasoning. Deltas carry no message id, so "deltas arrived since the
- *    last assistant snapshot" is what marks a snapshot as trailing.
- *  - **snapshot mode** — fast turns where only full `message` snapshots arrive;
- *    we diff each snapshot's full text against what we've already emitted.
- * Both paths track an emitted-length cursor, so neither double-counts.
+ * Text/reasoning is reconciled against a per-message emitted-content ledger:
+ * `message_part` deltas are emitted as they stream (they carry no message id,
+ * so they accumulate as *pending* content), and each assistant `message`
+ * snapshot attributes the pending content to its id and emits whatever suffix
+ * of the snapshot's full content is still missing. That makes fast
+ * snapshot-only messages (everything missing), trailing snapshots after deltas
+ * (nothing missing), commit-during-disconnect snapshots (the tail the lost
+ * deltas never delivered), and append-revisions of earlier messages (the
+ * appended suffix) all the same operation — and a snapshot whose content does
+ * not extend what was emitted (a byte-identical replay, or a rewrite that
+ * cannot be expressed as deltas) is safely suppressed instead of
+ * double-emitted.
  *
  * Client (custom) tool calls are emitted from the reliable `action_required`
  * event and left for the AI SDK to execute. chatd's own server-side tools are
@@ -134,8 +144,12 @@ export class TurnTranslator {
   readonly #submittedToolCallIds: ReadonlySet<string>;
 
   #seq = 0;
-  #text = { id: undefined as string | undefined, len: 0, sawDelta: false };
-  #reasoning = { id: undefined as string | undefined, len: 0, sawDelta: false };
+  // `pending` accumulates delta content that has been emitted but not yet
+  // attributed to a message id (deltas carry none); the next assistant
+  // snapshot claims it. It survives block closes — a closed block loses its
+  // stream id, never the record of what was emitted.
+  #text = { id: undefined as string | undefined, pending: "" };
+  #reasoning = { id: undefined as string | undefined, pending: "" };
   #currentAssistantId: number | undefined;
   // Whether text/reasoning deltas arrived since the last assistant `message`
   // snapshot — i.e. the next assistant snapshot is the trailing snapshot of the
@@ -152,11 +166,25 @@ export class TurnTranslator {
   // the same message replaces its earlier entry instead of double-counting
   // (chatd re-sends full snapshots on revision bumps and history resets).
   readonly #usageByMessageId = new Map<number, ChatMessageUsage>();
-  // Assistant snapshots already processed once. A redial replays the turn
-  // from its original cursor, so earlier messages arrive again — without this,
-  // re-running the boundary logic on them would reset the emitted-length
-  // cursors and re-emit their entire text (see #ingestMessage).
-  readonly #snapshotSeen = new Set<number>();
+  // The emitted-content ledger: the text/reasoning this translator has emitted
+  // for each processed assistant message id. A redial replays the turn from
+  // its original cursor and chatd re-sends full snapshots on revision bumps,
+  // so already-processed messages arrive again — the ledger is what lets a
+  // byte-identical replay reconcile to a no-op while an APPENDING revision (or
+  // a commit-during-disconnect snapshot) yields exactly its missing suffix
+  // (see #ingestMessage). `substantive` records whether any processed snapshot
+  // of the message carried content (text, reasoning, tools, or sources) —
+  // false only for announce-style empty snapshots, whose in-flight deltas are
+  // still claimable by a same-id commit.
+  readonly #emittedByMessageId = new Map<
+    number,
+    { text: string; reasoning: string; substantive: boolean }
+  >();
+  // Same-id revision snapshots that arrived while the NEXT step's deltas were
+  // open (latest wins). chatd sends each revision once on a healthy
+  // connection, so the suffix cannot wait for a replay — it is reconciled as
+  // soon as the next step's snapshot settles ownership of the pending deltas.
+  readonly #deferredRevisions = new Map<number, { text: string; reasoning: string }>();
   #error: ChatErrorPayload | undefined;
   #terminalStatus: ChatStatus | undefined;
   #maxMessageId = 0;
@@ -208,7 +236,6 @@ export class TurnTranslator {
     if (this.#reasoning.id) this.#closeReasoning(out);
     if (!this.#text.id) {
       this.#text.id = `text-${++this.#seq}`;
-      this.#text.len = 0;
       out.push({ type: "text-start", id: this.#text.id });
     }
   }
@@ -216,14 +243,12 @@ export class TurnTranslator {
     if (this.#text.id) {
       out.push({ type: "text-end", id: this.#text.id });
       this.#text.id = undefined;
-      this.#text.len = 0;
     }
   }
   #openReasoning(out: LanguageModelV4StreamPart[]): void {
     if (this.#text.id) this.#closeText(out);
     if (!this.#reasoning.id) {
       this.#reasoning.id = `reasoning-${++this.#seq}`;
-      this.#reasoning.len = 0;
       out.push({ type: "reasoning-start", id: this.#reasoning.id });
     }
   }
@@ -231,32 +256,53 @@ export class TurnTranslator {
     if (this.#reasoning.id) {
       out.push({ type: "reasoning-end", id: this.#reasoning.id });
       this.#reasoning.id = undefined;
-      this.#reasoning.len = 0;
     }
   }
 
-  #emitTextUpTo(out: LanguageModelV4StreamPart[], full: string): void {
-    if (full.length <= this.#text.len && this.#text.id) return;
+  #emitTextDelta(out: LanguageModelV4StreamPart[], delta: string): void {
     this.#openText(out);
-    if (full.length > this.#text.len) {
-      out.push({
-        type: "text-delta",
-        id: this.#text.id as string,
-        delta: full.slice(this.#text.len),
-      });
-      this.#text.len = full.length;
-    }
+    out.push({ type: "text-delta", id: this.#text.id as string, delta });
   }
-  #emitReasoningUpTo(out: LanguageModelV4StreamPart[], full: string): void {
-    if (full.length <= this.#reasoning.len && this.#reasoning.id) return;
+  #emitReasoningDelta(out: LanguageModelV4StreamPart[], delta: string): void {
     this.#openReasoning(out);
-    if (full.length > this.#reasoning.len) {
-      out.push({
-        type: "reasoning-delta",
-        id: this.#reasoning.id as string,
-        delta: full.slice(this.#reasoning.len),
-      });
-      this.#reasoning.len = full.length;
+    out.push({ type: "reasoning-delta", id: this.#reasoning.id as string, delta });
+  }
+
+  /**
+   * Reconciles a replayed/revised snapshot of an EARLIER (non-current)
+   * assistant message against its ledger entry: an APPENDING revision emits
+   * its suffix, anything else is a no-op. The suffix is bracketed in its own
+   * block(s) — an open block belongs to the CURRENT step, and splicing another
+   * message's content into it would corrupt both — and the interrupted step's
+   * next delta simply opens a fresh block (its pending content is tracked
+   * independently of blocks).
+   */
+  #reconcileRevision(
+    out: LanguageModelV4StreamPart[],
+    rec: { text: string; reasoning: string },
+    fullText: string,
+    fullReasoning: string,
+  ): void {
+    const textSuffix =
+      fullText.length > rec.text.length && fullText.startsWith(rec.text)
+        ? fullText.slice(rec.text.length)
+        : "";
+    const reasoningSuffix =
+      fullReasoning.length > rec.reasoning.length && fullReasoning.startsWith(rec.reasoning)
+        ? fullReasoning.slice(rec.reasoning.length)
+        : "";
+    if (!textSuffix && !reasoningSuffix) return;
+    this.#closeText(out);
+    this.#closeReasoning(out);
+    if (reasoningSuffix) {
+      this.#emitReasoningDelta(out, reasoningSuffix);
+      rec.reasoning = fullReasoning;
+      this.#closeReasoning(out);
+    }
+    if (textSuffix) {
+      this.#emitTextDelta(out, textSuffix);
+      rec.text = fullText;
+      this.#closeText(out);
     }
   }
 
@@ -410,21 +456,19 @@ export class TurnTranslator {
     const part = mp.part;
     switch (part.type) {
       case "text":
-        this.#text.sawDelta = true;
         this.#deltasSinceSnapshot = true;
         this.#openText(out);
         if (part.text) {
           out.push({ type: "text-delta", id: this.#text.id as string, delta: part.text });
-          this.#text.len += part.text.length;
+          this.#text.pending += part.text;
         }
         break;
       case "reasoning":
-        this.#reasoning.sawDelta = true;
         this.#deltasSinceSnapshot = true;
         this.#openReasoning(out);
         if (part.text) {
           out.push({ type: "reasoning-delta", id: this.#reasoning.id as string, delta: part.text });
-          this.#reasoning.len += part.text.length;
+          this.#reasoning.pending += part.text;
         }
         break;
       case "tool-call":
@@ -460,89 +504,118 @@ export class TurnTranslator {
     const content = message.content ?? [];
 
     if (message.role === "assistant") {
-      // A snapshot already processed once — a redial's original-cursor replay,
-      // or a revision bump of an earlier message: the boundary logic below
-      // would close and reset the emitted-length cursors and re-emit the whole
-      // message. Suppress its text/reasoning entirely (replays are
-      // byte-identical, and the revisions that matter in practice update usage
-      // or tool results, which are id-keyed and still processed). The CURRENT
-      // message stays on the normal path — its block's length cursor dedupes
-      // progressive/trailing snapshots and recovers gap suffixes — but ONLY
-      // while no newer deltas are open: deltas carry no message id, so once
-      // the NEXT step starts streaming, #currentAssistantId still names the
-      // committed step, and reconciling its replayed snapshot would diff old
-      // content against the open next-step block and emit a spurious suffix.
-      // (An unseen snapshot with deltas open is that next step committing —
-      // the gap-recovery case — and keeps the normal path.)
-      if (
-        this.#snapshotSeen.has(message.id) &&
-        (message.id !== this.#currentAssistantId || this.#deltasSinceSnapshot)
-      ) {
-        for (const part of content) {
-          if (part.type === "tool-call" && !this.#isClientTool(part.tool_name))
-            this.#emitServerToolCall(out, part);
-          else if (part.type === "tool-result" && !this.#isClientTool(part.tool_name))
-            this.#emitServerToolResult(out, part);
-          else if (part.type === "source") this.#emitSource(out, part);
-        }
-        return;
-      }
-      this.#snapshotSeen.add(message.id);
-      // New assistant message boundary: close prior blocks and reset cursors.
-      // Skipped when deltas arrived since the previous assistant snapshot:
-      // deltas carry no message id, so they belong to the message THIS snapshot
-      // finalizes (its id differing from the previous snapshot's), and the
-      // snapshot must stay a no-op for text/reasoning. The reset is load-bearing
-      // for snapshot-only messages, which must still diff-and-emit below. Known
-      // tradeoff: a mid-message snapshot followed by more deltas of the SAME
-      // message would misclassify the next snapshot — that ordering is outside
-      // the trailing-snapshot protocol (see class doc).
-      if (
-        this.#currentAssistantId !== undefined &&
-        this.#currentAssistantId !== message.id &&
-        !this.#deltasSinceSnapshot
-      ) {
-        this.#closeText(out);
-        this.#closeReasoning(out);
-        this.#text.sawDelta = false;
-        this.#reasoning.sawDelta = false;
-      }
-      this.#currentAssistantId = message.id;
+      const fullText = joinContent(content, "text");
+      const fullReasoning = joinContent(content, "reasoning");
+      const known = this.#emittedByMessageId.get(message.id);
 
-      // Snapshot mode diffs the full text against the emitted length. Delta
-      // mode normally treats the trailing snapshot as a no-op — but only while
-      // the block is still OPEN can the emitted length vouch for that: a
-      // snapshot carrying MORE text than was emitted means deltas this client
-      // never received (the message committed while a dropped stream was
-      // redialing), so emit the missing suffix instead of losing it. Once the
-      // block is closed the length cursor is gone, and the snapshot must be
-      // skipped as before. The currently open block reconciles FIRST: opening
-      // the other kind closes it (resetting its length cursor), which would
-      // silently drop its gap suffix.
-      const emitSnapshotText = (): void => {
-        if (!this.#text.sawDelta || this.#text.id) {
-          const full = content
-            .filter((p) => p.type === "text")
-            .map((p) => p.text ?? "")
-            .join("");
-          if (full.length > 0) this.#emitTextUpTo(out, full);
-        }
-      };
-      const emitSnapshotReasoning = (): void => {
-        if (!this.#reasoning.sawDelta || this.#reasoning.id) {
-          const full = content
-            .filter((p) => p.type === "reasoning")
-            .map((p) => p.text ?? "")
-            .join("");
-          if (full.length > 0) this.#emitReasoningUpTo(out, full);
-        }
-      };
-      if (this.#reasoning.id) {
-        emitSnapshotReasoning();
-        emitSnapshotText();
+      if (known && message.id !== this.#currentAssistantId) {
+        // A replay or revision bump of an EARLIER message (a redial replays
+        // the turn from its original cursor; chatd re-sends full snapshots on
+        // revision bumps). Reconcile against the ledger: a byte-identical
+        // replay is a no-op, an APPENDING revision yields its suffix, and a
+        // rewrite stays suppressed (already-emitted text cannot be retracted
+        // in a delta stream — suppression is the safe side). NOT taken for
+        // the current message: deltas carry no message id, so while the next
+        // step streams, #currentAssistantId still names the last committed
+        // one and its pending deltas must join the reconciliation below.
+        this.#reconcileRevision(out, known, fullText, fullReasoning);
+      } else if (known && this.#deltasSinceSnapshot && known.substantive) {
+        // A same-id snapshot racing the NEXT step's open deltas. A message
+        // whose earlier snapshot already carried content — text, reasoning,
+        // or only tools/sources — never streams more deltas (content changes
+        // to committed messages arrive only as revision snapshots), so the
+        // pending deltas belong to the next, still-uncommitted message —
+        // they must NOT be claimed here, even when the revised content
+        // happens to share their prefix. Emit nothing and claim nothing yet:
+        // the snapshot is DEFERRED and reconciled once the next step's
+        // snapshot settles ownership of the pending deltas (see below).
+        // Announce-style commits (the earlier snapshot was EMPTY) stay on
+        // the attribution path below — their deltas ARE this message's
+        // content.
+        this.#deferredRevisions.set(message.id, { text: fullText, reasoning: fullReasoning });
       } else {
-        emitSnapshotText();
-        emitSnapshotReasoning();
+        // First sight of this message, or a re-snapshot of the CURRENT one —
+        // progressive snapshot-mode growth, or an announce-style commit
+        // filling in content that (partially) streamed as deltas.
+        //
+        // New assistant message boundary: close the previous message's
+        // blocks. Skipped when deltas arrived since the previous assistant
+        // snapshot: deltas carry no message id, so they belong to the message
+        // THIS snapshot finalizes, and their block is this message's block.
+        if (
+          this.#currentAssistantId !== undefined &&
+          this.#currentAssistantId !== message.id &&
+          !this.#deltasSinceSnapshot
+        ) {
+          this.#closeText(out);
+          this.#closeReasoning(out);
+        }
+        this.#currentAssistantId = message.id;
+
+        // What this snapshot's content must extend: everything already
+        // attributed to this message id, plus the pending deltas it is about
+        // to claim. The suffix beyond that is exactly the content this client
+        // never received — nothing for a byte-identical trailing snapshot,
+        // everything for a snapshot-only message, and the missing tail when
+        // the message committed while a dropped stream was redialing (even if
+        // the block already closed: the ledger, unlike a block cursor,
+        // survives closes). A snapshot that does NOT extend it — a replay
+        // racing the next step's open deltas, or a rewrite — attributes
+        // nothing and emits nothing: the pending deltas may belong to the
+        // next, still-uncommitted message, and a later snapshot naming them
+        // settles the attribution instead.
+        const rec = known ?? { text: "", reasoning: "", substantive: false };
+        // Per-kind gates: a kind reconciles only when the snapshot's full
+        // content extends what was already attributed + pending for it.
+        const textAttributed = rec.text + this.#text.pending;
+        const reasoningAttributed = rec.reasoning + this.#reasoning.pending;
+        const textOk = fullText.startsWith(textAttributed);
+        const reasoningOk = fullReasoning.startsWith(reasoningAttributed);
+        // Emit each part's missing sub-span walking the snapshot in WIRE
+        // order, so recovered blocks interleave the way the model produced
+        // them (text→reasoning→text stays that way even when the drop left
+        // the text block open) — opening a kind closes the other, and the
+        // ledger, unlike a block cursor, loses nothing to the close.
+        let seenText = 0;
+        let seenReasoning = 0;
+        for (const p of content) {
+          if (p.type === "text") {
+            const end = seenText + (p.text ?? "").length;
+            const from = Math.max(seenText, textAttributed.length);
+            if (textOk && end > from) this.#emitTextDelta(out, fullText.slice(from, end));
+            seenText = end;
+          } else if (p.type === "reasoning") {
+            const end = seenReasoning + (p.text ?? "").length;
+            const from = Math.max(seenReasoning, reasoningAttributed.length);
+            if (reasoningOk && end > from)
+              this.#emitReasoningDelta(out, fullReasoning.slice(from, end));
+            seenReasoning = end;
+          }
+        }
+        if (textOk) rec.text = fullText;
+        if (reasoningOk) rec.reasoning = fullReasoning;
+        // Reaching this path means THIS snapshot owns the pending deltas (the
+        // race guard above intercepts the one ambiguous ordering), so they
+        // are settled even when reconciliation failed: a rewrite-on-commit
+        // stays suppressed, but its stale pending must not poison every later
+        // message's reconciliation.
+        this.#text.pending = "";
+        this.#reasoning.pending = "";
+        rec.substantive ||= content.some((p) =>
+          p.type === "text" || p.type === "reasoning" ? (p.text ?? "").length > 0 : true,
+        );
+        this.#emittedByMessageId.set(message.id, rec);
+        this.#deltasSinceSnapshot = false;
+        // Delta ownership is settled: reconcile revisions that were deferred
+        // while the race was open. They are now revisions of an EARLIER
+        // message and get the same bracketed suffix-or-suppress treatment.
+        for (const [id, deferred] of this.#deferredRevisions) {
+          if (id === message.id) continue;
+          const deferredRec = this.#emittedByMessageId.get(id);
+          if (deferredRec)
+            this.#reconcileRevision(out, deferredRec, deferred.text, deferred.reasoning);
+          this.#deferredRevisions.delete(id);
+        }
       }
       // Tool calls/results and sources are id-deduped, so snapshots process them
       // unconditionally (even when the snapshot is a text/reasoning no-op).
@@ -553,7 +626,6 @@ export class TurnTranslator {
           this.#emitServerToolResult(out, part);
         else if (part.type === "source") this.#emitSource(out, part);
       }
-      this.#deltasSinceSnapshot = false;
     } else if (message.role === "tool") {
       for (const part of content) {
         if (part.type === "tool-result" && !this.#isClientTool(part.tool_name))

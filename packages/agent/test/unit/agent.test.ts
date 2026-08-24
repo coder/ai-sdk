@@ -731,7 +731,10 @@ function redialModel(config?: {
   requestTimeoutMs?: number;
   chatId?: string;
   workspaceId?: string;
+  /** Simulate a deployment that auto-assigns a workspace on chat creation. */
+  serverAssignsWorkspace?: boolean;
 }) {
+  const { serverAssignsWorkspace, ...modelConfig } = config ?? {};
   const sockets: FakeStreamSocket[] = [];
   const factory: WebSocketFactory = (url) => {
     const s = new FakeStreamSocket(url);
@@ -745,7 +748,10 @@ function redialModel(config?: {
     const body =
       init.method === "GET" && pathname.endsWith("/messages")
         ? { messages: [], queued_messages: [], has_more: false }
-        : chatStub("chat-1");
+        : {
+            ...chatStub("chat-1"),
+            ...(serverAssignsWorkspace ? { workspace_id: "ws-server" } : {}),
+          };
     return Promise.resolve(
       new Response(JSON.stringify(body), {
         status: 200,
@@ -759,7 +765,7 @@ function redialModel(config?: {
     fetch: fetchFn,
     webSocketFactory: factory,
   });
-  const model = new CoderLanguageModel({ client, organizationId: "org-1", ...config });
+  const model = new CoderLanguageModel({ client, organizationId: "org-1", ...modelConfig });
   return { model, sockets, fetchCalls };
 }
 
@@ -1008,6 +1014,35 @@ describe("CoderLanguageModel stream redial (real reader)", () => {
       const err = await done;
       expect(err).toMatchObject({ name: "CoderStreamError", isRetryable: false });
       expect(model.chatId).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("downgrades exhaustion to non-retryable when the server auto-assigned a workspace", async () => {
+    vi.useFakeTimers();
+    try {
+      // No workspaceId configured, but the deployment binds one at chat
+      // creation (createChat's response carries workspace_id): its tools are
+      // just as non-idempotent as an explicitly configured workspace's.
+      const { model, sockets } = redialModel({ serverAssignsWorkspace: true });
+      const { stream } = await model.doStream({
+        prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      } as never);
+      const done = drain(stream.getReader()).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("message", streamFrame(status("running")));
+      await vi.advanceTimersByTimeAsync(0);
+      for (let i = 0; i < 5; i++) {
+        sockets.at(-1)?.emit("close", { code: 1006 });
+        await vi.advanceTimersByTimeAsync(30_000);
+      }
+      const err = await done;
+      expect(err).toMatchObject({ name: "CoderStreamError", isRetryable: false });
+      expect(model.chatId).toBeUndefined(); // the dead fresh chat is still discarded
     } finally {
       vi.useRealTimers();
     }

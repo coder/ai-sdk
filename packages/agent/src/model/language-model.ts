@@ -249,6 +249,11 @@ export class CoderLanguageModel implements LanguageModelV4 {
       // effect a whole-call retry would repeat, creating redundant file
       // records (pre-uploaded `fileId` references don't set this).
       let uploadedAttachment = false;
+      // Whether the chat ended up bound to a workspace — configured OR
+      // assigned server-side by the deployment (createChat's response says).
+      // Either way its tools can have non-idempotent effects a replay would
+      // repeat.
+      let chatHasWorkspace = Boolean(this.#config.workspaceId);
 
       // A fresh instance resuming an existing chat (config.chatId) has no
       // message cursor yet. Without one, a queued submission or a tool-result
@@ -293,6 +298,7 @@ export class CoderLanguageModel implements LanguageModelV4 {
           const chat = await this.#config.client.createChat(req, signal);
           this.#chatId = chat.id;
           turnCreatedChat = true;
+          if (chat.workspace_id) chatHasWorkspace = true;
           afterId = this.#lastSeenMessageId > 0 ? this.#lastSeenMessageId : undefined;
         } else {
           const resp = await this.#config.client.createChatMessage(
@@ -379,9 +385,7 @@ export class CoderLanguageModel implements LanguageModelV4 {
             discardSession = true;
           }
           const effectful =
-            Boolean(this.#config.workspaceId) ||
-            Boolean(this.#config.mcpServerIds?.length) ||
-            uploadedAttachment;
+            chatHasWorkspace || Boolean(this.#config.mcpServerIds?.length) || uploadedAttachment;
           if (turnCreatedChat && !effectful) throw err;
           throw new CoderStreamError({
             message: `${err.message}; automatic retry is disabled because ${

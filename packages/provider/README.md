@@ -217,9 +217,12 @@ the deployment dashboard under `/ai-gateway/sessions`.
   Auditing keeps the last user prompt, token counts, tool-call arguments, and
   model reasoning.
 - **Can I verify the client claims myself?** Yes: [`src/provider.ts`](./src/provider.ts)
-  is the entire wire-facing surface, and
-  [`test/provider.test.ts`](./test/provider.test.ts) asserts every URL and
-  header this package emits.
+  is the entire wire-facing surface — it only selects base URLs and auth
+  headers, then delegates request construction to the official AI SDK provider
+  packages. [`test/provider.test.ts`](./test/provider.test.ts) asserts the
+  request URL, auth headers, and model pass-through for the chat/messages
+  routes in both auth modes; the underlying AI SDK packages add their own
+  protocol headers (e.g. `anthropic-version`) and are not re-tested here.
 
 ## Examples
 

@@ -164,7 +164,9 @@ export interface SegmentStartTransportEvent extends SegmentTransportEventBase {
  * - settled cleanly → `status` is the turn's terminal chat status and
  *   `finishReason` the unified AI SDK finish reason (`tool-calls` marks a
  *   client-tool pause; the turn continues with a resume segment);
- * - failed (abort, timeout, transport failure, server error) → `error`;
+ * - failed (abort, timeout, transport failure, server error) → `error`,
+ *   plus `status` when the server run itself still settled terminally
+ *   (e.g. `status: "error"` streamed alongside the error);
  * - torn down before settling (consumer canceled the stream) → neither.
  */
 export interface SegmentSettleTransportEvent extends SegmentTransportEventBase {

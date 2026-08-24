@@ -367,6 +367,9 @@ describe("transport events: turn lifecycle (real reader)", () => {
       expect(settle.type).toBe("segment:settle");
       expect(settle.error?.name).toBe("CoderStreamError");
       expect(settle.status).toBeUndefined();
+      // The failure discarded the freshly created session (resetSession), but
+      // the settle still names the chat the ws:*/http:* events identified.
+      expect(settle.chatId).toBe("chat-1");
     } finally {
       vi.useRealTimers();
     }
@@ -736,6 +739,75 @@ describe("transport events: isolation and overhead", () => {
 
   it("safeTransportEmitter is undefined without a handler (nothing to allocate for)", () => {
     expect(safeTransportEmitter(undefined)).toBeUndefined();
+  });
+
+  it("a streamed server error settles the segment as a failure via doGenerate", async () => {
+    vi.useFakeTimers();
+    try {
+      const { events, model, sockets } = harness();
+      const done = model
+        .doGenerate(newTurnOptions())
+        .then(() => undefined)
+        .catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(0);
+      // doGenerate throws on the error part and closes the generator without
+      // another pull — the settle must still record the server failure.
+      sockets[0]?.emit(
+        "message",
+        streamFrame(
+          status("running"),
+          { type: "error", chat_id: "chat-1", error: { message: "provider exploded" } },
+          status("error"),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      const err = await done;
+      expect(String(err)).toMatch(/provider exploded/);
+
+      const settle = events.find((e) => e.type === "segment:settle") as Extract<
+        CoderTransportEvent,
+        { type: "segment:settle" }
+      >;
+      expect(settle).toBeDefined();
+      expect(settle.error).toMatchObject({
+        name: "CoderChatError",
+        message: "provider exploded",
+      });
+      expect(settle.chatId).toBe("chat-1");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a streamed server error settles with error AND terminal status via doStream", async () => {
+    vi.useFakeTimers();
+    try {
+      const { events, model, sockets } = harness();
+      const s = collect((await model.doStream(newTurnOptions())).stream);
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit(
+        "message",
+        streamFrame(
+          status("running"),
+          { type: "error", chat_id: "chat-1", error: { message: "provider exploded" } },
+          status("error"),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      await s.done; // error surfaces as parts; the stream itself ends cleanly
+
+      // The consumer saw the error part and the finish part…
+      expect(s.parts.some((p) => p.type === "error")).toBe(true);
+      expect(s.parts.at(-1)).toMatchObject({ type: "finish", finishReason: { unified: "error" } });
+      // …and the settle records the failure plus the terminal status.
+      const settle = events.at(-1) as Extract<CoderTransportEvent, { type: "segment:settle" }>;
+      expect(settle.type).toBe("segment:settle");
+      expect(settle.error).toMatchObject({ name: "CoderChatError", message: "provider exploded" });
+      expect(settle.status).toBe("error");
+      expect(settle.finishReason).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("a consumer cancel settles the segment as a teardown (no status, no error)", async () => {

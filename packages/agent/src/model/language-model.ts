@@ -67,6 +67,16 @@ function startGraceTimer(ms: number) {
   return { expired, cancel: () => clearTimeout(timer) };
 }
 
+/**
+ * Observability out-param threaded from the `segment:*` wrapper into
+ * `#runTurnInner`: records the segment's chat id once known, surviving a
+ * session discard (`resetSession()`) that clears the instance field before
+ * the settle event is emitted.
+ */
+interface SegmentChatRef {
+  chatId?: string;
+}
+
 const EMPTY_USAGE: LanguageModelV4Usage = {
   inputTokens: {
     total: undefined,
@@ -369,6 +379,16 @@ export class CoderLanguageModel implements LanguageModelV4 {
    * unblock a pending socket read — the latter surfaces here as an abort
    * throw, so `isConsumerCancel` (supplied by `doStream`) reclassifies it as
    * teardown rather than a failed segment.
+   *
+   * Two more classification wrinkles (review findings):
+   * - a streamed server `error` part is captured BEFORE being yielded —
+   *   `doGenerate()` throws on receiving it and closes this generator without
+   *   another pull, so the catch below never sees that failure;
+   * - the segment's chat id is tracked in `segmentChat` (written by
+   *   {@link #runTurnInner} once known) — a retry-safe stream failure on a
+   *   freshly created chat discards the session (clearing `this.#chatId`)
+   *   before the finally runs, and the settle must still name the chat that
+   *   the preceding `ws:*`/`http:*` events identified.
    */
   async *#runTurn(
     options: LanguageModelV4CallOptions,
@@ -388,12 +408,17 @@ export class CoderLanguageModel implements LanguageModelV4 {
     };
     if (this.#chatId !== undefined) startEvent.chatId = this.#chatId;
     emit(startEvent);
+    const segmentChat: SegmentChatRef = {};
     let finishReason: LanguageModelV4GenerateResult["finishReason"] | undefined;
     let failure: unknown;
     let failed = false;
     try {
-      for await (const part of this.#runTurnInner(options)) {
+      for await (const part of this.#runTurnInner(options, segmentChat)) {
         if (part.type === "finish") finishReason = part.finishReason;
+        else if (part.type === "error" && !failed) {
+          failure = part.error;
+          failed = true;
+        }
         yield part;
       }
     } catch (err) {
@@ -411,16 +436,20 @@ export class CoderLanguageModel implements LanguageModelV4 {
         durationMs: performance.now() - startedAt,
         timestamp: Date.now(),
       };
-      if (this.#chatId !== undefined) settleEvent.chatId = this.#chatId;
+      const chatId = segmentChat.chatId ?? this.#chatId;
+      if (chatId !== undefined) settleEvent.chatId = chatId;
       if (failed) {
         settleEvent.error = {
           name: failure instanceof Error ? failure.name : "Error",
           message: failure instanceof Error ? failure.message : String(failure),
         };
-      } else if (finishReason !== undefined) {
-        // finishReason.raw is the translator's terminal chat status.
+      }
+      if (finishReason !== undefined) {
+        // finishReason.raw is the translator's terminal chat status. An error
+        // settle keeps it too when the server run itself settled terminally
+        // (`status: "error"` streamed alongside the error part).
         if (finishReason.raw !== undefined) settleEvent.status = finishReason.raw as ChatStatus;
-        settleEvent.finishReason = finishReason.unified;
+        if (!failed) settleEvent.finishReason = finishReason.unified;
       }
       emit(settleEvent);
     }
@@ -428,6 +457,8 @@ export class CoderLanguageModel implements LanguageModelV4 {
 
   async *#runTurnInner(
     options: LanguageModelV4CallOptions,
+    /** Observability out-param: the segment's chat id, written once known. */
+    segmentChat?: SegmentChatRef,
   ): AsyncGenerator<LanguageModelV4StreamPart, void, void> {
     // A single model instance owns one chatd session's mutable state, so it is
     // single-flight: reject overlapping turns rather than silently corrupting
@@ -623,6 +654,7 @@ export class CoderLanguageModel implements LanguageModelV4 {
 
       const chatId = this.#chatId as string;
       turnChatId = chatId;
+      if (segmentChat) segmentChat.chatId = chatId;
       // Only messages past the turn's starting cursor belong to this turn —
       // resuming a chat replays earlier turns' messages (usage included), and
       // a mid-turn history reset re-sends them again. Constructing the

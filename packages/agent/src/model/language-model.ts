@@ -353,6 +353,14 @@ export class CoderLanguageModel implements LanguageModelV4 {
     // only once the turn's starting message id is known (see `turnCursor`).
     let translator: TurnTranslator | undefined;
 
+    // Whether this call took ownership of the session stream (#acquireStream
+    // ran). Until then, a stream retained by the PREDECESSOR segment's pause
+    // has no owner watching it — a REST-phase failure below must close it
+    // (see the outer finally) rather than leave it retained: the turn is dead
+    // (and the run interrupted), so a caller retry attaching to its buffer
+    // would read interrupt-era events and end before the resumed generation.
+    let streamAcquired = false;
+
     // Set when a stream failure kills a chat that THIS call created: the
     // `finally` then drops the session (after interrupting the dead run) so an
     // automatic whole-call retry replays the turn on a fresh chat.
@@ -548,6 +556,7 @@ export class CoderLanguageModel implements LanguageModelV4 {
       // lifetime signal — the segment signal instead races reads below, so an
       // abort/timeout detaches this segment without killing the shared socket.
       const stream = this.#acquireStream(action.kind === "resume", chatId, afterId);
+      streamAcquired = true;
       let onSegmentAbort: (() => void) | undefined;
       const segmentAborted: Promise<typeof SEGMENT_ABORTED> | undefined = signal
         ? new Promise((resolve) => {
@@ -647,8 +656,15 @@ export class CoderLanguageModel implements LanguageModelV4 {
         // A healthy pause — the turn continues with a tool-result resume, so
         // the stream is retained (the finally pauses it). Every other exit
         // (terminal settle, error settle, premature end) closes it. Never
-        // retain past an error settle: the SDK ends the turn there.
+        // retain past an error settle (the SDK ends the turn there), and
+        // never past an abort — one can land while the generator is suspended
+        // yielding the settle's tool-call parts, after which this segment
+        // still rejects (post-loop throwIfAborted): its pause was never
+        // delivered, so a retry must redial fresh and recover the pause from
+        // the connect-time snapshot instead of attaching to a socket whose
+        // already-consumed requires_action events will not be re-sent.
         retainStream =
+          !signal?.aborted &&
           translator.terminalStatus === "requires_action" &&
           translator.clientToolCallSeen &&
           !translator.error;
@@ -730,7 +746,7 @@ export class CoderLanguageModel implements LanguageModelV4 {
         // close is still a policy decision made HERE, not signal-chaining:
         // the segment's signal never reaches the shared stream, which is what
         // lets the healthy pause outlive its segment.
-        if (retainStream && !stream.closed) {
+        if (retainStream && !signal?.aborted && !stream.closed) {
           stream.pause();
         } else {
           await this.#closeStream(stream);
@@ -780,6 +796,17 @@ export class CoderLanguageModel implements LanguageModelV4 {
       // unparseable frame), or a REST-phase error — all cases where the healthy
       // server run must not keep burning tokens on an audience of zero.
       if (!translator?.terminalStatus) interrupt();
+      // A failure before the stream section ran (REST phase: tool-result
+      // submission, uploads, chat creation, cursor seeding) leaves the
+      // predecessor segment's paused stream ownerless while its turn is now
+      // dead — and the interrupt above pushes interrupt-era events into its
+      // buffer. Close it: an abandoned call must not leak the socket, and a
+      // caller retry must dial fresh instead of attaching to that buffer.
+      if (!streamAcquired && this.#retainedStream) {
+        const stale = this.#retainedStream;
+        this.#retainedStream = undefined;
+        void stale.close();
+      }
       // Ordered after the interrupt (which needs the chat id) and after the
       // cursor advance above (which the reset zeroes out again).
       if (discardSession) this.resetSession();

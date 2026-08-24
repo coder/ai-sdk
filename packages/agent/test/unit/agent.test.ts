@@ -800,8 +800,12 @@ function redialModel(config?: {
   serverAssignsWorkspace?: boolean;
   /** Scripted GET /messages body (cursor seeding and the requires_action REST fallback). */
   messagesResponse?: () => ChatMessagesResponse | Promise<ChatMessagesResponse>;
+  /** Fail this many POST /tool-results calls with a 500 before succeeding. */
+  toolResultsFailures?: number;
 }) {
   const { serverAssignsWorkspace, messagesResponse, ...modelConfig } = config ?? {};
+  let toolResultsFailures = config?.toolResultsFailures ?? 0;
+  delete (modelConfig as { toolResultsFailures?: number }).toolResultsFailures;
   const sockets: FakeStreamSocket[] = [];
   const factory: WebSocketFactory = (url) => {
     const s = new FakeStreamSocket(url);
@@ -835,6 +839,15 @@ function redialModel(config?: {
           ),
         );
       });
+    }
+    if (init.method === "POST" && pathname.endsWith("/tool-results") && toolResultsFailures > 0) {
+      toolResultsFailures -= 1;
+      return Promise.resolve(
+        new Response(JSON.stringify({ message: "boom" }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
     }
     const body = {
       ...chatStub("chat-1"),
@@ -2018,6 +2031,83 @@ describe("CoderLanguageModel stream reuse across segments (#44)", () => {
       await vi.advanceTimersByTimeAsync(0);
       await s2.done;
       expect(textOf(s2.parts)).toBe("Fresh.");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("closes the paused stream when the resume's tool-result submission fails; a retry dials fresh", async () => {
+    vi.useFakeTimers();
+    try {
+      const { model, sockets, fetchCalls } = redialModel({ toolResultsFailures: 1 });
+      const s1 = collect((await model.doStream(newTurnOptions())).stream);
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("message", streamFrame(...segmentOne));
+      await vi.advanceTimersByTimeAsync(0);
+      await s1.done;
+      expect(sockets[0]?.closed).toBe(false); // paused, retained
+
+      // The resume dies in the REST phase, BEFORE it takes ownership of the
+      // retained stream. The dead turn must not leave the paused socket
+      // behind: the run is interrupted (pushing interrupt-era events into its
+      // buffer), so a retry attaching there would end before the resumed
+      // generation. It must be closed instead.
+      const failed = (await model.doStream(resumeOptions())).stream;
+      const err = await drain(failed.getReader()).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      expect(err).toMatchObject({ name: "CoderApiError", status: 500 });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sockets[0]?.closed).toBe(true);
+      expect(fetchCalls.filter((c) => c.includes("/interrupt"))).toHaveLength(1);
+
+      // A retry re-submits (the failed ids were never marked submitted) and
+      // dials FRESH instead of attaching to the dead stream's buffer.
+      const s2 = collect((await model.doStream(resumeOptions())).stream);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchCalls.filter((c) => c.includes("/tool-results"))).toHaveLength(2);
+      expect(sockets).toHaveLength(2);
+      sockets[1]?.emit("message", streamFrame(...segmentTwo));
+      await vi.advanceTimersByTimeAsync(0);
+      await s2.done;
+      expect(textOf(s2.parts)).toBe("It is 21C.");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retain the stream when an abort lands while the pause's tool calls are being yielded", async () => {
+    vi.useFakeTimers();
+    try {
+      const { model, sockets } = redialModel();
+      const abort = new AbortController();
+      const reader = (await model.doStream(newTurnOptions(abort.signal))).stream.getReader();
+      // Pull until the tool-call part is out — the turn generator is then
+      // suspended mid-settle, with retainStream about to be computed. (The
+      // pulls also drive the turn to dial the socket in the first place.)
+      const untilToolCall = (async () => {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done || (value as { type: string }).type === "tool-call") return;
+        }
+      })();
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("message", streamFrame(...segmentOne));
+      await untilToolCall;
+      abort.abort();
+      const err = await drain(reader).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      expect(err).toMatchObject({ name: "AbortError" });
+
+      // The segment rejected, so its pause was never delivered to the SDK: the
+      // socket must be closed, not left paused-reusable — a retry attaching
+      // would wait forever (the consumed requires_action events are not
+      // re-sent without a reconnect).
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sockets[0]?.closed).toBe(true);
     } finally {
       vi.useRealTimers();
     }

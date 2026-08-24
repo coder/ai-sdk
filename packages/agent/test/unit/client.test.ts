@@ -655,6 +655,26 @@ describe("CoderChatClient.streamEvents (redial)", () => {
     expect(sockets).toHaveLength(1);
   });
 
+  it("treats transient 4xx upgrade rejections (429) as redial failures, not terminal", async () => {
+    vi.useFakeTimers();
+    try {
+      const { c, sockets } = streamClient();
+      const iter = c.streamEvents("c1");
+      const p = iter.next();
+      await vi.advanceTimersByTimeAsync(0);
+      // Rate limiting can succeed on a later attempt — redial…
+      sockets[0]?.emit("error", { message: "Unexpected server response: 429" });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(sockets).toHaveLength(2);
+      // …while a 401 on the retry is still terminal.
+      sockets[1]?.emit("error", { message: "Unexpected server response: 401" });
+      await expect(p).rejects.toMatchObject({ name: "CoderApiError", status: 401 });
+      expect(sockets).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("throws a terminal error on an unparseable frame instead of replaying it forever", async () => {
     const { c, sockets } = streamClient();
     const iter = c.streamEvents("c1");

@@ -318,8 +318,9 @@ generating during the gap, so a transient drop costs nothing and the run is
 consecutive failed attempts, ~15s) is the server run interrupted and the call
 rejected with a `CoderStreamError` — an AI SDK `APICallError` with
 `isRetryable: true`, so setting `maxRetries` makes the SDK retry it
-automatically. A 4xx upgrade rejection (bad/expired token, deleted chat) fails
-fast with a `CoderApiError` instead of retrying.
+automatically. A non‑transient 4xx upgrade rejection (bad/expired token,
+deleted chat) fails fast with a `CoderApiError` instead of retrying; 408/425/429
+consume the redial budget like any other transient failure.
 
 ## Cleanup
 

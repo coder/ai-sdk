@@ -63,6 +63,14 @@ const STREAM_BACKOFF_CAP_MS = 30_000;
 const STREAM_MAX_CONSECUTIVE_FAILURES = 5;
 
 /**
+ * Upgrade-rejection statuses that can succeed on a later attempt with the
+ * exact same request: request timeout (408), too early (425), and rate
+ * limiting (429). These consume the redial budget instead of failing fast;
+ * every other 4xx (bad/expired token, deleted chat, …) is terminal.
+ */
+const TRANSIENT_UPGRADE_STATUSES: ReadonlySet<number> = new Set([408, 425, 429]);
+
+/**
  * Opens the chatd `/stream` WebSocket and yields decoded {@link ChatStreamEvent}s
  * as an async iterable. Each text frame from chatd is a JSON array of events;
  * we flatten them into a single stream.
@@ -80,11 +88,12 @@ const STREAM_MAX_CONSECUTIVE_FAILURES = 5;
  * `message_part` deltas from `seq` 1, so parts of an episode
  * (`history_version`, `generation_attempt`) at or below the last yielded `seq`
  * are suppressed here rather than double-yielded. The iteration ends in four
- * ways: `signal` aborting (clean return), a 4xx upgrade rejection (terminal
- * {@link CoderApiError} — bad/expired token or a deleted chat cannot succeed on
- * retry), an unparseable frame (terminal {@link CoderAgentError} — a redial
- * would replay the same frame forever), or the redial budget running out
- * (a retryable {@link CoderStreamError}).
+ * ways: `signal` aborting (clean return), a non-transient 4xx upgrade
+ * rejection (terminal {@link CoderApiError} — bad/expired token or a deleted
+ * chat cannot succeed on retry, while 408/425/429 consume the redial budget),
+ * an unparseable frame (terminal {@link CoderAgentError} — a redial would
+ * replay the same frame forever), or the redial budget running out (a
+ * retryable {@link CoderStreamError}).
  */
 export async function* streamChatEvents(
   options: StreamChatEventsOptions,
@@ -174,7 +183,10 @@ export async function* streamChatEvents(
           : "chat stream socket error";
       const status = upgradeStatus(message);
       failure =
-        status !== undefined && status >= 400 && status < 500
+        status !== undefined &&
+        status >= 400 &&
+        status < 500 &&
+        !TRANSIENT_UPGRADE_STATUSES.has(status)
           ? new CoderApiError({ status, method: "GET", path, message })
           : new CoderAgentError(message);
       finished = true;
@@ -249,10 +261,11 @@ export async function* streamChatEvents(
     }
 
     if (signal?.aborted) return;
-    // A rejected upgrade (4xx) is terminal: retrying with the same credentials
-    // against the same (possibly deleted) chat cannot succeed. An unparseable
-    // frame is terminal too: the cursor cannot advance past an event we cannot
-    // decode, so a redial would replay the exact same frame forever.
+    // A rejected upgrade (non-transient 4xx) is terminal: retrying with the
+    // same credentials against the same (possibly deleted) chat cannot
+    // succeed. An unparseable frame is terminal too: the cursor cannot advance
+    // past an event we cannot decode, so a redial would replay the exact same
+    // frame forever.
     if (failure instanceof CoderApiError) throw failure;
     if (parseFailure && failure) throw failure;
     if (failure) lastFailure = failure;

@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.0](https://github.com/coder/ai-sdk/compare/agent-v0.5.0...agent-v0.6.0) (2026-08-24)
+
+Adds first-class transport observability hooks to the agent, giving developers built-in insight into transport-level activity.
+
+### Highlights
+
+- New first-class transport observability hooks let you monitor and instrument transport behavior directly. ([#70](https://github.com/coder/ai-sdk/pull/70))
+
+### Features
+
+* **agent:** first-class transport observability hooks ([#70](https://github.com/coder/ai-sdk/issues/70)) ([37f5862](https://github.com/coder/ai-sdk/commit/37f58620ec4f67dd96f0b05e51af5b7675f09fee))
+
 ## [0.5.0](https://github.com/coder/ai-sdk/compare/agent-v0.4.3...agent-v0.5.0) (2026-08-24)
 
 Turn segments now share a single chat stream instead of opening a new one per segment, improving efficiency during multi-segment turns.

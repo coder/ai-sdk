@@ -727,7 +727,11 @@ class FakeStreamSocket {
  * and WebSocket factory, so turns exercise the actual stream reader — redial,
  * replay suppression, and the interrupt policy — not a fake `streamEvents`.
  */
-function redialModel(config?: { requestTimeoutMs?: number; chatId?: string }) {
+function redialModel(config?: {
+  requestTimeoutMs?: number;
+  chatId?: string;
+  workspaceId?: string;
+}) {
   const sockets: FakeStreamSocket[] = [];
   const factory: WebSocketFactory = (url) => {
     const s = new FakeStreamSocket(url);
@@ -907,6 +911,36 @@ describe("CoderLanguageModel stream redial (real reader)", () => {
       expect(fetchCalls.filter((c) => c.includes("/interrupt"))).toHaveLength(1);
       // The dead session is discarded so an automatic retry (maxRetries) makes
       // a FRESH chat instead of double-submitting the prompt into this one.
+      expect(model.chatId).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("downgrades exhaustion to non-retryable when server-side tools may have executed", async () => {
+    vi.useFakeTimers();
+    try {
+      // A workspace-bound chat can run non-idempotent server-side tools before
+      // the stream dies; an automatic replay would execute them again, and the
+      // async interrupt cannot undo external effects. The dead fresh chat is
+      // still discarded so a MANUAL retry does not attach to it.
+      const { model, sockets } = redialModel({ workspaceId: "ws-1" });
+      const { stream } = await model.doStream({
+        prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      } as never);
+      const done = drain(stream.getReader()).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("message", streamFrame(status("running")));
+      await vi.advanceTimersByTimeAsync(0);
+      for (let i = 0; i < 5; i++) {
+        sockets.at(-1)?.emit("close", { code: 1006 });
+        await vi.advanceTimersByTimeAsync(30_000);
+      }
+      const err = await done;
+      expect(err).toMatchObject({ name: "CoderStreamError", isRetryable: false });
       expect(model.chatId).toBeUndefined();
     } finally {
       vi.useRealTimers();

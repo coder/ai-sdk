@@ -56,7 +56,8 @@ export class CoderStreamError extends APICallError {
       requestBodyValues: undefined,
       // Retries re-invoke the model with the SAME prompt, so the model layer
       // downgrades this to false whenever the failed chat has prior state a
-      // re-submission would corrupt (see #runTurn).
+      // re-submission would corrupt, or server-side tooling (workspace/MCP)
+      // whose effects a replay would duplicate (see #runTurn).
       isRetryable: args.isRetryable ?? true,
       cause: args.cause,
     });

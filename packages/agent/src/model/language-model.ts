@@ -348,19 +348,34 @@ export class CoderLanguageModel implements LanguageModelV4 {
         //
         // An AI-SDK `maxRetries` retry re-invokes this model with the SAME
         // prompt, and `#runTurn` would submit it AGAIN as a new user turn.
-        // That is only safe when this very call created the chat: discard the
-        // dead session (its run is being interrupted anyway) so the retry
-        // replays the whole turn on a FRESH chat. A chat with prior state —
-        // resumed sessions, later turns, tool-result segments — would be
-        // corrupted by a re-submission, so there the error is downgraded to
-        // non-retryable and the caller owns the resume decision.
+        // That is only safe when BOTH hold: this very call created the chat
+        // (discarding the dead session — its run is being interrupted anyway —
+        // lets the retry replay the whole turn on a FRESH chat), and the chat
+        // has no server-side effectful tooling (a bound workspace or MCP
+        // servers), whose tools may have executed before the stream died and
+        // would run AGAIN on a replay; the async interrupt cannot undo, or
+        // even reliably outrace, such external effects. Client tools are the
+        // SDK's own tool loop, which restarts cleanly with the fresh chat. A
+        // chat with prior state — resumed sessions, later turns, tool-result
+        // segments — would be corrupted by any re-submission. In the unsafe
+        // cases the error is downgraded to non-retryable and the caller owns
+        // the retry/resume decision.
         if (err instanceof CoderStreamError) {
           if (turnCreatedChat) {
-            discardSession = true; // the finally interrupts the dead run, then drops the session
-            throw err;
+            // Nothing worth keeping: the chat's only content is this failed,
+            // interrupted turn, and a later manual generate() on this instance
+            // must not attach to it either.
+            discardSession = true;
           }
+          const effectful =
+            Boolean(this.#config.workspaceId) || Boolean(this.#config.mcpServerIds?.length);
+          if (turnCreatedChat && !effectful) throw err;
           throw new CoderStreamError({
-            message: `${err.message}; automatic retry is disabled because the chat has prior state (a retry would resubmit this turn's prompt as a new user turn)`,
+            message: `${err.message}; automatic retry is disabled because ${
+              turnCreatedChat
+                ? "the chat has server-side tools (workspace/MCP) that may already have executed"
+                : "the chat has prior state (a retry would resubmit this turn's prompt as a new user turn)"
+            }`,
             url: err.url,
             cause: err,
             isRetryable: false,

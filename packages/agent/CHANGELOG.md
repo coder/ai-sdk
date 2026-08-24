@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.4.3](https://github.com/coder/ai-sdk/compare/agent-v0.4.2...agent-v0.4.3) (2026-08-24)
+
+This patch fixes several agent reliability issues around streaming and event handling, including recovering dropped chat streams and lost action_required events. It also exports TERMINAL_STATUSES at runtime and refreshes documentation.
+
+### Highlights
+
+- Dropped per-chat streams are now redialed instead of terminating the turn, improving resilience to connection interruptions. ([#55](https://github.com/coder/ai-sdk/pull/55))
+- action_required events that were lost are now recovered from chat history. ([#62](https://github.com/coder/ai-sdk/pull/62))
+- TERMINAL_STATUSES is now exported at runtime from the entry point. ([#61](https://github.com/coder/ai-sdk/pull/61))
+
+### Bug Fixes
+
+* **agent:** export TERMINAL_STATUSES at runtime from the entry point ([#61](https://github.com/coder/ai-sdk/issues/61)) ([cfe9bb2](https://github.com/coder/ai-sdk/commit/cfe9bb2dfcd78c5b6d33b746bddaee28038d740e)), refs [#56](https://github.com/coder/ai-sdk/issues/56)
+* **agent:** recover lost action_required events from chat history ([#62](https://github.com/coder/ai-sdk/issues/62)) ([815de65](https://github.com/coder/ai-sdk/commit/815de6518a73d13237abeecc93b7fc627473882e))
+* **agent:** redial a dropped per-chat stream instead of killing the turn ([#55](https://github.com/coder/ai-sdk/issues/55)) ([f4d1478](https://github.com/coder/ai-sdk/commit/f4d147873d8b217835d04bceca79e4758cbf4d3e))
+
+
+### Documentation
+
+* fix drift across READMEs and CONTRIBUTING ([#51](https://github.com/coder/ai-sdk/issues/51)) ([6c0001b](https://github.com/coder/ai-sdk/commit/6c0001b612830ca4d653a7ef828a7cd89c6b1f70))
+
 ## [0.4.2](https://github.com/coder/ai-sdk/compare/agent-v0.4.1...agent-v0.4.2) (2026-08-20)
 
 Token consumption reporting now accounts for the entire turn rather than only the last step's uncached slice, giving accurate usage metrics.

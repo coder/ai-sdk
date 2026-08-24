@@ -227,9 +227,10 @@ the deployment dashboard under `/ai-gateway/sessions`.
   vendors: the Gateway strips it and it never leaves your deployment. Treat a
   leak as a Coder account compromise — revoke the token — and prefer
   short-lived, dedicated tokens for AI workloads.
-- **Is model output stored?** No — assistant-generated text is discarded.
-  Auditing keeps the last user prompt, token counts, tool-call arguments, and
-  model reasoning.
+- **Is model-generated content stored?** Partially. Assistant _response text_
+  is discarded, but two model-generated artifacts are retained for auditing:
+  reasoning content (extended thinking / reasoning summaries) and tool-call
+  arguments — alongside the last user prompt and token counts.
 - **Can I verify the client claims myself?** Yes: [`src/provider.ts`](./src/provider.ts)
   is the entire wire-facing surface — it only selects base URLs and auth
   headers, then delegates request construction to the official AI SDK provider

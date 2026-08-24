@@ -626,6 +626,36 @@ describe("TurnTranslator — redial replay", () => {
     expect(finish.usage.outputTokens.total).toBe(5);
   });
 
+  it("does not splice a replayed committed snapshot into the next step's open deltas", () => {
+    // Step 1 commits (text + tool call closes its block); step 2's deltas are
+    // streaming when the drop hits. currentAssistantId still names step 1
+    // (deltas carry no id), so the replayed step-1 snapshot must NOT be
+    // diffed against the open step-2 block ("Sec" + "First".slice(3) = "st").
+    const step1 = msg(2, "assistant", [
+      { type: "text", text: "First" },
+      { type: "tool-call", tool_call_id: "s1", tool_name: "web_search", args: { q: "x" } },
+    ]);
+    const toolMsg = msg(3, "tool", [
+      { type: "tool-result", tool_call_id: "s1", tool_name: "web_search", result: { hits: 1 } },
+    ]);
+    const { parts } = run([
+      step1,
+      toolMsg,
+      part("assistant", { type: "text", text: "Sec" }),
+      // — drop; redial replays the turn, then step 2 finishes —
+      step1,
+      toolMsg,
+      part("assistant", { type: "text", text: "ond" }),
+      msg(4, "assistant", [{ type: "text", text: "Second" }]),
+      status("waiting"),
+    ]);
+    // Block granularity matches the no-drop flow (a snapshot-opened block stays
+    // open across snapshot-content tool calls); what matters is the total text:
+    // no spurious splice suffix, nothing double-emitted.
+    expect(textBlocks(parts).join("")).toBe("FirstSecond");
+    expect(parts.filter((p) => p.type === "tool-call")).toHaveLength(1);
+  });
+
   it("recovers a reasoning suffix when reasoning was the open block at the drop", () => {
     // The drop happens while REASONING is still streaming; the message commits
     // during the gap with completed reasoning plus final text. The open

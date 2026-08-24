@@ -435,9 +435,18 @@ export class TurnTranslator {
       // message. Suppress its text/reasoning entirely (replays are
       // byte-identical, and the revisions that matter in practice update usage
       // or tool results, which are id-keyed and still processed). The CURRENT
-      // message stays on the normal path: its block's length cursor dedupes
-      // progressive/trailing snapshots and recovers gap suffixes.
-      if (this.#snapshotSeen.has(message.id) && message.id !== this.#currentAssistantId) {
+      // message stays on the normal path — its block's length cursor dedupes
+      // progressive/trailing snapshots and recovers gap suffixes — but ONLY
+      // while no newer deltas are open: deltas carry no message id, so once
+      // the NEXT step starts streaming, #currentAssistantId still names the
+      // committed step, and reconciling its replayed snapshot would diff old
+      // content against the open next-step block and emit a spurious suffix.
+      // (An unseen snapshot with deltas open is that next step committing —
+      // the gap-recovery case — and keeps the normal path.)
+      if (
+        this.#snapshotSeen.has(message.id) &&
+        (message.id !== this.#currentAssistantId || this.#deltasSinceSnapshot)
+      ) {
         for (const part of content) {
           if (part.type === "tool-call" && !this.#isClientTool(part.tool_name))
             this.#emitServerToolCall(out, part);

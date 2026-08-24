@@ -404,7 +404,7 @@ directories (`claude-code-<sessionId>/`) and whatever your agents check out.
 volume with networking disabled — it must succeed offline:
 
 ```bash
-docker volume create probe-home
+docker volume rm -f probe-home && docker volume create probe-home
 docker run --rm --network none -v probe-home:/home/coder \
   <image> bash -lc 'cd ~/.harness-bootstrap/claude-code \
     && pnpm install --frozen-lockfile --store-dir .pnpm-store \

@@ -312,9 +312,9 @@ await agent.generate({ prompt: "…", abortSignal: AbortSignal.timeout(120_000) 
 ```
 
 If the event stream drops mid‑turn, the agent redials it automatically with
-exponential backoff, resuming from the last received message — the server keeps
-generating during the gap, so a transient drop costs nothing and the run is
-**not** interrupted. Only when the stream cannot be re‑established (several
+exponential backoff, replaying the turn's events from its starting cursor and
+deduplicating them on receipt — the server keeps generating during the gap, so
+a transient drop costs nothing and the run is **not** interrupted. Only when the stream cannot be re‑established (several
 consecutive failed attempts, ~15s) is the server run interrupted and the call
 rejected with a `CoderStreamError` — an AI SDK `APICallError`. When the failed
 turn had just created its chat AND had no external effects a replay would

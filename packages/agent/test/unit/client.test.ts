@@ -573,14 +573,14 @@ describe("CoderChatClient.streamEvents (redial)", () => {
   /** Let the generator run to its next suspension point (real timers). */
   const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
-  it("redials after a drop, resuming past the last committed message id", async () => {
+  it("redials after a drop, replaying from the turn's original after_id", async () => {
     vi.useFakeTimers();
     try {
       const { c, sockets } = streamClient();
-      const iter = c.streamEvents("c1");
+      const iter = c.streamEvents("c1", { afterId: 3 });
       const p1 = iter.next();
       await vi.advanceTimersByTimeAsync(0);
-      expect(sockets[0]?.url).toBe("wss://x/api/experimental/chats/c1/stream");
+      expect(sockets[0]?.url).toBe("wss://x/api/experimental/chats/c1/stream?after_id=3");
       sockets[0]?.emit("message", frame(statusEv("running"), message(5, "step one")));
       expect((await p1).value).toMatchObject({ type: "status" });
       expect((await iter.next()).value).toMatchObject({ type: "message", message: { id: 5 } });
@@ -593,11 +593,20 @@ describe("CoderChatClient.streamEvents (redial)", () => {
       expect(sockets).toHaveLength(1);
       await vi.advanceTimersByTimeAsync(1);
       expect(sockets).toHaveLength(2);
-      // …resuming past the committed message so chatd does not replay id 5.
-      expect(sockets[1]?.url).toBe("wss://x/api/experimental/chats/c1/stream?after_id=5");
+      // …keeping the ORIGINAL cursor, so a revision of id 5 committed during
+      // the gap still replays (an advanced cursor would exclude it). The
+      // replayed snapshot is yielded again — consumers dedupe by id.
+      expect(sockets[1]?.url).toBe("wss://x/api/experimental/chats/c1/stream?after_id=3");
 
-      sockets[1]?.emit("message", frame(message(6, "step two"), statusEv("waiting")));
-      expect((await p2).value).toMatchObject({ type: "message", message: { id: 6 } });
+      sockets[1]?.emit(
+        "message",
+        frame(message(5, "step one (revised)"), message(6, "step two"), statusEv("waiting")),
+      );
+      expect((await p2).value).toMatchObject({
+        type: "message",
+        message: { id: 5, content: [{ text: "step one (revised)" }] },
+      });
+      expect((await iter.next()).value).toMatchObject({ type: "message", message: { id: 6 } });
       expect((await iter.next()).value).toMatchObject({ type: "status" });
       await iter.return(undefined);
     } finally {
@@ -733,7 +742,6 @@ describe("CoderChatClient.streamEvents (redial)", () => {
       sockets[0]?.emit("close", { code: 1006 });
       await vi.advanceTimersByTimeAsync(1000);
       expect(sockets).toHaveLength(2);
-      expect(sockets[1]?.url).toBe("wss://x/api/experimental/chats/c1/stream?after_id=7");
       sockets[1]?.emit("message", frame(statusEv("waiting")));
       expect((await p3).value).toMatchObject({ type: "status" });
       await iter.return(undefined);

@@ -612,9 +612,10 @@ describe("TurnTranslator — redial replay", () => {
   });
 
   it("does not double-emit content, tool calls, or usage when a reconnect replays the turn", () => {
-    // A dropped/redialed stream can replay events the translator already saw:
-    // the committed snapshot of a message whose deltas streamed, and the
-    // pending action_required. Neither may double-emit.
+    // A redial replays the turn from its original after_id, so the translator
+    // re-sees events it already ingested: the committed snapshot of a message
+    // whose deltas streamed, and the pending action_required. Neither may
+    // double-emit.
     const action: ChatStreamEvent = {
       type: "action_required",
       chat_id: "c",

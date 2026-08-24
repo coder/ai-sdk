@@ -80,12 +80,16 @@ const TRANSIENT_UPGRADE_STATUSES: ReadonlySet<number> = new Set([408, 425, 429])
  * — that triggers generator cleanup, which closes the socket.
  *
  * Dropped connections are redialed with exponential backoff (like
- * {@link watchChatEvents}), resuming from an `after_id` cursor advanced past
- * every *committed* message already yielded — only `message` events carry ids;
- * chatd assigns them at commit time and never streams more parts for a
- * committed message (revision bumps re-send full snapshots, which the consumer
- * dedupes). On reconnect chatd replays the in-progress generation attempt's
- * `message_part` deltas from `seq` 1, so parts of an episode
+ * {@link watchChatEvents}), replaying from the turn's ORIGINAL `after_id`. The
+ * cursor is deliberately NOT advanced past messages already yielded: chatd's
+ * initial sync filters out ids at or below `after_id`, so an advanced cursor
+ * would silently lose same-id REVISION snapshots (updated content, tool
+ * results, usage) committed while the connection was down. Consumers must
+ * dedupe repeated `message` snapshots — the wire contract demands that anyway,
+ * since chatd re-sends full snapshots on revision bumps even without a
+ * reconnect (TurnTranslator does). On reconnect chatd also replays the
+ * in-progress generation attempt's `message_part` deltas from `seq` 1, so
+ * parts of an episode
  * (`history_version`, `generation_attempt`) at or below the last yielded `seq`
  * are suppressed here rather than double-yielded. The iteration ends in five
  * ways: `signal` aborting (clean return), a non-transient 4xx upgrade
@@ -94,9 +98,9 @@ const TRANSIENT_UPGRADE_STATUSES: ReadonlySet<number> = new Set([408, 425, 429])
  * an unparseable frame (terminal {@link CoderAgentError} — a redial would
  * replay the same frame forever), a drop while deltas WITHOUT episode
  * coordinates are outstanding (older chatd; a {@link CoderStreamError},
- * because a replay could not be deduped and would double-emit — a committed
- * `message` advancing the cursor finalizes them and re-enables redial), or the
- * redial budget running out (also a {@link CoderStreamError}).
+ * because a delta replay could not be deduped and would double-emit — a NEW
+ * committed `message` finalizes them into dedupable snapshots and re-enables
+ * redial), or the redial budget running out (also a {@link CoderStreamError}).
  */
 export function streamChatEvents(
   options: StreamChatEventsOptions,
@@ -166,9 +170,13 @@ async function* streamChatEventsLoop(
 
   const wsBase = httpToWs(baseUrl);
   const path = `/api/experimental/chats/${chatId}/stream`;
+  // The turn's original cursor, reused verbatim on every redial — see the doc
+  // comment above for why it must not advance past yielded messages.
+  const query = options.afterId !== undefined ? `?after_id=${options.afterId}` : "";
+  const url = `${wsBase}${path}${query}`;
 
-  // Redial cursor — see the doc comment above.
-  let cursor = options.afterId;
+  // Highest committed message id yielded, for progress accounting only.
+  let maxCommittedId = options.afterId;
   // Last yielded delta position, for suppressing chatd's from-the-start replay
   // of the in-progress episode after a redial.
   let lastHistoryVersion: number | undefined;
@@ -177,9 +185,8 @@ async function* streamChatEventsLoop(
   // Deltas missing those coordinates (older servers) cannot be deduped on
   // replay: while any are outstanding, a drop is terminal instead of redialed
   // — the pre-redial behavior — because a replay would double-emit them. A
-  // committed `message` advancing the cursor finalizes them (their content
-  // then lives at ids ≤ cursor, excluded by `after_id`), making redial safe
-  // again.
+  // NEW committed `message` finalizes them (their content then arrives only as
+  // snapshots, which consumers dedupe), making redial safe again.
   let sawUntrackableDelta = false;
 
   let backoffMs = STREAM_BACKOFF_INITIAL_MS;
@@ -189,9 +196,6 @@ async function* streamChatEventsLoop(
   while (!signal?.aborted) {
     // One connection attempt per iteration; the queue/wake plumbing mirrors
     // watchChatEventsLoop below.
-    const query = cursor !== undefined ? `?after_id=${cursor}` : "";
-    const url = `${wsBase}${path}${query}`;
-
     const queue: ChatStreamEvent[] = [];
     let resolveNext: (() => void) | undefined;
     let finished = false;
@@ -302,12 +306,12 @@ async function* streamChatEventsLoop(
               sawUntrackableDelta = true;
             }
           } else if (next.type === "message" && next.message) {
-            if (cursor === undefined || next.message.id > cursor) {
-              cursor = next.message.id;
+            if (maxCommittedId === undefined || next.message.id > maxCommittedId) {
+              maxCommittedId = next.message.id;
               progress = true;
-              // This commit finalizes the in-progress deltas: everything
-              // streamed so far now lives at ids ≤ cursor, so a replay can no
-              // longer duplicate coordinate-less deltas seen before it.
+              // This commit finalizes the in-progress deltas: their content
+              // now lives in committed snapshots, which consumers dedupe, so
+              // a replay can no longer duplicate coordinate-less deltas.
               sawUntrackableDelta = false;
             }
           }

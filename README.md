@@ -122,8 +122,10 @@ Each step stands alone — skip the ones you don't need. For depth on each:
 in the sandbox README; [custom tools](./packages/agent/README.md#custom-tools),
 [structured output](./packages/agent/README.md#structured-output) (when the
 typed answer must come out of the agent run itself, not a follow-up model call),
-and the [workspaces & quota operations guide](./packages/agent/README.md#workspaces--quota)
-(fleet sizing, autostop, troubleshooting stuck turns)
+the [workspaces & quota operations guide](./packages/agent/README.md#workspaces--quota)
+(fleet sizing, autostop, troubleshooting stuck turns),
+and the [durable-workflow how-to](./packages/agent/README.md#durable-workflows-persist-resume-recover)
+(persisting `chatId` across job/queue boundaries, drop & timeout recovery)
 in the agent README;
 [surfaces and authentication modes](./packages/provider/README.md#the-two-surfaces)
 and the [enterprise governance & security reference](./packages/provider/README.md#enterprise-governance--security)

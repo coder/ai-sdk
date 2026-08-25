@@ -214,7 +214,9 @@ conversation with server‑side history). `agent.chatId` is the current chat id.
 - `agent.interrupt({ signal? })` — interrupt an in‑flight generation.
 - `agent.archive({ signal? })` — archive the underlying chat (cleanup; see [Cleanup](#cleanup)).
 - `agent.listModels()` — list the deployment's model configs, so you don't have to guess the `model` hint.
-- Resume a prior chat: `new CoderAgent({ …, chatId: "…" })`.
+- Resume a prior chat: `new CoderAgent({ …, chatId: "…" })` — see
+  [Durable workflows](#durable-workflows-persist-resume-recover) for the full
+  resumption how‑to.
 
 Interrupting is asynchronous on the server: `interrupt()` resolves as soon as the
 interrupt is acknowledged, and the run keeps winding down for a few seconds
@@ -322,19 +324,19 @@ for (const ev of events) {
 `timestamp` (`Date.now()` at observation — comparable to server‑side timestamps
 such as a message's `created_at`, for delivery‑lag measurements):
 
-| event            | when                                                | payload (besides `timestamp`)                                                                                                                                                           |
-| ---------------- | --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `http:request`   | a REST request is sent                              | `id` (correlates the pair), `method`, `path`                                                                                                                                            |
-| `http:response`  | response headers arrive (incl. non‑2xx, `ok:false`) | `id`, `method`, `path`, `status`, `ok`, `durationMs`                                                                                                                                    |
-| `http:error`     | the fetch itself rejects (network failure, abort)   | `id`, `method`, `path`, `message`, `durationMs`                                                                                                                                         |
-| `ws:dial`        | a stream connection attempt starts                  | `chatId`, `attempt` (1‑based, increments per redial), `url`                                                                                                                             |
-| `ws:open`        | the WebSocket handshake completes                   | `chatId`, `attempt`                                                                                                                                                                     |
-| `ws:event`       | a decoded stream event arrives                      | `chatId`, `attempt`, `event` (the decoded `ChatStreamEvent`, by reference — don't mutate)                                                                                               |
-| `ws:close`       | the connection ends (exactly one per dial)          | `chatId`, `attempt`, `code`/`reason` when the server/network closed it; absent when the reader closed it (settle, teardown, redial)                                                     |
-| `ws:error`       | a socket error or unparseable frame                 | `chatId`, `attempt`, `message`                                                                                                                                                          |
-| `ws:redial`      | a dropped connection is about to be redialed        | `chatId`, `attempt` (the ended connection), `consecutiveFailures`, `maxConsecutiveFailures`, `backoffMs`                                                                                |
-| `segment:start`  | a turn segment (one model round‑trip) starts        | `segment` (1‑based per model instance), `chatId` (absent before the first turn creates the chat)                                                                                        |
-| `segment:settle` | the segment ends (exactly one per start)            | `segment`, `chatId`, and: `status` + `finishReason` on a clean settle, `error` (`{name, message}`, plus `status` if the run still settled terminally) on failure, neither on a teardown |
+| event            | when                                                | payload (besides `timestamp`)                                                                                                                                                                         |
+| ---------------- | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `http:request`   | a REST request is sent                              | `id` (correlates the pair), `method`, `path`                                                                                                                                                          |
+| `http:response`  | response headers arrive (incl. non‑2xx, `ok:false`) | `id`, `method`, `path`, `status`, `ok`, `durationMs`                                                                                                                                                  |
+| `http:error`     | the fetch itself rejects (network failure, abort)   | `id`, `method`, `path`, `message`, `durationMs`                                                                                                                                                       |
+| `ws:dial`        | a stream connection attempt starts                  | `chatId`, `attempt` (1‑based, increments per redial), `url`                                                                                                                                           |
+| `ws:open`        | the WebSocket handshake completes                   | `chatId`, `attempt`                                                                                                                                                                                   |
+| `ws:event`       | a decoded stream event arrives                      | `chatId`, `attempt`, `event` (the decoded `ChatStreamEvent`, by reference — don't mutate)                                                                                                             |
+| `ws:close`       | the connection ends (exactly one per dial)          | `chatId`, `attempt`, `code`/`reason` when the server/network closed it; absent when the reader closed it (settle, teardown, redial)                                                                   |
+| `ws:error`       | a socket error or unparseable frame                 | `chatId`, `attempt`, `message`                                                                                                                                                                        |
+| `ws:redial`      | a dropped connection is about to be redialed        | `chatId`, `attempt` (the ended connection), `consecutiveFailures`, `maxConsecutiveFailures`, `backoffMs`                                                                                              |
+| `segment:start`  | a turn segment (one model round‑trip) starts        | `segment` (1‑based per model instance), `chatId` (absent before the first turn creates the chat)                                                                                                      |
+| `segment:settle` | the segment ends (exactly one per start)            | `segment`, `chatId`, `durationMs`, and: `status` + `finishReason` on a clean settle, `error` (`{name, message}`, plus `status` if the run still settled terminally) on failure, neither on a teardown |
 
 Semantics worth knowing:
 
@@ -868,27 +870,290 @@ CoderAgent  (implements ai.Agent)
   revision that appends to an earlier message yields the appended suffix (rewrites that
   can't be expressed as deltas are safely suppressed).
 
-## Durable workflows (Vercel Workflow, step functions, …)
+## Durable workflows: persist, resume, recover
 
-`CoderAgent` talks to Coder over its own REST + WebSocket client, so it can't ride
-a `fetch`‑shim durability layer — each turn must run **inside** a durable step. A
-few rules keep it well‑behaved across replays:
+How to run **one agent session across process boundaries** — queue jobs,
+durable‑workflow steps (Vercel Workflow, step functions, Temporal, …), cron
+ticks — and survive the crashes, stream drops, and timeouts in between. The
+mechanics this how‑to leans on are specified in [Sessions](#sessions),
+[Timeouts & cancellation](#timeouts--cancellation),
+[Handling errors](#handling-errors), and [Observability](#observability).
 
-- **One turn per step.** Create the agent, run a single `generate()` (not
-  `stream()`, so the checkpointed value is the finished result), return.
-- **Don't persist the instance across steps.** Persist `agent.chatId` (a string)
-  and resume with `new CoderAgent({ …, chatId })` in the next step. Never persist
-  or log the token — read it from the environment in each step.
-- **Clean up in the step.** `await using` the agent (or `await agent.archive()` in
-  a `finally`) so a step that returns early doesn't abandon the chat.
-- **Bound each step.** Set `requestTimeoutMs` so a wedged turn fails the step (and
-  lets the workflow retry) instead of hanging the whole run.
-- **Mind concurrency vs. workspaces.** Keep fan‑out width under the deployment's
-  workspace cap — see [Workspaces & quota](#workspaces--quota).
-- **Use the provider for pure steps.** Steps that don't need server‑side tools
-  (plan / extract / synthesize) are cheaper and natively structured through
+Two facts make the pattern work:
+
+- **All chat state lives on the Coder server.** Messages, tool activity, the
+  run itself — none of it is in your process. The only durable thing a
+  workflow has to carry between steps is **`agent.chatId`: a string.**
+- **`CoderAgent` can't ride a `fetch`‑shim durability layer** (it talks REST +
+  WebSocket through its own client), so each turn runs **inside** a durable
+  step — and the checkpointed chat id is the thread between steps.
+
+Running example: a pipeline whose steps each run as their own job — possibly
+on another machine, hours apart, retried after failures.
+
+### Shape each step: one turn, then checkpoint
+
+```ts
+import { CoderAgent, type CoderTransportEvent } from "@coder/ai-sdk-agent";
+
+// Any durable KV your engine gives you: step state, a job row, a DB table.
+declare const checkpoints: {
+  get(workflowId: string): Promise<string | undefined>;
+  set(workflowId: string, chatId: string): Promise<void>;
+};
+
+export async function runTurn(workflowId: string, prompt: string): Promise<string> {
+  const agent = new CoderAgent({
+    baseUrl: process.env.CODER_URL!,
+    token: process.env.CODER_SESSION_TOKEN!, // read per step — never checkpoint or log it
+    organizationId: process.env.CODER_ORG_ID!,
+    chatId: await checkpoints.get(workflowId), // undefined on the first step → the turn creates the chat
+    requestTimeoutMs: 300_000, // always bound workflow steps — see below
+    onTransportEvent: observe, // per-step telemetry — see below
+  });
+
+  const { text } = await agent.generate({ prompt });
+  await checkpoints.set(workflowId, agent.chatId!); // the durable resume handle
+  return text;
+}
+```
+
+The shape matters:
+
+- **One turn per step, `generate()` not `stream()`.** The checkpointed unit is
+  a finished result — and a mid‑`stream()` failure surfaces on the stream,
+  outside `generate()`'s error contract, which complicates step retry logic.
+- **Persist the id, not the instance** (and never the token — read it from
+  each step's environment).
+- **Checkpoint as soon as the turn settles.** The window between chat creation
+  and the checkpoint is the crash window that orphans a chat (below).
+- **No `await using` here.** The chat outlives the step; disposal archives it
+  and archiving ends resumability (below).
+
+### Resume in the next step — any process, any machine
+
+```ts
+// Step 1 — a queue job on machine A:
+await runTurn("wf-1042", "Investigate the failing nightly build and propose a fix.");
+
+// Step 2 — hours later, on machine B: same chat, full server-side history.
+await runTurn("wf-1042", "Apply the fix you proposed and summarize what changed.");
+
+// Final step — cleanup belongs to the workflow, not to each step (see below).
+await archiveWorkflowChat("wf-1042");
+```
+
+What resuming does (and doesn't do):
+
+- **Construction is free.** `new CoderAgent({ …, chatId })` performs no I/O
+  and no validation — a bad or archived id fails the _turn_, not the
+  constructor.
+- **The first resumed turn seeds its cursor** from the chat's newest message
+  (one single‑message history probe), so it streams only its own events —
+  it never re‑absorbs earlier turns' content or usage.
+- **Re‑supply process‑local configuration.** Client `tools` live in your
+  process, not on the server, so each step that expects tool calls must pass
+  them again. The workspace binding is the opposite: fixed at creation,
+  carried by the chat, unchangeable on resume.
+- **Sessions stay single‑flight across the whole system**, not just within one
+  process: run steps strictly sequentially per chat. A second job posting to
+  the same chat queues behind the live run and burns its own
+  `requestTimeoutMs` waiting.
+
+### Let the SDK absorb drops — and handle what it re‑throws
+
+Self‑healed, invisible to the step (the run is **not** interrupted):
+
+- **Transient stream drops.** The server keeps generating through the gap; the
+  SDK redials with backoff and replays what it missed — committed messages
+  past the turn's cursor plus the in‑progress message's deltas — deduplicating
+  on receipt. A message that committed _while the connection was down_ arrives
+  as exactly its missing tail. Drops cost latency, never content, and never
+  duplicate content.
+- **Client‑tool pauses ride one connection.** A multi‑segment turn keeps its
+  stream across `requires_action` pauses, and a drop while your tool executes
+  redials in the background.
+- **A lost tool‑call event.** If a turn pauses for client tools but the pause's
+  tool‑call event doesn't arrive within ~2 s, the SDK recovers the pending
+  calls from committed history over REST and the turn continues.
+
+Surfaced to the step once self‑healing is exhausted:
+
+```ts
+import { CoderApiError, CoderChatError, CoderStreamError } from "@coder/ai-sdk-agent";
+
+try {
+  await runTurn(workflowId, prompt);
+} catch (err) {
+  if (err instanceof CoderChatError && err.retryable) {
+    // Timeout or transient turn failure. The run was interrupted (best-effort),
+    // the chat survives — fail the step and let the engine retry it.
+  } else if (err instanceof CoderStreamError) {
+    // Redial budget exhausted (~15s without forward progress). On a resumed
+    // chat this is never auto-retried — the retry decision is yours (below).
+  } else if (err instanceof CoderApiError) {
+    // Non-transient: expired token, archived/deleted chat, … Fail the workflow.
+  }
+  throw err;
+}
+```
+
+- **`CoderChatError` with `retryable: true`** — the segment's
+  `requestTimeoutMs` expired (`kind: "timeout"`) or the turn failed
+  transiently (`kind: "stream_closed"`, an upstream 5xx). Rethrow and let the
+  engine re‑run the step.
+- **`CoderStreamError`** (an AI SDK `APICallError`) — the stream could not be
+  re‑established. `isRetryable: true` only when the failed turn had just
+  created its chat _and_ had no external effects a replay would repeat (no
+  workspace, no MCP servers, no fresh inline uploads); the SDK then discards
+  the dead session so a retry — `maxRetries` or a re‑run step — starts clean
+  on a fresh chat. **On a resumed chat it is always `isRetryable: false`:**
+  re‑running the step resubmits the same prompt as a _new user turn_, with the
+  failed attempt's partial output still in history (usually fine — the model
+  sees its own aborted attempt), and any workspace/MCP tool effects that ran
+  before the drop are not undone. That judgment call belongs to your workflow,
+  which is exactly why it isn't automatic.
+- **`CoderApiError`** — non‑transient HTTP failure (expired token, archived or
+  deleted chat). A retry hits the same wall; fail the workflow.
+
+### Recover after a crash
+
+A hard crash (OOM kill, host loss) runs no `finally` blocks. Reason from the
+checkpoint:
+
+- **Crashed before the turn created its chat** — nothing exists server‑side;
+  the retried step creates a fresh chat. (A `requestTimeoutMs` expiry this
+  early behaves the same: `agent.chatId` is still `undefined` and the
+  checkpoint stays empty.)
+- **Crashed after creation, before the checkpoint** — the chat is orphaned:
+  its run keeps generating until it settles on its own, then idles as a live,
+  unarchived chat. The retried step starts a fresh one; catch orphans with the
+  reconciliation sweep from
+  [Preventing stuck turns](#preventing-stuck-turns). (To shrink the window,
+  checkpoint eagerly from the first `ws:dial` transport event — it carries the
+  chat id as soon as the chat exists — at the price of the retried step
+  resuming a chat that holds a dead half‑turn.)
+- **Crashed after the checkpoint** — the normal resume path, with two
+  wrinkles. The crashed attempt's run may still be live server‑side: the
+  resumed turn's message queues behind it and starts once it settles, all
+  within the resumed turn's `requestTimeoutMs`. And a crash _inside one of
+  your client tools_ leaves the chat paused in `requires_action`, where queued
+  messages wait forever — if a step can die mid‑tool, interrupt before
+  resuming (an interrupt on a chat with no live run rejects with a 409
+  `CoderApiError` — ignore it):
+
+  ```ts
+  await agent.interrupt().catch(() => {}); // clear a possible stranded pause
+  ```
+
+### Watch turn health from inside the step
+
+[Transport events](#observability) classify how each segment ended without
+parsing errors or stream frames — emit them as step metrics/traces:
+
+```ts
+declare const metrics: {
+  ok(segment: number, status: string, ms: number): void;
+  fail(segment: number, error: string, detail: string): void;
+  teardown(segment: number): void;
+};
+
+function observe(ev: CoderTransportEvent): void {
+  if (ev.type === "ws:redial") {
+    // Early warning: the stream dropped and is reconnecting. The server keeps
+    // generating — nothing is lost yet; the turn fails if this hits the cap.
+    console.warn(
+      `redial ${ev.consecutiveFailures}/${ev.maxConsecutiveFailures}, next in ${ev.backoffMs}ms`,
+    );
+  } else if (ev.type === "segment:settle") {
+    if (ev.finishReason) metrics.ok(ev.segment, ev.status!, ev.durationMs);
+    else if (ev.error) metrics.fail(ev.segment, ev.error.name, ev.error.message);
+    else metrics.teardown(ev.segment);
+  }
+}
+```
+
+`segment:settle` fires exactly once per `segment:start` and separates the
+three endings a workflow cares about:
+
+- **Clean settle** — `status` + `finishReason` present. `finishReason:
+"tool-calls"` (status `requires_action`) is a healthy mid‑turn pause for
+  your client tools; terminal statuses end the turn.
+- **Failure** — `error: { name, message }` present (plus `status` when the
+  server run itself still settled terminally): server‑side turn errors,
+  transport failure after redials were exhausted, and `requestTimeoutMs`
+  expiry — a timeout settles with `error.name: "CoderChatError"`, so it stays
+  distinguishable from the next bucket.
+- **Teardown** — neither: the consumer cancelled the turn from outside (e.g.
+  your engine aborted the step).
+
+The hook is observability‑only — handler exceptions are swallowed and can't
+disturb the turn, and an unset hook costs nothing. For monitoring _across_
+steps (chats stuck before a watcher started, fleet‑level sweeps), see
+[Preventing stuck turns](#preventing-stuck-turns).
+
+### Bound every step
+
+`requestTimeoutMs` arms **one timer per segment** covering everything the
+segment does: the REST phase (chat creation, message/tool‑result submission,
+uploads), the stream — and, the part that matters here, **any redial backoff
+inside the segment**. A segment that spends 12 s reconnecting has 12 s less
+budget; redials never reset the clock, so a flaky network can't stretch a step
+past its bound. On expiry the call rejects with `CoderChatError`
+(`kind: "timeout"`, `retryable: true`) and the server run is interrupted
+best‑effort.
+
+Two workflow‑specific notes:
+
+- A turn that times out (or crashes) before its chat exists leaves nothing to
+  resume — the checkpoint stays empty and the retried step starts fresh.
+- `requestTimeoutMs` bounds each _segment_; a turn driving client tools runs
+  several. Cap a step's total wall‑clock with
+  `abortSignal: AbortSignal.timeout(…)` —
+  [Timeouts & cancellation](#timeouts--cancellation).
+
+### Archive at the end — and only at the end
+
+**An archived chat cannot be resumed:** the server rejects new messages on it
+(400, `Cannot send messages to an archived chat`). The per‑request habits from
+[Cleanup](#cleanup) — `await using`, `archive()` in a `finally` — would
+destroy the session from inside an intermediate step, so here the _workflow_
+owns the chat's end of life: archive once, in the final step, and in the
+workflow's failure/compensation handler so abandoned runs don't accumulate
+live chats.
+
+```ts
+export async function archiveWorkflowChat(workflowId: string): Promise<void> {
+  const chatId = await checkpoints.get(workflowId);
+  if (!chatId) return; // the workflow died before its first turn created a chat
+  const agent = new CoderAgent({
+    baseUrl: process.env.CODER_URL!,
+    token: process.env.CODER_SESSION_TOKEN!,
+    organizationId: process.env.CODER_ORG_ID!,
+    chatId,
+  });
+  // A crashed step may have left a run live — stop it first. On an
+  // already-settled chat the interrupt rejects with a 409; ignore it.
+  await agent.interrupt().catch(() => {});
+  await agent.archive(); // retries 409s while the interrupted run winds down (~15s)
+}
+```
+
+### Checklist
+
+- One turn per durable step; `generate()`, not `stream()`.
+- Persist `agent.chatId` (a string) — never the instance, never the token.
+- Bound every step: `requestTimeoutMs` per segment, an abort deadline for
+  total wall‑clock.
+- Let redials self‑heal; own the retry decision for `CoderStreamError` on
+  resumed chats.
+- Keep concurrent steps' fan‑out within workspace quota —
+  [Workspaces & quota](#workspaces--quota).
+- Steps that don't need server‑side tools (plan / extract / synthesize) are
+  cheaper and natively structured through
   [`@coder/ai-sdk-provider`](../provider) + `generateObject` — no chat, no
   workspace, no cleanup.
+- Archive in the final step / failure handler — never per step.
 
 ## Testing
 

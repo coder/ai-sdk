@@ -1,3 +1,4 @@
+import { NoSuchModelError } from "@ai-sdk/provider";
 import { generateText } from "ai";
 import { describe, expect, it } from "vitest";
 import { createCoder, isAnthropicModelId } from "../src/index.js";
@@ -176,5 +177,32 @@ describe("createCoder URL construction", () => {
 describe("createCoder validation", () => {
   it("throws when baseURL is missing", () => {
     expect(() => createCoder({ baseURL: "", apiKey: TOKEN })).toThrow(/baseURL/);
+  });
+});
+
+describe("createCoder textEmbeddingModel", () => {
+  it("fails fast with NoSuchModelError at accessor call time instead of emitting a doomed request", () => {
+    const { fetch, calls } = capturingFetch();
+    const coder = createCoder({ baseURL: BASE, apiKey: TOKEN, fetch });
+
+    let error: unknown;
+    try {
+      coder.textEmbeddingModel("text-embedding-3-small");
+    } catch (e) {
+      error = e;
+    }
+
+    // Pinned via the AI SDK's cross-package marker, the same check `ai` uses.
+    expect(NoSuchModelError.isInstance(error)).toBe(true);
+    const noSuchModel = error as NoSuchModelError;
+    expect(noSuchModel.modelId).toBe("text-embedding-3-small");
+    expect(noSuchModel.modelType).toBe("embeddingModel");
+    // Message quality: names the unsupported gateway route and links the issue.
+    expect(noSuchModel.message).toContain("/v1/embeddings");
+    expect(noSuchModel.message).toMatch(/does not (yet )?intercept/);
+    expect(noSuchModel.message).toContain("https://github.com/coder/ai-sdk/issues/69");
+
+    // Fail-fast means no HTTP request was emitted.
+    expect(calls).toHaveLength(0);
   });
 });

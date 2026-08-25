@@ -76,11 +76,17 @@ coder("gpt-4o"); // → OpenAI surface
 coder("claude-sonnet-4-6"); // → Anthropic surface (heuristic)
 coder.openai("claude-sonnet-4"); // → OpenAI surface (e.g. Copilot)
 coder.anthropic("claude-opus-4-5"); // → Anthropic surface (explicit)
-coder.textEmbeddingModel("text-embedding-3-small"); // → OpenAI surface
 ```
 
 Model ids are passed through **unchanged** to the upstream provider (no
 `vendor/model` namespacing) — use whatever ids your deployment's providers accept.
+
+**Embeddings are not supported yet.** AI Gateway does not intercept
+`/v1/embeddings`, so `coder.textEmbeddingModel(id)` throws the AI SDK's
+`NoSuchModelError` immediately instead of emitting a request the gateway
+rejects with a 404. The accessor stays so it can light up without a breaking
+change once the gateway adds an embeddings route — see
+[coder/ai-sdk#69](https://github.com/coder/ai-sdk/issues/69).
 
 ## Authentication
 
@@ -140,8 +146,8 @@ no telemetry of its own; each request is exactly what the AI SDK builds for a
 normal provider call:
 
 - **URL** — `POST <baseURL>/api/v2/aibridge/<provider>/v1/chat/completions`
-  (OpenAI surface; `…/v1/embeddings` for `textEmbeddingModel`) or
-  `…/v1/messages` (Anthropic surface). `/api/v2/aibridge` is this package's
+  (OpenAI surface) or `…/v1/messages` (Anthropic surface). `/api/v2/aibridge`
+  is this package's
   default; deployments also serve the post-rename alias `/api/v2/ai-gateway`
   (see `aiGatewayPath`).
 - **Auth headers** — per the mode matrix below.

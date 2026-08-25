@@ -97,8 +97,10 @@ unit tests under `packages/agent/test/unit/` pin the behavior.
   so a cursor can never advance past a delta — and redials deliberately reuse
   the turn's original cursor (an advanced one would drop same-id revision
   snapshots).
-- An unparseable frame is **terminal by design**: a redial would replay the
-  same frame forever, so there is no retry.
+- On the per-chat `/stream` (`streamChatEvents`), an unparseable frame is
+  **terminal by design**: a redial replays from the original cursor and would
+  deliver the same frame forever. The non-replaying global `/watch` redials
+  past malformed frames instead.
 - `TurnTranslator` keeps a per-message emitted-content ledger to reconcile
   replays and revisions; consumers must tolerate repeated `message` snapshots.
 

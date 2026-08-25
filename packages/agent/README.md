@@ -1258,8 +1258,15 @@ the same derivation the SDK itself uses to recover a lost `action_required`
 event — and the ledger holds the verdict on each:
 
 ```ts
-// Pending = the last assistant message's client (non-provider-executed)
-// tool calls, minus ids answered by a later message's tool result.
+// The step's configured ToolSet names: history does not record which calls
+// were client tools (see [Rehydrating chat history]), so — like the SDK's
+// own derivation — restrict to the names this step registers; a server/MCP
+// call must never reach the ledger as "unstarted".
+const clientTools = new Set(["charge_card"]);
+
+// Pending = the last assistant message's client (non-provider-executed,
+// ToolSet-named) tool calls, minus ids answered by a later message's tool
+// result.
 const { messages } = await agent.client.getMessages(agent.chatId!, { limit: 200 }, deadline);
 const ordered = [...messages].sort((a, b) => a.id - b.id);
 const lastAssistant = ordered.findLast((m) => m.role === "assistant");
@@ -1271,7 +1278,11 @@ const handled = new Set(
     .map((p) => p.tool_call_id),
 );
 const pending = (lastAssistant?.content ?? []).filter(
-  (p) => p.type === "tool-call" && !p.provider_executed && !handled.has(p.tool_call_id),
+  (p) =>
+    p.type === "tool-call" &&
+    !p.provider_executed &&
+    clientTools.has(p.tool_name!) &&
+    !handled.has(p.tool_call_id),
 );
 
 const results: { tool_call_id: string; output: unknown }[] = [];

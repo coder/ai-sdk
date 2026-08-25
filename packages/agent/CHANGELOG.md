@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.6.3](https://github.com/coder/ai-sdk/compare/agent-v0.6.2...agent-v0.6.3) (2026-08-25)
+
+Adds a fix ensuring deferred revisions are flushed when a run finishes and revision suffixes are emitted in wire order, along with expanded durability documentation covering crash-safe client tools and result recovery.
+
+### Highlights
+
+- Deferred revisions are now flushed at finish, with revision suffixes emitted in wire order. ([#88](https://github.com/coder/ai-sdk/pull/88))
+- The durability guide now documents crash-safe client tools and result recovery. ([#89](https://github.com/coder/ai-sdk/pull/89))
+
+### Bug Fixes
+
+* **agent:** flush deferred revisions at finish and emit revision suffixes in wire order ([#88](https://github.com/coder/ai-sdk/issues/88)) ([b5fd5fc](https://github.com/coder/ai-sdk/commit/b5fd5fc3ec50b73d2be45d5880fb118fa4863903))
+
+
+### Documentation
+
+* **agent:** crash-safe client tools and result recovery in the durability guide ([#89](https://github.com/coder/ai-sdk/issues/89)) ([0e65041](https://github.com/coder/ai-sdk/commit/0e6504197c7487e843005e937666be256f6653fc))
+
 ## [0.6.2](https://github.com/coder/ai-sdk/compare/agent-v0.6.1...agent-v0.6.2) (2026-08-25)
 
 Documentation-only release that adds a session resumption and durability how-to and expands the workspaces and quota guide into an operational fleet sizing and troubleshooting reference.

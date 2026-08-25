@@ -1163,7 +1163,12 @@ checkpoint:
     }
   } else {
     await agent.interrupt({ signal: deadline }).catch((err) => {
-      if (err instanceof CoderApiError && err.status === 409) cutShort = false;
+      // A 409 proves nothing is stoppable NOW — that means "never cut short"
+      // only if the probe saw no interrupt already in flight. A probed
+      // "interrupting" is an earlier interrupt (a timeout's best-effort one,
+      // a sweeper) already truncating the attempt; this 409 just says it
+      // landed. Keep cutShort = true then.
+      if (err instanceof CoderApiError && err.status === 409) cutShort = status === "interrupting";
       else throw err;
     });
   }

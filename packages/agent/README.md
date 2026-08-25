@@ -1158,7 +1158,7 @@ multi‑tenant stores, fold the tenant in too:
 ```ts
 import { tool } from "ai";
 import { z } from "zod";
-import type { CoderAgent } from "@coder/ai-sdk-agent";
+import { CoderAgent } from "@coder/ai-sdk-agent";
 
 type LedgerEntry = { state: "committing" } | { state: "done"; output: string };
 declare const ledger: {
@@ -1172,15 +1172,15 @@ declare const payments: {
 const ledgerKey = (chatId: string, toolCallId: string) => `${chatId}/${toolCallId}`;
 const ChargeArgs = z.object({ amountCents: z.number().int() });
 
-// A factory taking a getter, not the agent value: wire it up as
-// `tools: { charge_card: chargeCard(() => agent) }` — the getter defers the
-// reference, and the chat id is set before any tool runs.
-const chargeCard = (agent: () => CoderAgent) =>
+// A factory taking a getter, not an id: the chat may not exist until the
+// turn creates it, so the id must be read lazily — it is set before any
+// tool runs.
+const chargeCard = (chatId: () => string) =>
   tool({
     description: "Charge the customer's card.",
     inputSchema: ChargeArgs, // shared with recovery's re-drive dispatch below
     execute: async ({ amountCents }, { toolCallId }) => {
-      const key = ledgerKey(agent().chatId!, toolCallId);
+      const key = ledgerKey(chatId(), toolCallId);
       // Write-ahead, BEFORE the effect: a crash between the two writes leaves
       // "committing" (ambiguous, but resolvable below); no entry at all proves
       // the effect never started.
@@ -1192,6 +1192,15 @@ const chargeCard = (agent: () => CoderAgent) =>
       return `charged: receipt ${receiptId}`;
     },
   });
+
+// Wire-up: a direct self-reference in the constructor call is circular for
+// the type checker — defer it through a box assigned right after.
+let self: { chatId?: string } | undefined;
+const agent = new CoderAgent({
+  /* …base options as in runTurn… */
+  tools: { charge_card: chargeCard(() => self!.chatId!) },
+});
+self = agent;
 ```
 
 On crash recovery, when the checkpointed chat is paused in `requires_action`,

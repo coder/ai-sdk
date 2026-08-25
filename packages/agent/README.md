@@ -701,7 +701,8 @@ schedulable workspaces.** With one workspace per chat — the common fleet shape
 and what a deployment that auto‑assigns workspaces produces — that means
 concurrent chats ≤ schedulable workspaces. Chats explicitly bound to a shared
 `workspaceId` count that workspace once, so their concurrency is not
-quota‑bound — at the price of sharing one filesystem and tool environment.
+quota‑bound — at the price of sharing one filesystem and tool environment,
+which is only acceptable within a single tenant / trust boundary.
 What counts as "schedulable" is a deployment property, not an SDK knob —
 whichever of these binds first:
 
@@ -734,7 +735,10 @@ Practical sizing:
   [Preventing stuck turns](#preventing-stuck-turns)).
 - Reuse one bound workspace across sequential turns and sessions instead of
   provisioning per request — the workspace is the expensive part, the chat is
-  cheap.
+  cheap. Reuse only **within one tenant / trust boundary**: workspace‑bound
+  agents have file and shell tools, so a reused filesystem carries one
+  session's artifacts (and secrets) into the next — provision per tenant, or
+  securely reset a workspace before reassigning it.
 - Steps that don't need server‑side tools belong on the
   [provider](../provider) — it never touches a workspace.
 

@@ -28,6 +28,7 @@ import {
   type UserContent,
   userContentToInputParts,
 } from "./prompt.js";
+import { nextStreamReaderId } from "../coder/ws.js";
 import { SessionChatStream } from "./session-stream.js";
 import { TurnTranslator } from "./translate.js";
 import {
@@ -83,12 +84,16 @@ function startGraceTimer(ms: number) {
  *   fired. That signal is created inside the turn and is invisible to the
  *   wrapper, so a `gen.return()` teardown (consumer cancel with no pull
  *   pending) would otherwise misclassify the timeout as a consumer teardown
- *   (issue #73).
+ *   (issue #73);
+ * - `reader`: the id of the reader (`streamChatEvents` call) serving the
+ *   segment, written at stream acquisition; the settle carries it so
+ *   segments correlate with the connection's `ws:*` events (issue #94).
  */
 interface SegmentChatRef {
   chatId?: string;
   terminalStatus?: ChatStatus;
   timeoutError?: CoderChatError;
+  reader?: number;
 }
 
 const EMPTY_USAGE: LanguageModelV4Usage = {
@@ -253,10 +258,15 @@ export class CoderLanguageModel implements LanguageModelV4 {
     }
     this.#retainedStream = undefined;
     if (retained) void retained.close();
+    // Allocated here (not inside streamChatEvents) so the model knows the id
+    // the reader will stamp on its `ws:*` events — `segment:settle` carries
+    // it to correlate segments with the connection that served them (#94).
+    const reader = nextStreamReaderId();
     const created = new SessionChatStream({
       chatId,
+      reader,
       open: (streamSignal) =>
-        this.#config.client.streamEvents(chatId, { afterId, signal: streamSignal }),
+        this.#config.client.streamEvents(chatId, { afterId, signal: streamSignal, reader }),
     });
     this.#retainedStream = created;
     return created;
@@ -454,6 +464,10 @@ export class CoderLanguageModel implements LanguageModelV4 {
       };
       const chatId = segmentChat.chatId ?? this.#chatId;
       if (chatId !== undefined) settleEvent.chatId = chatId;
+      // Absent when the segment failed before acquiring a stream — never
+      // guessed (a predicted reader could name a connection that never
+      // served this segment; see the field's doc comment).
+      if (segmentChat.reader !== undefined) settleEvent.reader = segmentChat.reader;
       // An abort or timeout can also end the segment through generator
       // return() while suspended at a yield (e.g. the consumer cancels after
       // the abort with no pull pending) — return() runs this finally WITHOUT
@@ -749,6 +763,9 @@ export class CoderLanguageModel implements LanguageModelV4 {
       // abort/timeout detaches this segment without killing the shared socket.
       const stream = this.#acquireStream(action.kind === "resume", chatId, afterId);
       streamAcquired = true;
+      // A resume segment re-attaches to the retained stream, so this is the
+      // ORIGINAL dialing reader's id — segments of one turn share it.
+      if (segmentChat) segmentChat.reader = stream.reader;
       let onSegmentAbort: (() => void) | undefined;
       const segmentAborted: Promise<typeof SEGMENT_ABORTED> | undefined = signal
         ? new Promise((resolve) => {

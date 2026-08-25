@@ -43,7 +43,7 @@ function channel() {
 
 function make() {
   const chan = channel();
-  const stream = new SessionChatStream({ chatId: "chat-1", open: chan.open });
+  const stream = new SessionChatStream({ chatId: "chat-1", reader: 1, open: chan.open });
   return { chan, stream };
 }
 

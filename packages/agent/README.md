@@ -324,19 +324,19 @@ for (const ev of events) {
 `timestamp` (`Date.now()` at observation — comparable to server‑side timestamps
 such as a message's `created_at`, for delivery‑lag measurements):
 
-| event            | when                                                | payload (besides `timestamp`)                                                                                                                                                                         |
-| ---------------- | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `http:request`   | a REST request is sent                              | `id` (correlates the pair), `method`, `path`                                                                                                                                                          |
-| `http:response`  | response headers arrive (incl. non‑2xx, `ok:false`) | `id`, `method`, `path`, `status`, `ok`, `durationMs`                                                                                                                                                  |
-| `http:error`     | the fetch itself rejects (network failure, abort)   | `id`, `method`, `path`, `message`, `durationMs`                                                                                                                                                       |
-| `ws:dial`        | a stream connection attempt starts                  | `chatId`, `attempt` (1‑based, increments per redial), `url`                                                                                                                                           |
-| `ws:open`        | the WebSocket handshake completes                   | `chatId`, `attempt`                                                                                                                                                                                   |
-| `ws:event`       | a decoded stream event arrives                      | `chatId`, `attempt`, `event` (the decoded `ChatStreamEvent`, by reference — don't mutate)                                                                                                             |
-| `ws:close`       | the connection ends (exactly one per dial)          | `chatId`, `attempt`, `code`/`reason` when the server/network closed it; absent when the reader closed it (settle, teardown, redial)                                                                   |
-| `ws:error`       | a socket error or unparseable frame                 | `chatId`, `attempt`, `message`                                                                                                                                                                        |
-| `ws:redial`      | a dropped connection is about to be redialed        | `chatId`, `attempt` (the ended connection), `consecutiveFailures`, `maxConsecutiveFailures`, `backoffMs`                                                                                              |
-| `segment:start`  | a turn segment (one model round‑trip) starts        | `segment` (1‑based per model instance), `chatId` (absent before the first turn creates the chat)                                                                                                      |
-| `segment:settle` | the segment ends (exactly one per start)            | `segment`, `chatId`, `durationMs`, and: `status` + `finishReason` on a clean settle, `error` (`{name, message}`, plus `status` if the run still settled terminally) on failure, neither on a teardown |
+| event            | when                                                | payload (besides `timestamp`)                                                                                                                                                                                                                                                     |
+| ---------------- | --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `http:request`   | a REST request is sent                              | `id` (correlates the pair), `method`, `path`                                                                                                                                                                                                                                      |
+| `http:response`  | response headers arrive (incl. non‑2xx, `ok:false`) | `id`, `method`, `path`, `status`, `ok`, `durationMs`                                                                                                                                                                                                                              |
+| `http:error`     | the fetch itself rejects (network failure, abort)   | `id`, `method`, `path`, `message`, `durationMs`                                                                                                                                                                                                                                   |
+| `ws:dial`        | a stream connection attempt starts                  | `chatId`, `reader` (identifies the `streamChatEvents` call), `attempt` (1‑based per reader, increments per redial), `url`                                                                                                                                                         |
+| `ws:open`        | the WebSocket handshake completes                   | `chatId`, `reader`, `attempt`                                                                                                                                                                                                                                                     |
+| `ws:event`       | a decoded stream event arrives                      | `chatId`, `reader`, `attempt`, `event` (the decoded `ChatStreamEvent`, by reference — don't mutate)                                                                                                                                                                               |
+| `ws:close`       | the connection ends (exactly one per dial)          | `chatId`, `reader`, `attempt`, `code`/`reason` when the server/network closed it; absent when the reader closed it (settle, teardown, redial)                                                                                                                                     |
+| `ws:error`       | a socket error or unparseable frame                 | `chatId`, `reader`, `attempt`, `message`                                                                                                                                                                                                                                          |
+| `ws:redial`      | a dropped connection is about to be redialed        | `chatId`, `reader`, `attempt` (the ended connection), `consecutiveFailures`, `maxConsecutiveFailures`, `backoffMs`                                                                                                                                                                |
+| `segment:start`  | a turn segment (one model round‑trip) starts        | `segment` (1‑based per model instance), `chatId` (absent before the first turn creates the chat)                                                                                                                                                                                  |
+| `segment:settle` | the segment ends (exactly one per start)            | `segment`, `chatId`, `reader` (the reader that served the segment; absent if none was acquired), `durationMs`, and: `status` + `finishReason` on a clean settle, `error` (`{name, message}`, plus `status` if the run still settled terminally) on failure, neither on a teardown |
 
 Semantics worth knowing:
 
@@ -348,8 +348,18 @@ Semantics worth knowing:
   `Coder-Session-Token` header, which is deliberately excluded); `path`/`url`
   never contain credentials.
 - `ws:event` fires at arrival, **before** replay dedup: after a redial, chatd's
-  replay of the in‑progress episode is visible here (correlate with `attempt`)
+  replay of the in‑progress episode is visible here (correlate with `reader`/`attempt`)
   even though the reader suppresses the duplicates it forwards to the turn.
+- Every `ws:*` event carries `reader` — a monotonic id for the
+  `streamChatEvents` call (reader) behind the connection, allocated from one
+  process‑wide counter so it stays unique across model and client instances.
+  `attempt` restarts at 1 per reader, so identify a connection as
+  `(chatId, reader, attempt)`, never `(chatId, attempt)` alone: a client‑tool
+  pause the caller abandons is closed fire‑and‑forget when the next turn dials
+  its replacement, and the superseded reader's late `ws:close` (or a raced‑in
+  frame) can emit after the new reader's `ws:dial` — the reader id is what
+  tells them apart. `segment:settle` names the reader that served the segment;
+  `segment:start` predates stream acquisition and carries none.
 - A multi‑step turn that drives client tools emits one `segment:start`/
   `segment:settle` pair per round‑trip, all riding **one** `ws:dial`ed
   connection — the stream is retained across `requires_action` pauses. A pause

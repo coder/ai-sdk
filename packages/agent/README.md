@@ -986,13 +986,15 @@ try {
   await runTurn(workflowId, prompt);
 } catch (err) {
   if (err instanceof CoderChatError && err.retryable) {
-    // Timeout or transient turn failure. The run was interrupted (best-effort),
-    // the chat survives — fail the step and let the engine retry it.
+    // Timeout or transient turn failure. The run was interrupted (best-effort)
+    // and the chat survives — but a re-run resubmits the prompt as a new user
+    // turn: retry only steps designed to tolerate that (below).
   } else if (err instanceof CoderStreamError) {
     // Redial budget exhausted (~15s without forward progress). On a resumed
     // chat this is never auto-retried — the retry decision is yours (below).
   } else if (err instanceof CoderApiError) {
-    // Non-transient: expired token, archived/deleted chat, … Fail the workflow.
+    // Branch on err.status: back off and retry 408/429/5xx; fail the workflow
+    // on the rest (expired token, archived/deleted chat, …).
   }
   throw err;
 }
@@ -1000,8 +1002,14 @@ try {
 
 - **`CoderChatError` with `retryable: true`** — the segment's
   `requestTimeoutMs` expired (`kind: "timeout"`) or the turn failed
-  transiently (`kind: "stream_closed"`, an upstream 5xx). Rethrow and let the
-  engine re‑run the step.
+  transiently (`kind: "stream_closed"`, an upstream 5xx). `retryable`
+  classifies the _failure_ as transient — it does not make a re‑run free.
+  Unlike the guarded `CoderStreamError` path below, the session is **not**
+  discarded: the retried step reloads the checkpointed chat id and resubmits
+  the same prompt as a new user turn, with the aborted attempt's partial
+  output in history and any tool effects that ran before the failure not
+  undone. The same idempotency judgment as below applies — retry steps
+  designed to tolerate re‑submission; reconcile first when they aren't.
 - **`CoderStreamError`** (an AI SDK `APICallError`) — the stream could not be
   re‑established. `isRetryable: true` only when the failed turn had just
   created its chat _and_ had no external effects a replay would repeat (no
@@ -1013,8 +1021,12 @@ try {
   sees its own aborted attempt), and any workspace/MCP tool effects that ran
   before the drop are not undone. That judgment call belongs to your workflow,
   which is exactly why it isn't automatic.
-- **`CoderApiError`** — non‑transient HTTP failure (expired token, archived or
-  deleted chat). A retry hits the same wall; fail the workflow.
+- **`CoderApiError`** — an HTTP request failed; every non‑2xx wraps in this
+  error, so branch on `status` before deciding. Rate limiting and transient
+  server failures (408, 429, 5xx) deserve backoff and a step retry (with the
+  same re‑submission caveat as above). Auth failures and archived/deleted
+  chats (401/403/404, the archived‑chat 400) hit the same wall on every
+  attempt — fail the workflow.
 
 ### Recover after a crash
 
@@ -1145,8 +1157,8 @@ export async function archiveWorkflowChat(workflowId: string): Promise<void> {
 - Persist `agent.chatId` (a string) — never the instance, never the token.
 - Bound every step: `requestTimeoutMs` per segment, an abort deadline for
   total wall‑clock.
-- Let redials self‑heal; own the retry decision for `CoderStreamError` on
-  resumed chats.
+- Let redials self‑heal; own every retry decision — a re‑run step resubmits
+  its prompt as a new user turn.
 - Keep concurrent steps' fan‑out within workspace quota —
   [Workspaces & quota](#workspaces--quota).
 - Steps that don't need server‑side tools (plan / extract / synthesize) are

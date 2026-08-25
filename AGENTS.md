@@ -46,6 +46,14 @@ Gotchas:
   `gh pr merge` lacks queue support, use GraphQL `enqueuePullRequest`.
 - The single required status check is the aggregate `Required` job in
   `ci.yml`; it also runs in the merge queue (`merge_group`).
+- **Branch names must not collide with issue-tracker IDs.** When a branch
+  references a GitHub issue number, write it as `issue-<number>` (e.g.
+  `issue-1234-retry-timeout`), not as a bare `<word>-<number>` (`docs-1234`,
+  `api-1234`) or a leading number. Connected trackers (e.g. Linear) auto-link
+  any branch containing a `<key>-<number>` token to the same-numbered issue on
+  the team that owns `<key>`, which silently attaches the PR to an unrelated
+  ticket and moves it through that ticket's workflow. The `issue-` prefix keeps
+  the reference readable and avoids the match.
 
 ## Review protocol
 

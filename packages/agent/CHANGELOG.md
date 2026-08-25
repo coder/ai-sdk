@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.7.2](https://github.com/coder/ai-sdk/compare/agent-v0.7.1...agent-v0.7.2) (2026-08-25)
+
+A maintenance release for the agent package with no user-facing changes.
+
 ## [0.7.1](https://github.com/coder/ai-sdk/compare/agent-v0.7.0...agent-v0.7.1) (2026-08-25)
 
 Documentation updates covering attempt-scoped journaling, send write-ahead behavior, and client-tool text handling during crash recovery.

@@ -1009,7 +1009,7 @@ try {
     // Redial budget exhausted (~15s without forward progress). On a resumed
     // chat this is never auto-retried — the retry decision is yours (below).
   } else if (err instanceof CoderApiError) {
-    // Branch on err.status: back off and retry 408/429/5xx; fail the workflow
+    // Branch on err.status: back off and retry 408/425/429/5xx; fail the workflow
     // on the rest (expired token, archived/deleted chat, …).
   }
   throw err;
@@ -1025,8 +1025,13 @@ try {
   checkpoint above is what makes this hold even when the _first_ step fails
   after creating its chat) and resubmits the same prompt as a new user turn,
   with the aborted attempt's partial output in history and any tool effects
-  that ran before the failure not undone. The same idempotency judgment as below applies — retry steps
-  designed to tolerate re‑submission; reconcile first when they aren't.
+  that ran before the failure not undone. The same idempotency judgment as
+  below applies — retry steps designed to tolerate re‑submission; reconcile
+  first when they aren't. And don't resubmit _immediately_: the expiry's
+  server interrupt is asynchronous and best‑effort, so the timed‑out run may
+  still be committing — run the same interrupt‑and‑wait‑for‑terminal‑status
+  recovery as after a crash (below) before the retry, or its trailing output
+  is absorbed into the retried turn.
 - **`CoderStreamError`** (an AI SDK `APICallError`) — the stream could not be
   re‑established. `isRetryable: true` only when the failed turn had just
   created its chat _and_ had no external effects a replay would repeat (no
@@ -1047,8 +1052,8 @@ try {
   which is exactly why it isn't automatic.
 - **`CoderApiError`** — an HTTP request failed; every non‑2xx wraps in this
   error, so branch on `status` before deciding. Rate limiting and transient
-  server failures (408, 429, 5xx) deserve backoff and a step retry (with the
-  same re‑submission caveat as above). Auth failures and archived/deleted
+  server failures (408, 425, 429, 5xx) deserve backoff and a step retry (with
+  the same re‑submission caveat as above). Auth failures and archived/deleted
   chats (401/403/404, the archived‑chat 400) hit the same wall on every
   attempt — fail the workflow.
 

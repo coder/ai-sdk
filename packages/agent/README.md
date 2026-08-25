@@ -1032,9 +1032,10 @@ try {
   still be committing — run the same interrupt‑and‑wait‑for‑terminal‑status
   recovery as after a crash (below) before the retry, or its trailing output
   is absorbed into the retried turn. A timed‑out run can also have _finished_
-  after the expiry — the recovery's
-  [result check](#recover-the-result-before-resubmitting) decides between
-  recovering and resubmitting.
+  before that interrupt landed — but because the interrupt was already fired,
+  the recovery's [result check](#recover-the-result-before-resubmitting)
+  must treat the attempt as cut short (pin `cutShort` there) rather than
+  trusting its own 409.
 - **`CoderStreamError`** (an AI SDK `APICallError`) — the stream could not be
   re‑established. `isRetryable: true` only when the failed turn had just
   created its chat _and_ had no external effects a replay would repeat (no
@@ -1206,8 +1207,16 @@ for (const call of pending) {
     // answered and nothing re-executes.
     results.push({ tool_call_id: call.tool_call_id!, output: entry.output });
   } else if (entry) {
-    // "committing": re-drive the effect under the SAME idempotency key (a
-    // committed effect replays as a no-op), write it "done", submit it too.
+    // "committing" is ambiguous — the crash hit between the write-ahead and
+    // "done". Safe to re-drive: the SAME idempotency key makes a committed
+    // effect replay as a no-op, and the call's args are committed in history.
+    const { amountCents } = call.args as { amountCents: number };
+    const { receiptId } = await payments.charge(amountCents, {
+      idempotencyKey: call.tool_call_id!,
+    });
+    const output = `charged: receipt ${receiptId}`;
+    await ledger.set(call.tool_call_id!, { state: "done", output });
+    results.push({ tool_call_id: call.tool_call_id!, output });
   } else {
     unstarted = true; // the tool never ran — interrupting loses nothing
   }
@@ -1274,13 +1283,19 @@ if (submitted && !cutShort && status !== "error") {
 // its own aborted attempt in history and continues from it).
 ```
 
-- **`cutShort` is the completed/interrupted discriminator.** An interrupted
-  attempt leaves the same marker and a truncated answer in history, so history
-  alone can't tell "finished" from "stopped". An accepted interrupt means the
-  attempt was cut short; a 409 plus a non‑`error` settle means it finished.
-  If a recovery pass can itself crash between its interrupt and the resubmit,
-  journal the interrupt in the durable store first (write‑ahead, like the
-  tool ledger) and treat a journaled attempt as cut short.
+- **`cutShort` is the completed/interrupted discriminator — but a 409 only
+  proves nothing is running _now_.** An interrupted attempt leaves the same
+  marker and a truncated answer in history, so history alone can't tell
+  "finished" from "stopped"; what can is whether any interrupt stopped the
+  run. The inference "409 ⇒ the attempt finished" is therefore sound only
+  when recovery's interrupt is the _first_ one that could have: true after a
+  hard crash, false after a `requestTimeoutMs` expiry — the expiry already
+  fired the SDK's own best‑effort interrupt, which may have stopped the run
+  before recovery ever looked. Carry the reason recovery ran: when it follows
+  a known timeout or abort — or a journaled earlier interrupt (write‑ahead,
+  like the tool ledger, if the recovery pass can itself crash between its
+  interrupt and the resubmit) — pin `cutShort` to `true` and let only the
+  hard‑crash path trust the 409.
 - **Steps with structured results recover them the same way** — a
   [structured output](#structured-output) step's answer is the
   `structured_output` call's typed input, which rehydrates as a

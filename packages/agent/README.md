@@ -1115,12 +1115,12 @@ checkpoint:
   ```ts
   // Both shared with "Make client tools crash-safe" (below): the ledger
   // reconciliation resolves to its `unstarted` — true only when it fell back
-  // to interrupting — and journals the chat BEFORE submitting results, so a
-  // recovery pass that dies mid-recovery is visible to the next one.
+  // to interrupting — and journals each action write-ahead, so a recovery
+  // pass that dies mid-recovery is visible — and classifiable — to the next.
   declare function reconcileClientTools(): Promise<boolean>;
   declare const journal: {
-    has(chatId: string): Promise<boolean>;
-    set(chatId: string): Promise<void>;
+    get(chatId: string): Promise<"resumed" | "cut-short" | undefined>;
+    set(chatId: string, state: "resumed" | "cut-short"): Promise<void>;
   };
 
   // Bounded: a stalled deployment must fail the step, not hang it.
@@ -1129,6 +1129,7 @@ checkpoint:
   // below: a 409 means there was nothing to stop.
   let cutShort = true;
   let { status } = await agent.client.getChat(agent.chatId!, deadline);
+  const journaled = await journal.get(agent.chatId!);
   if (status === "requires_action") {
     // The crash hit a client tool mid-execution: this pause is the only
     // pending record of its committed effects. Never interrupt it away —
@@ -1136,13 +1137,16 @@ checkpoint:
     // (reviving the run — nothing was cut short) or interrupts itself only
     // when nothing committed.
     cutShort = await reconcileClientTools();
-  } else if (await journal.has(agent.chatId!)) {
-    // A previous recovery pass revived this run by submitting the recorded
-    // results, then died before it settled. Interrupting now would cut down
-    // a run doing the step's work — and its resubmitted prompt would mint
-    // NEW tool-call ids, sidestepping the idempotency keys. Let it finish;
-    // nothing was cut short.
-    cutShort = false;
+  } else if (journaled) {
+    // A previous recovery pass acted on this chat, then died before the
+    // step's result was recorded. Its journaled state is the verdict:
+    // "resumed" — it revived the run by submitting recorded results;
+    // interrupting now would cut down a run doing the step's work, and the
+    // resubmitted prompt would mint NEW tool-call ids, sidestepping the
+    // idempotency keys. Let it finish; nothing was cut short.
+    // "cut-short" — it went on to interrupt (an unstarted sibling in the
+    // batch); the attempt is truncated, so the check below must resubmit.
+    cutShort = journaled === "cut-short";
   } else {
     await agent.interrupt({ signal: deadline }).catch((err) => {
       if (err instanceof CoderApiError && err.status === 409) cutShort = false;
@@ -1287,10 +1291,16 @@ if (results.length > 0) {
   // and a recovery pass that dies after this line must not let the NEXT
   // pass interrupt the revived run. Clear the journal entry only once the
   // step's result is finally recorded.
-  await journal.set(agent.chatId!);
+  await journal.set(agent.chatId!, "resumed");
   await agent.client.submitToolResults(agent.chatId!, { results }, deadline);
 }
-if (unstarted) await agent.client.interruptChat(agent.chatId!, deadline);
+if (unstarted) {
+  // Also write-ahead — and it OVERWRITES a mixed batch's "resumed": once
+  // this interrupt lands the attempt is truncated, and a journal still
+  // saying "resumed" would make the next pass recover it as finished.
+  await journal.set(agent.chatId!, "cut-short");
+  await agent.client.interruptChat(agent.chatId!, deadline);
+}
 // As `reconcileClientTools()` in the settle-wait snippet above: resolve to
 // `unstarted` — cutShort is true only when this fell back to interrupting.
 ```

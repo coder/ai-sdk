@@ -690,8 +690,9 @@ diagnose a chat that is stuck.
   created chat's `workspace_id` and treats the chat as workspace‑backed from
   then on (which matters for retry ownership, below).
 - **Chat cleanup does not release the workspace.** `archive()` soft‑hides the
-  chat only; the workspace keeps running — and consuming quota — until template
-  autostop or an explicit stop.
+  chat only; the workspace keeps running until template autostop or an explicit
+  stop — and stopping releases only stop‑scoped quota; persistent resources
+  (disks, volumes) keep consuming their cost until the workspace is deleted.
 
 ### Sizing a fleet
 

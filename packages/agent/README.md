@@ -1045,10 +1045,14 @@ try {
 A hard crash (OOM kill, host loss) runs no `finally` blocks. Reason from the
 checkpoint:
 
-- **Crashed before the turn created its chat** — nothing exists server‑side;
-  the retried step creates a fresh chat. (A `requestTimeoutMs` expiry this
-  early behaves the same: `agent.chatId` is still `undefined` and the
-  checkpoint stays empty.)
+- **Crashed with an empty checkpoint** — usually nothing exists server‑side
+  and the retried step just creates a fresh chat. But an empty checkpoint is
+  not proof of nothing: a crash or `requestTimeoutMs` expiry while the create
+  request was _in flight_ can leave a chat the server committed but whose id
+  never arrived — unreachable even by the SDK's own interrupt. Treat "no
+  checkpoint" as _at most one unacknowledged chat may exist_, not as a clean
+  slate; the reconciliation sweep below is what retires it (and its
+  workspace/MCP effects, if the deployment auto‑attached any).
 - **Crashed after creation, before the checkpoint** — the chat is orphaned:
   its run keeps generating until it settles on its own — or, if the crash hit
   one of your client tools, never settles: it stays paused in
@@ -1137,8 +1141,10 @@ best‑effort.
 
 Two workflow‑specific notes:
 
-- A turn that times out (or crashes) before its chat exists leaves nothing to
-  resume — the checkpoint stays empty and the retried step starts fresh.
+- A turn that times out (or crashes) before its chat id arrived leaves nothing
+  to _resume_ — the checkpoint stays empty and the retried step starts fresh —
+  but possibly an unacknowledged chat to sweep (see
+  [Recover after a crash](#recover-after-a-crash)).
 - `requestTimeoutMs` bounds each _segment_; a turn driving client tools runs
   several. Cap a step's total wall‑clock with
   `abortSignal: AbortSignal.timeout(…)` —

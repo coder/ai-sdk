@@ -668,16 +668,154 @@ credentials — pass them alongside `client` if you construct one yourself.
 ## Workspaces & quota
 
 A `CoderAgent` is one server‑side chat, and — depending on its configuration and
-the deployment — a chat may provision a **Coder workspace** to run its tools. A
-deployment caps how many workspaces an account may run at once, so **N agents
-running concurrently can need N free workspace slots.** Past the cap, a turn can
-sit unscheduled and never settle. This is the most important operational fact when
-running many agents at once:
+the deployment — a chat may be backed by a **Coder workspace** that runs its
+tools. Workspaces are the scarce resource: a deployment budgets how many an
+account may run at once, so **N agents running concurrently can need N
+schedulable workspaces.** Past that bound, a turn can sit unscheduled and never
+settle. This section is the operational guide for running fleets of agents:
+how the binding works, how to size concurrency, what to clean up, and how to
+diagnose a chat that is stuck.
 
-- Keep your own concurrency below the deployment's workspace limit.
-- Set `requestTimeoutMs` so an unschedulable turn fails loudly instead of hanging.
-- `archive()` / `await using` each agent so finished chats stop holding resources.
-- For steps that don't need server‑side tools, prefer the provider — it never touches a workspace.
+### How a chat binds to a workspace
+
+- **One chat, at most one workspace, fixed at creation.** `workspaceId` is sent
+  as `workspace_id` when the chat is created; nothing can rebind it afterwards —
+  message and update requests carry no workspace field. To move work to another
+  workspace, start a new agent/chat.
+- **This SDK never provisions workspaces.** A `workspaceId` you pass must be an
+  existing workspace (provision one with
+  [`@coder/ai-sdk-sandbox`](../sandbox)'s `ensureCoderWorkspace`, the CLI, or
+  the v2 API). A chat created _without_ `workspaceId` can still come back
+  workspace‑backed — deployments may assign one server‑side; the SDK reads the
+  created chat's `workspace_id` and treats the chat as workspace‑backed from
+  then on (which matters for retry ownership, below).
+- **Chat cleanup does not release the workspace.** `archive()` soft‑hides the
+  chat only; the workspace keeps running until template autostop or an explicit
+  stop — and stopping releases only stop‑scoped quota; persistent resources
+  (disks, volumes) keep consuming their cost until the workspace is deleted.
+
+### Sizing a fleet
+
+The structural rule: **workspaces that must be running concurrently ≤
+schedulable workspaces.** With one workspace per chat — the common fleet shape,
+and what a deployment that auto‑assigns workspaces produces — that means
+concurrent chats ≤ schedulable workspaces. Chats explicitly bound to a shared
+`workspaceId` count that workspace once, so their concurrency is not
+quota‑bound — at the price of sharing one filesystem and tool environment,
+which is only acceptable within a single tenant / trust boundary.
+What counts as "schedulable" is a deployment property, not an SDK knob —
+whichever of these binds first:
+
+- **Workspace quota (premium deployments).** Templates declare per‑resource
+  costs; a user's budget is the sum of their groups' quota allowances, enforced
+  when a workspace build starts or stops. A start that would exceed the budget
+  **fails the build** (error code `INSUFFICIENT_QUOTA`, "insufficient quota"),
+  so the turn never gets its workspace — see
+  [resource quotas](https://coder.com/docs/admin/users/quotas). Note that a
+  _stopped_ workspace typically still consumes its persistent resources' cost,
+  so a fleet that only ever stops (never deletes) scratch workspaces converges
+  on a full budget.
+- **Infrastructure.** Without quotas there is no per‑user workspace limit by
+  default ([workspace lifecycle](https://coder.com/docs/user-guides/workspace-lifecycle)) —
+  the bound is provisioner throughput and cluster capacity, and exceeding it
+  looks like slow or failing builds rather than a crisp quota error.
+
+Practical sizing:
+
+- Read headroom before fanning out:
+  `GET /api/v2/organizations/{org}/members/{user}/workspace-quota` returns
+  `{ "credits_consumed": …, "budget": … }`. Quota is denominated in credits,
+  not slots: admit another workspace only while `budget − credits_consumed`
+  covers _that workspace's_ cost (the sum of its template's `daily_cost`
+  declarations). "Free slots = headroom ÷ cost" only holds for a homogeneous
+  fleet on one template; with mixed templates, size against each planned
+  workspace's own cost.
+- Keep fan‑out width within that headroom and queue the rest client‑side — an
+  unschedulable turn does not queue usefully on the server (see
+  [Preventing stuck turns](#preventing-stuck-turns)).
+- Reuse one bound workspace across sequential turns and sessions instead of
+  provisioning per request — the workspace is the expensive part, the chat is
+  cheap. Reuse only **within one tenant / trust boundary**: workspace‑bound
+  agents have file and shell tools, so a reused filesystem carries one
+  session's artifacts (and secrets) into the next — provision per tenant, or
+  securely reset a workspace before reassigning it.
+- Steps that don't need server‑side tools belong on the
+  [provider](../provider) — it never touches a workspace.
+
+### Autostop & cleanup
+
+Two lifetimes to manage, separately:
+
+- **Chats** — `archive()` / `await using` every agent ([Cleanup](#cleanup)), or
+  finished chats keep holding server resources.
+- **Workspaces** — rely on template‑level scheduling rather than manual
+  hygiene:
+  - **Autostop TTL.** Give fleet templates a default TTL long enough to survive
+    a normal session (including idle gaps between turns), short enough that a
+    leaked workspace stops burning running‑cost within hours — without
+    autostop, a leaked workspace pins its full quota until someone notices.
+    Note that stopping only releases the quota of resources that go away on
+    stop; persistent resources (disks, volumes) keep consuming their
+    `daily_cost`, so a scratch fleet that only ever stops still converges on a
+    full budget — pair the TTL with dormancy auto‑deletion or explicit
+    deletion. With [`@coder/ai-sdk-sandbox`](../sandbox), `stopAfter: "8h"`
+    sets the TTL (`ttl_ms`) at creation.
+  - **Activity bump** (default 1 h) extends a running workspace's deadline when
+    Coder detects sessions — check
+    [what counts as activity](https://coder.com/docs/user-guides/workspace-scheduling)
+    before assuming an agent's server‑side tool use keeps its workspace alive.
+  - **Dormancy / failure cleanup** reap abandoned and repeatedly‑failing
+    workspaces automatically — see
+    [template scheduling](https://coder.com/docs/admin/templates/managing-templates/schedule).
+
+### Preventing stuck turns
+
+The signature failure mode of an over‑committed fleet: the chat is created, the
+stream opens, and then — nothing. There is **no distinct "quota exceeded" error
+kind on the chat stream**; a chat whose workspace can't be scheduled surfaces
+either a generic turn error or, worse, a chat that sits in a non‑terminal
+status indefinitely. Defend in this order:
+
+1. **Set `requestTimeoutMs` — always, in fleets.** It is unbounded by default.
+   On expiry the call rejects with a `CoderChatError` (`kind: "timeout"`,
+   `retryable: true`) so your dispatcher gets its slot back, and a server‑side
+   interrupt is fired **best‑effort** — fire‑and‑forget, and unreachable when
+   the timeout lands before chat creation returned an id — so the run usually
+   stops, but is not guaranteed released ([Timeouts](#timeouts--cancellation)).
+   Pair it with reconciliation: periodically sweep for non‑terminal chats older
+   than your budget and interrupt/archive them.
+2. **Cap total wall‑clock** with `abortSignal: AbortSignal.timeout(…)` —
+   `requestTimeoutMs` bounds each segment, not a whole multi‑tool call.
+3. **Own the retries.** Workspace‑backed turns are **never auto‑retried**: the
+   SDK marks a stream‑loss error `isRetryable` only when the failed turn
+   created its chat _and_ had no workspace, no MCP servers, and no fresh
+   uploads ([Timeouts](#timeouts--cancellation)). Your dispatcher owns the
+   retry decision — and should re‑check quota headroom first, or it re‑queues
+   into the same wall.
+4. **Watch the fleet.** [`watchChats`](#watching-chats) yields status changes
+   for every chat **visible to the authenticated user** — with chats spread
+   across per‑tenant credentials, run one watcher per identity (or watch with
+   a credential that can see them all). Alert on chats sitting in a
+   non‑terminal status (e.g. `pending`) longer than your `requestTimeoutMs`.
+   Events alone aren't a complete monitor: reconnects resubscribe fresh (no
+   cursor or replay), so a chat already stuck before the watcher started — or
+   one that transitioned during a gap — never emits an event to start your
+   timer from. Seed and periodically reconcile against a chat listing
+   (`GET /api/experimental/chats`) instead of trusting the event stream alone.
+
+### Troubleshooting: unschedulable & stuck chats
+
+Wire [`onTransportEvent`](#observability) into fleet telemetry — the event
+sequence pinpoints _where_ a turn died:
+
+| symptom (transport events)                                                                                                                                                                          | likely cause                                                                                                                                                                                                                                                                                                 | fix                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `segment:start` and `ws:open` fired, initial status events, then silence — no `message_part`, no `segment:settle`                                                                                   | if the chat's status is `pending` (or its workspace build is `pending`/`failed`): the workspace can't be scheduled — quota exhausted, no free provisioner, failing template. If the status is `running` with a healthy build, it may just be a slow model/tool step — silence alone doesn't prove scheduling | check quota headroom (`workspace-quota` endpoint) and the workspace's build — a quota failure logs `INSUFFICIENT_QUOTA`; reclaim enough _credits_ for the planned build (stopping helps only for stop‑scoped costs — delete workspaces to reclaim persistent costs, or raise the group allowance) and set `requestTimeoutMs` so this fails loudly next time                                                               |
+| `segment:settle` carries `error: { name: "CoderChatError", message: "…requestTimeoutMs budget…" }`                                                                                                  | the per‑segment bound expired — wedged server, slow model, or an unschedulable workspace                                                                                                                                                                                                                     | inspect the workspace via the v2 API/UI: a `pending`/`failed` build means the row above; `running` means the turn was genuinely slow — raise `requestTimeoutMs` for long tool work                                                                                                                                                                                                                                        |
+| repeated `ws:redial` with `consecutiveFailures` climbing toward `maxConsecutiveFailures` (5; backoff 1 s → 2 s → 4 s → 8 s, ≈15 s of redialing without forward progress), then a `CoderStreamError` | the network path to the deployment is failing — not workspace scheduling (the server keeps generating through short gaps)                                                                                                                                                                                    | fix connectivity; mind retry ownership above — on workspace‑backed chats the error is `isRetryable: false`, so the replay decision is yours                                                                                                                                                                                                                                                                               |
+| `segment:settle` with `status: "error"` and an `error` payload                                                                                                                                      | the turn failed server‑side — a provider/model error, a tool failure, or a scheduling/build failure that terminated the turn instead of leaving it pending                                                                                                                                                   | the settle event's `error` carries only `{ name, message }` — branch on `kind` / `retryable` / `statusCode` by catching the thrown `CoderChatError`: at the `generate()` call site, or — for `stream()` — around stream consumption, since mid‑stream failures surface on the stream, not from `await agent.stream()` ([Handling errors](#handling-errors)); check the workspace build state to rule scheduling in or out |
+| turn settled `status: "requires_action"`, follow‑up messages queue forever                                                                                                                          | the loop ended on an unanswered client tool call                                                                                                                                                                                                                                                             | submit the stranded results or interrupt — see rule 4 under [Structured output](#structured-output)                                                                                                                                                                                                                                                                                                                       |
+| `archive()` keeps returning 409 and rethrows after ~15 s                                                                                                                                            | the chat never settled server‑side — usually a stuck run still holding its workspace                                                                                                                                                                                                                         | `interrupt()` with a bounded signal, then re‑archive; if the run stays wedged, stop the workspace itself                                                                                                                                                                                                                                                                                                                  |
 
 ## Configuration
 

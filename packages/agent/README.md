@@ -1072,10 +1072,11 @@ checkpoint:
   optional in this pattern. (To shrink the window, checkpoint eagerly from the
   first `ws:dial` transport event — it carries the chat id as soon as the chat
   exists — but then the checkpoint's lifecycle is yours too: the retried step
-  resumes a chat holding a dead half‑turn, and on a retryable
-  `CoderStreamError` — which discards only the SDK's in‑memory session — you
-  must clear the eagerly checkpointed id yourself, or the "starts clean on a
-  fresh chat" promise above silently turns into resuming the dead one.)
+  resumes a chat holding a dead half‑turn, and whenever a `CoderStreamError`
+  killed a chat this step created — retryable or not: the SDK discards every
+  such session, but only in memory — you must clear the eagerly checkpointed
+  id yourself before any retry, or "starts fresh after a discard" silently
+  turns into resuming the dead chat.)
 - **Crashed after the checkpoint** — the normal resume path, with two
   wrinkles. The crashed attempt's run may still be live server‑side: the
   resumed turn's message queues behind it and starts once it settles, all

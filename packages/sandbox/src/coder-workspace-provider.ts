@@ -240,8 +240,6 @@ export function createCoderWorkspace(settings: CoderWorkspaceSettings): HarnessV
   return {
     specificationVersion: "harness-sandbox-v1",
     providerId: CODER_WORKSPACE_PROVIDER_ID,
-    // `bridgePorts` intentionally left undefined: this provider binds one
-    // workspace per session rather than leasing ports from a shared sandbox.
     createSession: async (options) => {
       const workspace = resolveWorkspace(options?.sessionId);
       const { session, createdByProvider } = await buildSession(workspace, options?.abortSignal);

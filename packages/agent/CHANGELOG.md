@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.1](https://github.com/coder/ai-sdk/compare/agent-v0.7.0...agent-v0.7.1) (2026-08-25)
+
+Documentation updates covering attempt-scoped journaling, send write-ahead behavior, and client-tool text handling during crash recovery.
+
+### Highlights
+
+- Expanded crash-recovery documentation detailing attempt-scoped journaling, send write-ahead, and client-tool text cut behavior. ([#97](https://github.com/coder/ai-sdk/pull/97))
+
+### Documentation
+
+* **agent:** attempt-scoped journal, send write-ahead, and client-tool text cut in crash recovery ([#97](https://github.com/coder/ai-sdk/issues/97)) ([1cf3291](https://github.com/coder/ai-sdk/commit/1cf32915f4d49af1b1bcd35aa4a5539af28df93e))
+
 ## [0.7.0](https://github.com/coder/ai-sdk/compare/agent-v0.6.3...agent-v0.7.0) (2026-08-25)
 
 Adds a monotonic reader id stamped onto ws:* transport events, giving consumers a reliable way to order and correlate WebSocket transport events.

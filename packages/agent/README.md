@@ -1113,9 +1113,15 @@ checkpoint:
   409 `CoderApiError`; that's the good case — ignore it:
 
   ```ts
-  // The ledger reconciliation from "Make client tools crash-safe" (below);
-  // resolves to its `unstarted` — true only when it fell back to interrupting.
+  // Both shared with "Make client tools crash-safe" (below): the ledger
+  // reconciliation resolves to its `unstarted` — true only when it fell back
+  // to interrupting — and journals the chat BEFORE submitting results, so a
+  // recovery pass that dies mid-recovery is visible to the next one.
   declare function reconcileClientTools(): Promise<boolean>;
+  declare const journal: {
+    has(chatId: string): Promise<boolean>;
+    set(chatId: string): Promise<void>;
+  };
 
   // Bounded: a stalled deployment must fail the step, not hang it.
   const deadline = AbortSignal.timeout(15_000);
@@ -1130,14 +1136,25 @@ checkpoint:
     // (reviving the run — nothing was cut short) or interrupts itself only
     // when nothing committed.
     cutShort = await reconcileClientTools();
+  } else if (await journal.has(agent.chatId!)) {
+    // A previous recovery pass revived this run by submitting the recorded
+    // results, then died before it settled. Interrupting now would cut down
+    // a run doing the step's work — and its resubmitted prompt would mint
+    // NEW tool-call ids, sidestepping the idempotency keys. Let it finish;
+    // nothing was cut short.
+    cutShort = false;
   } else {
     await agent.interrupt({ signal: deadline }).catch((err) => {
       if (err instanceof CoderApiError && err.status === 409) cutShort = false;
       else throw err;
     });
   }
+  // The 15 s interrupt bound must not cap what follows: a reconciled pause
+  // revives a full model/tool continuation. Budget the settle poll — and the
+  // history reads after it — on the turn scale, like the step itself.
+  const settle = AbortSignal.timeout(600_000);
   do {
-    ({ status } = await agent.client.getChat(agent.chatId!, deadline));
+    ({ status } = await agent.client.getChat(agent.chatId!, settle));
     if (status === "waiting" || status === "completed" || status === "error") break;
     // With no accepted interrupt racing to clear it, requires_action is a
     // STABLE pause: a run resumed by submitted tool results called a NEW
@@ -1265,7 +1282,14 @@ for (const call of pending) {
     unstarted = true; // the tool never ran — interrupting loses nothing
   }
 }
-if (results.length > 0) await agent.client.submitToolResults(agent.chatId!, { results }, deadline);
+if (results.length > 0) {
+  // Write-ahead, like the ledger: an accepted submission revives the run,
+  // and a recovery pass that dies after this line must not let the NEXT
+  // pass interrupt the revived run. Clear the journal entry only once the
+  // step's result is finally recorded.
+  await journal.set(agent.chatId!);
+  await agent.client.submitToolResults(agent.chatId!, { results }, deadline);
+}
 if (unstarted) await agent.client.interruptChat(agent.chatId!, deadline);
 // As `reconcileClientTools()` in the settle-wait snippet above: resolve to
 // `unstarted` — cutShort is true only when this fell back to interrupting.
@@ -1318,15 +1342,11 @@ import { chatMessagesToUIMessages } from "@coder/ai-sdk-agent";
 // truncated read, or this recovery resubmits exactly the turn it was meant
 // to deduplicate.
 const fetched = [];
-let page = await agent.client.getMessages(agent.chatId!, { limit: 200 }, deadline);
+let page = await agent.client.getMessages(agent.chatId!, { limit: 200 }, settle);
 fetched.push(...page.messages);
 while (!fetched.some((m) => m.role === "user") && page.has_more) {
   const oldestId = Math.min(...fetched.map((m) => m.id));
-  page = await agent.client.getMessages(
-    agent.chatId!,
-    { before_id: oldestId, limit: 200 },
-    deadline,
-  );
+  page = await agent.client.getMessages(agent.chatId!, { before_id: oldestId, limit: 200 }, settle);
   fetched.push(...page.messages);
 }
 const transcript = chatMessagesToUIMessages(fetched); // chronological

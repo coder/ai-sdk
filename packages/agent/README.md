@@ -1210,9 +1210,15 @@ checkpoint:
   // requestTimeoutMs past the write is the conservative horizon, and a
   // restart has usually consumed it already — so a late-landing turn starts
   // before the settle poll below and the next section's negative history
-  // read is past the window.
+  // read is past the window. Then recount: a send that never landed OVER AN
+  // EXISTING attempt pins cutShort — the step only ever plans a resubmission
+  // over a cut-short, errored, or unsubmitted attempt, so the write-ahead
+  // that superseded a "cut-short" verdict still carries its consequence, and
+  // the scan below cannot mistake the old attempt's truncated tail for a
+  // finished result.
   if (journaled?.state === "submitting") {
     await new Promise((r) => setTimeout(r, Math.max(0, journaled.at + 300_000 - Date.now())));
+    if ((await markerAttempts()) === journaled.attempt && journaled.attempt > 0) cutShort = true;
   }
   // The 15 s interrupt bound must not cap what follows: a reconciled pause
   // revives a full model/tool continuation. Budget the settle poll — and the
@@ -1415,9 +1421,12 @@ process:
 const marker = `[${workflowId}/step-2]`; // stable across this step's retries
 // Write-ahead, BEFORE the send — first attempt and recovery resubmit alike.
 // A crash before this write proves no send ever started; a crash after it
-// leaves a dated entry whose commit window the settle-wait sleeps out. A
-// first turn has no chat id to journal under: its send-crash window belongs
-// to the empty-checkpoint sweep ("Recover after a crash").
+// leaves a dated entry whose commit window the settle-wait sleeps out. On a
+// resubmission this write supersedes the "cut-short" verdict it acts on —
+// safely: an unlanded send over an existing attempt makes the settle-wait
+// pin cutShort right back. A first turn has no chat id to journal under: its
+// send-crash window belongs to the empty-checkpoint sweep
+// ("Recover after a crash").
 if (agent.chatId) {
   await journal.set(agent.chatId, {
     state: "submitting",
@@ -1486,9 +1495,10 @@ if (submitted && !cutShort && (status === "waiting" || status === "completed")) 
   hard crash, false after a `requestTimeoutMs` expiry — the expiry already
   fired the SDK's own best‑effort interrupt, which may have stopped the run
   before recovery ever looked. Carry the reason recovery ran: when it follows
-  a known timeout or abort — or a matching journaled `"cut-short"` (the
-  settle‑wait consult already re‑drives those) — pin `cutShort` to `true` and
-  let only the hard‑crash path trust the 409.
+  a known timeout or abort — or a matching journaled `"cut-short"`, or an
+  unlanded `"submitting"` over an existing attempt (the settle‑wait already
+  pins both) — pin `cutShort` to `true` and let only the hard‑crash path
+  trust the 409.
 - **`!submitted` races the crashed attempt's own send.** A crash kills the
   process, not necessarily its in‑flight `createChatMessage` — the server can
   commit that request _after_ an interrupt 409'd and a history read saw no

@@ -1094,14 +1094,22 @@ checkpoint:
   chat is paused in `requires_action`, where new messages wait forever (and
   see [#86](https://github.com/coder/ai-sdk/issues/86) if that tool's effect
   was non‑idempotent). Both cases have one remedy — after a crash, interrupt
-  the chat and give it a beat to settle (an interrupted run winds down
-  asynchronously for a few seconds — the same window in which `archive()`
-  retries 409s) before resuming. On a chat with no live run the interrupt
-  rejects with a 409 `CoderApiError`; that's the good case — ignore it:
+  the chat and **wait until it actually settles** before resuming:
+  `interrupt()` resolves on acknowledgment while the run keeps winding down
+  (and committing) for a few more seconds, so poll the chat's status to a
+  terminal one first. On a chat with no live run the interrupt rejects with a
+  409 `CoderApiError`; that's the good case — ignore it:
 
   ```ts
   // Bounded: a stalled deployment must fail the step, not hang it.
-  await agent.interrupt({ signal: AbortSignal.timeout(15_000) }).catch(() => {});
+  const deadline = AbortSignal.timeout(15_000);
+  await agent.interrupt({ signal: deadline }).catch(() => {}); // 409 = nothing to stop
+  let status;
+  do {
+    ({ status } = await agent.client.getChat(agent.chatId!, deadline));
+    if (status === "waiting" || status === "completed" || status === "error") break;
+    await new Promise((r) => setTimeout(r, 1_000)); // acknowledged ≠ settled — wait it out
+  } while (true);
   ```
 
 ### Watch turn health from inside the step
@@ -1140,9 +1148,10 @@ three endings a workflow cares about:
 - **Failure** — `error: { name, message }` present (plus `status` when the
   server run itself still settled terminally): server‑side turn errors,
   transport failure after redials were exhausted, `requestTimeoutMs` expiry
-  (`error.name: "CoderChatError"`), and caller aborts — your engine's
-  wall‑clock deadline firing settles as a failure with
-  `error.name: "AbortError"`, not as a teardown.
+  (`error.name: "CoderChatError"`), and caller aborts — which settle as
+  failures carrying the abort reason's name, never as teardowns:
+  `"TimeoutError"` for an `AbortSignal.timeout(…)` deadline (the running
+  example), `"AbortError"` for an explicit abort.
 - **Teardown** — neither: the stream consumer itself cancelled the turn
   (`stream()`'s `ReadableStream.cancel()` with no abort of its own) — rare in
   `generate()`‑shaped steps.

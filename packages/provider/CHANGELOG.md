@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.4](https://github.com/coder/ai-sdk/compare/provider-v0.3.3...provider-v0.3.4) (2026-08-25)
+
+The provider now throws a NoSuchModelError immediately when textEmbeddingModel is requested, rather than failing later.
+
+### Highlights
+
+- Calling textEmbeddingModel now fails fast with a NoSuchModelError instead of erroring downstream. ([#80](https://github.com/coder/ai-sdk/pull/80))
+
+### Bug Fixes
+
+* **provider:** fail fast with NoSuchModelError for textEmbeddingModel ([#80](https://github.com/coder/ai-sdk/issues/80)) ([ebc7003](https://github.com/coder/ai-sdk/commit/ebc700302a281869697a70f205b6982a5324ea9c))
+
 ## [0.3.3](https://github.com/coder/ai-sdk/compare/provider-v0.3.2...provider-v0.3.3) (2026-08-24)
 
 Adds an enterprise governance and security reference to the provider documentation.

@@ -127,7 +127,7 @@ the [workspaces & quota operations guide](./packages/agent/README.md#workspaces-
 and the [durable-workflow how-to](./packages/agent/README.md#durable-workflows-persist-resume-recover)
 (persisting `chatId` across job/queue boundaries, drop & timeout recovery)
 in the agent README;
-[surfaces and authentication modes](./packages/provider/README.md#the-two-surfaces)
+[named providers and authentication modes](./packages/provider/README.md#named-providers-and-the-two-wire-protocols)
 and the [enterprise governance & security reference](./packages/provider/README.md#enterprise-governance--security)
 (data flow, credential isolation, audit capture, required permissions)
 in the provider README.

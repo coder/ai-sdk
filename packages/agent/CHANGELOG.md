@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.6.1](https://github.com/coder/ai-sdk/compare/agent-v0.6.0...agent-v0.6.1) (2026-08-24)
+
+Fixes several correctness issues in snapshot reconciliation and settle/retry handling. Replayed and revised snapshots are now reconciled through a per-message emitted-content ledger, and corner cases around MCP-effectful exhaustion, frame-batched error status, and timeout settle classification are resolved.
+
+### Highlights
+
+- Replayed and revised snapshots are now reconciled correctly via a per-message emitted-content ledger. ([#77](https://github.com/coder/ai-sdk/pull/77))
+- Fixed settle/retry corner cases involving the MCP-effectful exhaustion gate, frame-batched error status, and timeout settle classification. ([#75](https://github.com/coder/ai-sdk/pull/75))
+
+### Bug Fixes
+
+* **agent:** reconcile replayed and revised snapshots via a per-message emitted-content ledger ([#77](https://github.com/coder/ai-sdk/issues/77)) ([71f64bf](https://github.com/coder/ai-sdk/commit/71f64bf791e92dc641af16c2222ecb8f9f129db0))
+* **agent:** settle/retry corner cases — MCP-effectful exhaustion gate, frame-batched error status, timeout settle classification ([#75](https://github.com/coder/ai-sdk/issues/75)) ([cf7d4ab](https://github.com/coder/ai-sdk/commit/cf7d4ab94937858135bb1a280c8111dd55c2616d))
+
 ## [0.6.0](https://github.com/coder/ai-sdk/compare/agent-v0.5.0...agent-v0.6.0) (2026-08-24)
 
 Adds first-class transport observability hooks to the agent, giving developers built-in insight into transport-level activity.

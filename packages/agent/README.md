@@ -1086,17 +1086,22 @@ checkpoint:
   such session, but only in memory — you must clear the eagerly checkpointed
   id yourself before any retry, or "starts fresh after a discard" silently
   turns into resuming the dead chat.)
-- **Crashed after the checkpoint** — the normal resume path, with two
-  wrinkles. The crashed attempt's run may still be live server‑side: the
-  resumed turn's message queues behind it and starts once it settles, all
-  within the resumed turn's `requestTimeoutMs`. And a crash _inside one of
-  your client tools_ leaves the chat paused in `requires_action`, where queued
-  messages wait forever — if a step can die mid‑tool, interrupt before
-  resuming (an interrupt on a chat with no live run rejects with a 409
-  `CoderApiError` — ignore it):
+- **Crashed after the checkpoint** — the chat is resumable, but don't just
+  resubmit. The crashed attempt's run may still be live server‑side, and a
+  resumed turn seeds its message cursor _before_ submitting — whatever the
+  old run commits after that point would be absorbed into the resumed turn's
+  output and usage. A crash _inside one of your client tools_ is worse: the
+  chat is paused in `requires_action`, where new messages wait forever (and
+  see [#86](https://github.com/coder/ai-sdk/issues/86) if that tool's effect
+  was non‑idempotent). Both cases have one remedy — after a crash, interrupt
+  the chat and give it a beat to settle (an interrupted run winds down
+  asynchronously for a few seconds — the same window in which `archive()`
+  retries 409s) before resuming. On a chat with no live run the interrupt
+  rejects with a 409 `CoderApiError`; that's the good case — ignore it:
 
   ```ts
-  await agent.interrupt().catch(() => {}); // clear a possible stranded pause
+  // Bounded: a stalled deployment must fail the step, not hang it.
+  await agent.interrupt({ signal: AbortSignal.timeout(15_000) }).catch(() => {});
   ```
 
 ### Watch turn health from inside the step
@@ -1189,9 +1194,9 @@ export async function archiveWorkflowChat(workflowId: string): Promise<void> {
     organizationId: process.env.CODER_ORG_ID!,
     chatId,
   });
-  // A crashed step may have left a run live — stop it first. On an
+  // A crashed step may have left a run live — stop it first, bounded. On an
   // already-settled chat the interrupt rejects with a 409; ignore it.
-  await agent.interrupt().catch(() => {});
+  await agent.interrupt({ signal: AbortSignal.timeout(15_000) }).catch(() => {});
   await agent.archive(); // retries 409s while the interrupted run winds down (~15s)
 }
 ```

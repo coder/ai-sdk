@@ -55,28 +55,72 @@ Requires Node ≥ 22, `ai` v7, and a Coder deployment with **AI Gateway enabled*
 (stable since Coder **v2.29**, GA in v2.30, on by default in v2.34; requires the
 AI Governance Add-On).
 
-## The two surfaces
+## Named providers and the two wire protocols
 
-AI Gateway exposes **two provider-namespaced surfaces** on your deployment, and
-routing is **by URL path, not by model id** — so each surface reaches a fixed set
-of upstreams:
+Your Coder admins define AI Gateway **providers** — named routes on the
+deployment (`/api/v2/aibridge/<name>/v1/…`), each speaking one of **two wire
+protocols** determined by its admin-configured type:
 
-| Surface                                                 | Reaches                                                                                               | Accessor                                     |
-| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | -------------------------------------------- |
-| **OpenAI-compatible** (`/api/v2/aibridge/openai/v1`)    | OpenAI, Azure, Google, OpenRouter, Vercel, openai-compat — and **Copilot** (incl. Claude via Copilot) | `coder.openai(id)` / `coder.chat(id)`        |
-| **Anthropic-compatible** (`/api/v2/aibridge/anthropic`) | **native Claude** + **Bedrock-hosted Claude**                                                         | `coder.anthropic(id)` / `coder.messages(id)` |
+| Wire protocol            | Provider types behind it                                                        | Default name |
+| ------------------------ | ------------------------------------------------------------------------------- | ------------ |
+| **OpenAI-compatible**    | `openai`, `azure`, `google`, `copilot`, `openai-compat`, `openrouter`, `vercel` | `openai`     |
+| **Anthropic-compatible** | `anthropic` (native Claude), `bedrock` (Bedrock-hosted Claude)                  | `anthropic`  |
 
-The bare call `coder(modelId)` picks a surface by heuristic — model ids starting
-with `claude`/`anthropic` go to the Anthropic surface, everything else to the
-OpenAI surface. Use the explicit accessors to override (e.g. to reach Claude
-through a Copilot-typed provider on the OpenAI surface):
+Routing is **by URL path, not by model id** — the provider name in the URL
+decides which upstream handles the request. `createCoder` fronts the default
+`openai` / `anthropic` pair: the bare call `coder(modelId)` picks between them
+by heuristic (model ids starting with `claude`/`anthropic` go to the
+Anthropic-protocol provider, everything else to the OpenAI-protocol one), and
+the explicit accessors override it (e.g. to reach Claude through a
+Copilot-typed provider on the OpenAI protocol):
 
 ```ts
-coder("gpt-4o"); // → OpenAI surface
-coder("claude-sonnet-4-6"); // → Anthropic surface (heuristic)
-coder.openai("claude-sonnet-4"); // → OpenAI surface (e.g. Copilot)
-coder.anthropic("claude-opus-4-5"); // → Anthropic surface (explicit)
+coder("gpt-4o"); // → `openai` provider
+coder("claude-sonnet-4-6"); // → `anthropic` provider (heuristic)
+coder.openai("claude-sonnet-4"); // → `openai` provider (e.g. Copilot)
+coder.anthropic("claude-opus-4-5"); // → `anthropic` provider (explicit)
 ```
+
+### Custom-named providers
+
+Provider names are admin-chosen (matching `^[a-z0-9]+(-[a-z0-9]+)*$`), so a
+deployment may expose e.g. an Azure-backed `azure-openai` next to a
+Bedrock-backed `anthropic-bedrock`. Reach them in two ways:
+
+**Sub-provider accessors** — `openaiProvider(name)` / `anthropicProvider(name)`
+return a full sub-provider bound to that gateway provider, so one
+`createCoder` instance can target any number of providers. Pick the accessor
+matching the provider's wire protocol:
+
+```ts
+const azure = coder.openaiProvider("azure-openai"); // OpenAI-compatible type
+const bedrock = coder.anthropicProvider("anthropic-bedrock"); // Anthropic-compatible type
+
+await generateText({ model: azure("gpt-4o"), prompt: "Hi" });
+await generateText({ model: bedrock("claude-sonnet-4-6"), prompt: "Hi" });
+```
+
+A name outside the gateway's grammar throws the AI SDK's
+`InvalidArgumentError` at accessor time (such a name can never be registered);
+a well-formed name that is not configured on your deployment fails at request
+time with the gateway's 404.
+
+**Re-pointing the defaults** — when your deployment simply names its one
+OpenAI/Anthropic pair differently, override the names once and keep using the
+bare call and the `openai` / `anthropic` accessors:
+
+```ts
+const renamed = createCoder({
+  baseURL: "https://coder.example.com",
+  apiKey: process.env.CODER_API_TOKEN!,
+  providers: { openai: "azure-openai", anthropic: "anthropic-bedrock" },
+});
+```
+
+**Provider names come from your platform team.** Discovery is admin-only
+server-side: `GET /api/v2/ai/providers` returns `403` for regular users, and
+the models endpoint does not attribute models to providers. Ask your Coder
+admins which provider names your deployment defines.
 
 Model ids are passed through **unchanged** to the upstream provider (no
 `vendor/model` namespacing) — use whatever ids your deployment's providers accept.
@@ -119,7 +163,7 @@ createCoder({
 | `coderToken`    | `string`                  | —                      | Enables BYOK mode; sent in `X-Coder-AI-Governance-Token`.                                             |
 | `headers`       | `Record<string,string>`   | —                      | Extra headers merged into every request.                                                              |
 | `aiGatewayPath` | `string`                  | `/api/v2/aibridge`     | Override if your deployment uses a different mount path.                                              |
-| `providers`     | `{ openai?, anthropic? }` | `openai` / `anthropic` | Override the admin-configured provider path segments.                                                 |
+| `providers`     | `{ openai?, anthropic? }` | `openai` / `anthropic` | Re-point the default pair at differently-named providers.                                             |
 | `fetch`         | `typeof fetch`            | global `fetch`         | Custom fetch (testing / middleware).                                                                  |
 
 ## Enterprise governance & security
@@ -127,7 +171,7 @@ createCoder({
 Reference for security reviewers evaluating this package. The boundary between
 the two kinds of claims below matters: **client behavior** (what this package
 puts on the wire) is verifiable in [`src/provider.ts`](./src/provider.ts) —
-~175 lines with no dependencies beyond the official AI SDK provider packages —
+~250 lines with no dependencies beyond the official AI SDK provider packages —
 while **gateway behavior** (key custody, audit capture, retention) is a
 property of your Coder deployment, enforced server-side regardless of what any
 client does, and documented in the

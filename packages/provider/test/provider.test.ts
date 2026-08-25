@@ -1,4 +1,4 @@
-import { NoSuchModelError } from "@ai-sdk/provider";
+import { InvalidArgumentError, NoSuchModelError } from "@ai-sdk/provider";
 import { generateText } from "ai";
 import { describe, expect, it } from "vitest";
 import { createCoder, isAnthropicModelId } from "../src/index.js";
@@ -171,6 +171,94 @@ describe("createCoder URL construction", () => {
     });
     await trigger(coder2.anthropic("claude-sonnet-4-6"));
     expect(second.calls[0]!.url).toBe(`${BASE}/api/v2/ai-gateway/anthropic-corp/v1/messages`);
+  });
+});
+
+describe("createCoder sub-provider accessors", () => {
+  it("openaiProvider(name) targets the named gateway provider on the OpenAI protocol", async () => {
+    const { fetch, calls } = capturingFetch();
+    const coder = createCoder({ baseURL: BASE, apiKey: TOKEN, fetch });
+    await trigger(coder.openaiProvider("azure-openai")("gpt-4o"));
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe(`${BASE}/api/v2/aibridge/azure-openai/v1/chat/completions`);
+    expect(calls[0]!.headers.get("authorization")).toBe(`Bearer ${TOKEN}`);
+    expect(calls[0]!.body?.model).toBe("gpt-4o");
+  });
+
+  it("anthropicProvider(name) targets the named gateway provider on the Anthropic protocol", async () => {
+    const { fetch, calls } = capturingFetch();
+    const coder = createCoder({ baseURL: BASE, apiKey: TOKEN, fetch });
+    await trigger(coder.anthropicProvider("anthropic-bedrock")("claude-sonnet-4-6"));
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe(`${BASE}/api/v2/aibridge/anthropic-bedrock/v1/messages`);
+    expect(calls[0]!.headers.get("authorization")).toBe(`Bearer ${TOKEN}`);
+    expect(calls[0]!.body?.model).toBe("claude-sonnet-4-6");
+  });
+
+  it("honors a custom aiGatewayPath", async () => {
+    const { fetch, calls } = capturingFetch();
+    const coder = createCoder({
+      baseURL: BASE,
+      apiKey: TOKEN,
+      aiGatewayPath: "/api/v2/ai-gateway",
+      fetch,
+    });
+    await trigger(coder.openaiProvider("azure-openai")("gpt-4o"));
+    expect(calls[0]!.url).toBe(`${BASE}/api/v2/ai-gateway/azure-openai/v1/chat/completions`);
+  });
+
+  it("openaiProvider with the default name behaves exactly like the default surface", async () => {
+    const { fetch, calls } = capturingFetch();
+    const coder = createCoder({ baseURL: BASE, apiKey: TOKEN, fetch });
+    await trigger(coder.openaiProvider("openai")("gpt-4o"));
+    await trigger(coder.openai("gpt-4o"));
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.url).toBe(calls[1]!.url);
+    expect(calls[0]!.url).toBe(`${BASE}/api/v2/aibridge/openai/v1/chat/completions`);
+  });
+
+  it("rejects names outside the gateway grammar with InvalidArgumentError, before any request", () => {
+    const { fetch, calls } = capturingFetch();
+    const coder = createCoder({ baseURL: BASE, apiKey: TOKEN, fetch });
+
+    for (const bad of ["Azure-OpenAI", "azure_openai", "-azure", "azure-", "a--b", "a/b", ""]) {
+      for (const accessor of [
+        () => coder.openaiProvider(bad),
+        () => coder.anthropicProvider(bad),
+      ]) {
+        let error: unknown;
+        try {
+          accessor();
+        } catch (e) {
+          error = e;
+        }
+        expect(InvalidArgumentError.isInstance(error)).toBe(true);
+        expect((error as InvalidArgumentError).argument).toBe("name");
+        expect((error as InvalidArgumentError).message).toContain(`"${bad}"`);
+      }
+    }
+
+    expect(calls).toHaveLength(0);
+  });
+
+  it("named OpenAI-protocol sub-providers fail fast on embeddings too", () => {
+    const { fetch, calls } = capturingFetch();
+    const coder = createCoder({ baseURL: BASE, apiKey: TOKEN, fetch });
+
+    let error: unknown;
+    try {
+      coder.openaiProvider("azure-openai").textEmbeddingModel("text-embedding-3-small");
+    } catch (e) {
+      error = e;
+    }
+    expect(NoSuchModelError.isInstance(error)).toBe(true);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("validates renamed default providers against the same grammar at createCoder time", () => {
+    expect(() =>
+      createCoder({ baseURL: BASE, apiKey: TOKEN, providers: { openai: "Bad_Name" } }),
+    ).toThrow(/Invalid AI Gateway provider name/);
   });
 });
 

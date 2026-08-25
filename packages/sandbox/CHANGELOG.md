@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.4.3](https://github.com/coder/ai-sdk/compare/sandbox-v0.4.2...sandbox-v0.4.3) (2026-08-25)
+
+A maintenance release with no user-facing changes.
+
 ## [0.4.2](https://github.com/coder/ai-sdk/compare/sandbox-v0.4.1...sandbox-v0.4.2) (2026-08-24)
 
 Adds a new documentation guide covering how to author zero-install templates.

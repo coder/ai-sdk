@@ -1,5 +1,5 @@
 {
   "packages/sandbox": "0.4.3",
   "packages/agent": "0.7.2",
-  "packages/provider": "0.3.5"
+  "packages/provider": "0.4.0"
 }

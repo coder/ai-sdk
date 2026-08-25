@@ -119,9 +119,11 @@ await transport.close(); // close cached relay WebSockets on shutdown
 
 Each step stands alone — skip the ones you don't need. For depth on each:
 [`ensureCoderWorkspace` and workspace creation settings](./packages/sandbox/README.md#provisioning-a-workspace-without-a-session)
-in the sandbox README; [custom tools](./packages/agent/README.md#custom-tools)
-and [structured output](./packages/agent/README.md#structured-output) (when the
-typed answer must come out of the agent run itself, not a follow-up model call)
+in the sandbox README; [custom tools](./packages/agent/README.md#custom-tools),
+[structured output](./packages/agent/README.md#structured-output) (when the
+typed answer must come out of the agent run itself, not a follow-up model call),
+and the [workspaces & quota operations guide](./packages/agent/README.md#workspaces--quota)
+(fleet sizing, autostop, troubleshooting stuck turns)
 in the agent README;
 [surfaces and authentication modes](./packages/provider/README.md#the-two-surfaces)
 and the [enterprise governance & security reference](./packages/provider/README.md#enterprise-governance--security)

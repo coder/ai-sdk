@@ -43,7 +43,7 @@ WORKDIR /home/${USER}
 #   host re-runs the bootstrap against this directory and downloads the delta
 #   (slower first session, still correct). The default matches the version
 #   this repository's examples resolve.
-ARG HARNESS_CLAUDE_CODE_VERSION=1.0.76
+ARG HARNESS_CLAUDE_CODE_VERSION=1.0.90
 RUN mkdir -p /home/${USER}/.harness-bootstrap/claude-code \
   && cd /tmp \
   && npm pack @ai-sdk/harness-claude-code@${HARNESS_CLAUDE_CODE_VERSION} \

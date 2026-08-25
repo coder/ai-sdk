@@ -305,7 +305,7 @@ bash/coreutils) and replays the recipe at build time — same files, same
 commands, same absolute path:
 
 ```dockerfile
-ARG HARNESS_CLAUDE_CODE_VERSION=1.0.76
+ARG HARNESS_CLAUDE_CODE_VERSION=1.0.90
 RUN mkdir -p /home/${USER}/.harness-bootstrap/claude-code \
   && cd /tmp \
   && npm pack @ai-sdk/harness-claude-code@${HARNESS_CLAUDE_CODE_VERSION} \
@@ -536,8 +536,6 @@ and a full Claude Code turn with tool use (`scripts/e2e-claude.ts`).
 
 - `setNetworkPolicy` is not implemented (omitted) — egress is governed by your
   Coder template/deployment, not this provider.
-- `bridgePorts` is intentionally left undefined: this provider binds one
-  workspace per session rather than leasing ports from a shared sandbox.
 - File reads buffer the whole file (binary content moves as base64). Fine for
   bootstrap-sized files; not intended for streaming very large files.
 - `CoderNativeTransport` currently targets POSIX workspaces with `bash`, `stty`,

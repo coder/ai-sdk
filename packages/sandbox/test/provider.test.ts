@@ -119,7 +119,6 @@ describe("createCoderWorkspace", () => {
     const provider = createCoderWorkspace({ workspace: "ws", transport: new MockTransport() });
     expect(provider.specificationVersion).toBe("harness-sandbox-v1");
     expect(provider.providerId).toBe("coder-workspace");
-    expect(provider.bridgePorts).toBeUndefined();
   });
 
   it("createSession wraps a fixed workspace and uses it as the id", async () => {

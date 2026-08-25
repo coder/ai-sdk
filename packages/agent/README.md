@@ -1267,12 +1267,16 @@ const lastUser = transcript.findLast((m) => m.role === "user");
 const submitted = lastUser?.parts.some((p) => p.type === "text" && p.text.includes(marker));
 
 if (submitted && !cutShort && status !== "error") {
-  // The attempt finished; only the recording was lost. Its text is the
-  // step's result — return it instead of resubmitting.
-  return transcript
+  // The attempt finished; only the recording was lost. Recover what
+  // `generate().text` would have returned — the FINAL step's text. A turn
+  // that crossed tool calls commits narration between them too, so cut the
+  // turn's parts after the last tool part and join the text that follows.
+  const parts = transcript
     .slice(transcript.indexOf(lastUser!) + 1)
     .filter((m) => m.role === "assistant")
-    .flatMap((m) => m.parts)
+    .flatMap((m) => m.parts);
+  return parts
+    .slice(parts.findLastIndex((p) => p.type === "dynamic-tool") + 1)
     .filter((p) => p.type === "text")
     .map((p) => p.text)
     .join("");
@@ -1296,6 +1300,12 @@ if (submitted && !cutShort && status !== "error") {
   like the tool ledger, if the recovery pass can itself crash between its
   interrupt and the resubmit) — pin `cutShort` to `true` and let only the
   hard‑crash path trust the 409.
+- **The cut lands after the last tool part of _either_ kind.** History does
+  not mark which tool calls were client tools
+  ([Rehydrating chat history](#rehydrating-chat-history)), so when a final
+  step narrates _before_ a server‑side tool call, that preamble is dropped
+  too — the recovered text is the answer following the turn's last tool
+  activity.
 - **Steps with structured results recover them the same way** — a
   [structured output](#structured-output) step's answer is the
   `structured_output` call's typed input, which rehydrates as a

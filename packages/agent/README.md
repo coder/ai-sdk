@@ -912,9 +912,19 @@ export async function runTurn(workflowId: string, prompt: string): Promise<strin
     onTransportEvent: observe, // per-step telemetry — see below
   });
 
-  const { text } = await agent.generate({ prompt });
-  await checkpoints.set(workflowId, agent.chatId!); // the durable resume handle
-  return text;
+  try {
+    const { text } = await agent.generate({ prompt });
+    return text;
+  } finally {
+    // The durable resume handle — written even when the turn failed: a first
+    // step that fails AFTER creating its chat (timeout, stream loss) must
+    // still persist the id, or the retried step orphans a live chat and its
+    // partial effects. When an exhausted stream failure killed a chat this
+    // very call created, the SDK has already discarded the dead session
+    // (agent.chatId is undefined again), so nothing is written and a retry
+    // starts fresh — as intended.
+    if (agent.chatId) await checkpoints.set(workflowId, agent.chatId);
+  }
 }
 ```
 
@@ -925,8 +935,9 @@ The shape matters:
   outside `generate()`'s error contract, which complicates step retry logic.
 - **Persist the id, not the instance** (and never the token — read it from
   each step's environment).
-- **Checkpoint as soon as the turn settles.** The window between chat creation
-  and the checkpoint is the crash window that orphans a chat (below).
+- **Checkpoint in `finally`, not only on success**, so failed-but-alive chats
+  stay reachable. What remains is the hard-crash window between chat creation
+  and the checkpoint write (below).
 - **No `await using` here.** The chat outlives the step; disposal archives it
   and archiving ends resumability (below).
 
@@ -1005,10 +1016,11 @@ try {
   transiently (`kind: "stream_closed"`, an upstream 5xx). `retryable`
   classifies the _failure_ as transient — it does not make a re‑run free.
   Unlike the guarded `CoderStreamError` path below, the session is **not**
-  discarded: the retried step reloads the checkpointed chat id and resubmits
-  the same prompt as a new user turn, with the aborted attempt's partial
-  output in history and any tool effects that ran before the failure not
-  undone. The same idempotency judgment as below applies — retry steps
+  discarded: the retried step reloads the checkpointed chat id (the `finally`
+  checkpoint above is what makes this hold even when the _first_ step fails
+  after creating its chat) and resubmits the same prompt as a new user turn,
+  with the aborted attempt's partial output in history and any tool effects
+  that ran before the failure not undone. The same idempotency judgment as below applies — retry steps
   designed to tolerate re‑submission; reconcile first when they aren't.
 - **`CoderStreamError`** (an AI SDK `APICallError`) — the stream could not be
   re‑established. `isRetryable: true` only when the failed turn had just
@@ -1099,11 +1111,13 @@ three endings a workflow cares about:
   your client tools; terminal statuses end the turn.
 - **Failure** — `error: { name, message }` present (plus `status` when the
   server run itself still settled terminally): server‑side turn errors,
-  transport failure after redials were exhausted, and `requestTimeoutMs`
-  expiry — a timeout settles with `error.name: "CoderChatError"`, so it stays
-  distinguishable from the next bucket.
-- **Teardown** — neither: the consumer cancelled the turn from outside (e.g.
-  your engine aborted the step).
+  transport failure after redials were exhausted, `requestTimeoutMs` expiry
+  (`error.name: "CoderChatError"`), and caller aborts — your engine's
+  wall‑clock deadline firing settles as a failure with
+  `error.name: "AbortError"`, not as a teardown.
+- **Teardown** — neither: the stream consumer itself cancelled the turn
+  (`stream()`'s `ReadableStream.cancel()` with no abort of its own) — rare in
+  `generate()`‑shaped steps.
 
 The hook is observability‑only — handler exceptions are swallowed and can't
 disturb the turn, and an unset hook costs nothing. For monitoring _across_

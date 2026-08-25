@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.6.2](https://github.com/coder/ai-sdk/compare/agent-v0.6.1...agent-v0.6.2) (2026-08-25)
+
+Documentation-only release that adds a session resumption and durability how-to and expands the workspaces and quota guide into an operational fleet sizing and troubleshooting reference.
+
+### Highlights
+
+- New how-to guide covering session resumption and durability for durable workflows. ([#84](https://github.com/coder/ai-sdk/pull/84))
+- Expanded workspaces and quota documentation into an operational fleet sizing and troubleshooting guide. ([#81](https://github.com/coder/ai-sdk/pull/81))
+
+### Documentation
+
+* **agent:** expand workspaces & quota into an operational fleet sizing and troubleshooting guide ([#81](https://github.com/coder/ai-sdk/issues/81)) ([18ecf88](https://github.com/coder/ai-sdk/commit/18ecf88bef723378ebfe11e98518df4877566d16))
+* **agent:** session resumption & durability how-to for durable workflows ([#84](https://github.com/coder/ai-sdk/issues/84)) ([b270c87](https://github.com/coder/ai-sdk/commit/b270c8735ec8066100a30681e7bd281a0fd1115d))
+
 ## [0.6.1](https://github.com/coder/ai-sdk/compare/agent-v0.6.0...agent-v0.6.1) (2026-08-24)
 
 Fixes several correctness issues in snapshot reconciliation and settle/retry handling. Replayed and revised snapshots are now reconciled through a per-message emitted-content ledger, and corner cases around MCP-effectful exhaustion, frame-batched error status, and timeout settle classification are resolved.

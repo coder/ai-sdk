@@ -1147,6 +1147,15 @@ checkpoint:
     // "cut-short" — it went on to interrupt (an unstarted sibling in the
     // batch); the attempt is truncated, so the check below must resubmit.
     cutShort = journaled === "cut-short";
+    if (cutShort) {
+      // The journal records write-ahead INTENT, not a landed interrupt: the
+      // pass may have died in between, leaving the revived run working.
+      // Re-drive the interrupt to make the intent true — a 409 means the
+      // chat already settled; the cut-short verdict stands either way.
+      await agent.interrupt({ signal: deadline }).catch((err) => {
+        if (!(err instanceof CoderApiError && err.status === 409)) throw err;
+      });
+    }
   } else {
     await agent.interrupt({ signal: deadline }).catch((err) => {
       if (err instanceof CoderApiError && err.status === 409) cutShort = false;

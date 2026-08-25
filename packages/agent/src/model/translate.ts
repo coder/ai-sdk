@@ -436,6 +436,10 @@ export class TurnTranslator {
       case "error":
         if (ev.error) {
           this.#error = ev.error;
+          // doGenerate() throws on the error part and closes the generator
+          // before finish() can run (issue #72) — parts yielded after it are
+          // never pulled, so the deferred-revision flush must precede it.
+          this.#flushDeferredRevisions(out);
           out.push({ type: "error", error: new CoderChatError(ev.error) });
         }
         break;
@@ -650,20 +654,28 @@ export class TurnTranslator {
 
   // --- finish ---------------------------------------------------------------
 
-  finish(): LanguageModelV4StreamPart[] {
-    const out: LanguageModelV4StreamPart[] = [];
-    // Flush revisions still deferred behind a delta-ownership race that never
-    // settled — the racing step ended terminally (e.g. an error) without
-    // committing a snapshot, so the drain in #ingestMessage never ran. chatd
-    // sent each revision once; this is the segment's last chance to emit its
-    // suffix (#78). Attribution care: the pending deltas' owner never
-    // committed, so they attribute to no one — reconciliation is against the
-    // ledger alone, and only ledger-extension suffixes may emit.
+  /**
+   * Flushes revisions still deferred behind a delta-ownership race that never
+   * settled — the racing step ended terminally without committing a snapshot,
+   * so the drain in #ingestMessage never ran. chatd sent each revision once;
+   * this is the segment's last chance to emit its suffix (#78). Attribution
+   * care: the pending deltas' owner never committed, so they attribute to no
+   * one — reconciliation is against the ledger alone, and only
+   * ledger-extension suffixes may emit. Runs at finish() and, because
+   * doGenerate() throws on a streamed error part and closes the generator
+   * before finish() (issue #72), ahead of the error part in ingest().
+   */
+  #flushDeferredRevisions(out: LanguageModelV4StreamPart[]): void {
     for (const [id, deferred] of this.#deferredRevisions) {
       const rec = this.#emittedByMessageId.get(id);
       if (rec) this.#reconcileRevision(out, rec, deferred);
     }
     this.#deferredRevisions.clear();
+  }
+
+  finish(): LanguageModelV4StreamPart[] {
+    const out: LanguageModelV4StreamPart[] = [];
+    this.#flushDeferredRevisions(out);
     this.#closeText(out);
     this.#closeReasoning(out);
 

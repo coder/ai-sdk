@@ -998,6 +998,34 @@ describe("TurnTranslator — deferred-revision flush at segment end (#78)", () =
     expect(textBlocks(parts)).toEqual(["AB", "+"]);
   });
 
+  it("flushes deferred revisions before the terminal error part, not only at finish", () => {
+    // chatd's mid-generation failure arrives as an `error` EVENT (with the
+    // terminal `status: error` batched behind it). doGenerate() throws on the
+    // yielded error part and closes the generator before finish() can run
+    // (see issue #72), so the flush must precede the error part within
+    // ingest itself — parts yielded after it are never pulled.
+    const t = new TurnTranslator({ dynamicToolNames: new Set() });
+    const before = [
+      msg(2, "assistant", [{ type: "text", text: "A" }]),
+      part("assistant", { type: "text", text: "B" }),
+      msg(2, "assistant", [{ type: "text", text: "A+" }]), // mid-race revision: deferred
+    ].flatMap((ev) => t.ingest(ev));
+    const errParts = t.ingest({
+      type: "error",
+      chat_id: "c",
+      error: { message: "overloaded", kind: "overloaded", retryable: true },
+    });
+    // The revision suffix "+" lands bracketed BEFORE the error part.
+    expect(errParts.map((p) => p.type)).toEqual([
+      "text-end",
+      "text-start",
+      "text-delta",
+      "text-end",
+      "error",
+    ]);
+    expect(textBlocks([...before, ...errParts])).toEqual(["AB", "+"]);
+  });
+
   it("keeps suppressing a deferred rewrite at the terminal flush", () => {
     // Attribution care: at finish the pending deltas' owner never committed,
     // so the flush may emit only ledger-extension suffixes — a deferred

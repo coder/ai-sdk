@@ -1125,6 +1125,11 @@ checkpoint:
   do {
     ({ status } = await agent.client.getChat(agent.chatId!, deadline));
     if (status === "waiting" || status === "completed" || status === "error") break;
+    // With no accepted interrupt racing to clear it, requires_action is a
+    // STABLE pause: a run resumed by submitted tool results called a NEW
+    // client tool. Exit and reconcile the ledger again (below) instead of
+    // polling out the deadline.
+    if (status === "requires_action" && !cutShort) break;
     await new Promise((r) => setTimeout(r, 1_000)); // acknowledged ≠ settled — wait it out
   } while (true);
   ```
@@ -1231,11 +1236,15 @@ if (unstarted) await agent.client.interruptChat(agent.chatId!, deadline);
   recorded outcome survives for the resubmitted turn to see.
 - **Submitting answers the pause; it does not revive your tool loop.** Once
   every pending call is answered, the turn resumes **server‑side** with no
-  process streaming it: skip the interrupt (nothing stranded is left to
-  stop), give the settle‑wait a turn‑scale deadline rather than the 15 s
-  interrupt bound, and if the poll lands on `requires_action` again the
-  resumed run called a _new_ tool — reconcile again; a call with no ledger
-  entry is safe to interrupt.
+  process streaming it. In the settle‑wait that follows, skip the interrupt —
+  nothing stranded is left to stop, and an interrupt now would cut down the
+  very run the submission revived — and **pin `cutShort = false`**: nothing
+  was cut short, and the next section's `!cutShort` check must classify the
+  resumed run's finish as a completed attempt, not resubmit it. Give the
+  poll a turn‑scale deadline rather than the 15 s interrupt bound; it exits
+  on `requires_action` (stable here, with no accepted interrupt clearing
+  it), which means the resumed run called a _new_ tool — reconcile again; a
+  call with no ledger entry is safe to interrupt.
 - **The finished run's output lands only in history** — recover it like any
   completed‑but‑unrecorded attempt (next section) instead of resubmitting.
 
@@ -1282,7 +1291,7 @@ const transcript = chatMessagesToUIMessages(fetched); // chronological
 const lastUser = transcript.findLast((m) => m.role === "user");
 const submitted = lastUser?.parts.some((p) => p.type === "text" && p.text.includes(marker));
 
-if (submitted && !cutShort && status !== "error") {
+if (submitted && !cutShort && (status === "waiting" || status === "completed")) {
   // The attempt finished; only the recording was lost. Recover what
   // `generate().text` would have returned — the FINAL step's text. A turn
   // that crossed tool calls commits narration between them too, so cut the
@@ -1300,7 +1309,9 @@ if (submitted && !cutShort && status !== "error") {
 // Resubmit only what never finished: the prompt never reached the server
 // (!submitted), the turn failed (status "error" — normal retry judgment
 // applies), or the interrupt cut a live run short (cutShort — the model sees
-// its own aborted attempt in history and continues from it).
+// its own aborted attempt in history and continues from it). One exit is
+// neither: a requires_action settle goes back to ledger reconciliation
+// (previous section) — never to recovery or resubmission.
 ```
 
 - **`cutShort` is the completed/interrupted discriminator — but a 409 only

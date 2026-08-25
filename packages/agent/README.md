@@ -717,10 +717,14 @@ Practical sizing:
 
 - Read headroom before fanning out:
   `GET /api/v2/organizations/{org}/members/{user}/workspace-quota` returns
-  `{ "credits_consumed": …, "budget": … }`; a workspace's cost is the sum of
-  its template's `daily_cost` declarations.
-- Keep fan‑out width below the free‑slot count and queue the rest client‑side —
-  an unschedulable turn does not queue usefully on the server (see
+  `{ "credits_consumed": …, "budget": … }`. Quota is denominated in credits,
+  not slots: admit another workspace only while `budget − credits_consumed`
+  covers _that workspace's_ cost (the sum of its template's `daily_cost`
+  declarations). "Free slots = headroom ÷ cost" only holds for a homogeneous
+  fleet on one template; with mixed templates, size against each planned
+  workspace's own cost.
+- Keep fan‑out width within that headroom and queue the rest client‑side — an
+  unschedulable turn does not queue usefully on the server (see
   [Preventing stuck turns](#preventing-stuck-turns)).
 - Reuse one bound workspace across sequential turns and sessions instead of
   provisioning per request — the workspace is the expensive part, the chat is
@@ -738,10 +742,14 @@ Two lifetimes to manage, separately:
   hygiene:
   - **Autostop TTL.** Give fleet templates a default TTL long enough to survive
     a normal session (including idle gaps between turns), short enough that a
-    leaked workspace returns its quota within hours — without autostop, a
-    leaked workspace pins its quota until someone notices. With
-    [`@coder/ai-sdk-sandbox`](../sandbox), `stopAfter: "8h"` sets the TTL
-    (`ttl_ms`) at creation.
+    leaked workspace stops burning running‑cost within hours — without
+    autostop, a leaked workspace pins its full quota until someone notices.
+    Note that stopping only releases the quota of resources that go away on
+    stop; persistent resources (disks, volumes) keep consuming their
+    `daily_cost`, so a scratch fleet that only ever stops still converges on a
+    full budget — pair the TTL with dormancy auto‑deletion or explicit
+    deletion. With [`@coder/ai-sdk-sandbox`](../sandbox), `stopAfter: "8h"`
+    sets the TTL (`ttl_ms`) at creation.
   - **Activity bump** (default 1 h) extends a running workspace's deadline when
     Coder detects sessions — check
     [what counts as activity](https://coder.com/docs/user-guides/workspace-scheduling)
@@ -779,14 +787,14 @@ status indefinitely. Defend in this order:
 Wire [`onTransportEvent`](#observability) into fleet telemetry — the event
 sequence pinpoints _where_ a turn died:
 
-| symptom (transport events)                                                                                                                      | likely cause                                                                                                                 | fix                                                                                                                                                                                                                                             |
-| ----------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `segment:start` and `ws:open` fired, initial status events, then silence — no `message_part`, no `segment:settle`                               | the workspace can't be scheduled (quota exhausted, no free provisioner, failing template) — the server run isn't progressing | check quota headroom (`workspace-quota` endpoint) and the workspace's build — a quota failure logs `INSUFFICIENT_QUOTA`; free slots (stop idle workspaces, raise the group allowance) and set `requestTimeoutMs` so this fails loudly next time |
-| `segment:settle` carries `error: { name: "CoderChatError", message: "…requestTimeoutMs budget…" }`                                              | the per‑segment bound expired — wedged server, slow model, or an unschedulable workspace                                     | inspect the workspace via the v2 API/UI: a `pending`/`failed` build means the row above; `running` means the turn was genuinely slow — raise `requestTimeoutMs` for long tool work                                                              |
-| repeated `ws:redial` with `consecutiveFailures` climbing toward `maxConsecutiveFailures` (5, backoff 1 s → 30 s cap), then a `CoderStreamError` | the network path to the deployment is failing — not workspace scheduling (the server keeps generating through short gaps)    | fix connectivity; mind retry ownership above — on workspace‑backed chats the error is `isRetryable: false`, so the replay decision is yours                                                                                                     |
-| `segment:settle` with `status: "error"` and an `error` payload                                                                                  | the turn itself failed server‑side (provider/model error, tool failure) — not scheduling                                     | branch on `CoderChatError.kind` / `retryable` / `statusCode` ([Handling errors](#handling-errors))                                                                                                                                              |
-| turn settled `status: "requires_action"`, follow‑up messages queue forever                                                                      | the loop ended on an unanswered client tool call                                                                             | submit the stranded results or interrupt — see rule 4 under [Structured output](#structured-output)                                                                                                                                             |
-| `archive()` keeps returning 409 and rethrows after ~15 s                                                                                        | the chat never settled server‑side — usually a stuck run still holding its workspace                                         | `interrupt()` with a bounded signal, then re‑archive; if the run stays wedged, stop the workspace itself                                                                                                                                        |
+| symptom (transport events)                                                                                                                                                                          | likely cause                                                                                                                 | fix                                                                                                                                                                                                                                             |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `segment:start` and `ws:open` fired, initial status events, then silence — no `message_part`, no `segment:settle`                                                                                   | the workspace can't be scheduled (quota exhausted, no free provisioner, failing template) — the server run isn't progressing | check quota headroom (`workspace-quota` endpoint) and the workspace's build — a quota failure logs `INSUFFICIENT_QUOTA`; free slots (stop idle workspaces, raise the group allowance) and set `requestTimeoutMs` so this fails loudly next time |
+| `segment:settle` carries `error: { name: "CoderChatError", message: "…requestTimeoutMs budget…" }`                                                                                                  | the per‑segment bound expired — wedged server, slow model, or an unschedulable workspace                                     | inspect the workspace via the v2 API/UI: a `pending`/`failed` build means the row above; `running` means the turn was genuinely slow — raise `requestTimeoutMs` for long tool work                                                              |
+| repeated `ws:redial` with `consecutiveFailures` climbing toward `maxConsecutiveFailures` (5; backoff 1 s → 2 s → 4 s → 8 s, ≈15 s of redialing without forward progress), then a `CoderStreamError` | the network path to the deployment is failing — not workspace scheduling (the server keeps generating through short gaps)    | fix connectivity; mind retry ownership above — on workspace‑backed chats the error is `isRetryable: false`, so the replay decision is yours                                                                                                     |
+| `segment:settle` with `status: "error"` and an `error` payload                                                                                                                                      | the turn itself failed server‑side (provider/model error, tool failure) — not scheduling                                     | the settle event's `error` carries only `{ name, message }` — branch on `kind` / `retryable` / `statusCode` by catching the thrown `CoderChatError` at the `generate()`/`stream()` call site ([Handling errors](#handling-errors))              |
+| turn settled `status: "requires_action"`, follow‑up messages queue forever                                                                                                                          | the loop ended on an unanswered client tool call                                                                             | submit the stranded results or interrupt — see rule 4 under [Structured output](#structured-output)                                                                                                                                             |
+| `archive()` keeps returning 409 and rethrows after ~15 s                                                                                                                                            | the chat never settled server‑side — usually a stuck run still holding its workspace                                         | `interrupt()` with a bounded signal, then re‑archive; if the run stays wedged, stop the workspace itself                                                                                                                                        |
 
 ## Configuration
 

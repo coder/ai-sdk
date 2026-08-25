@@ -205,4 +205,25 @@ describe("createCoder textEmbeddingModel", () => {
     // Fail-fast means no HTTP request was emitted.
     expect(calls).toHaveLength(0);
   });
+
+  it("also fails fast on the exposed OpenAI surface's embedding accessors", () => {
+    const { fetch, calls } = capturingFetch();
+    const coder = createCoder({ baseURL: BASE, apiKey: TOKEN, fetch });
+
+    for (const accessor of [
+      () => coder.openai.textEmbeddingModel("text-embedding-3-small"),
+      () => coder.openai.embeddingModel("text-embedding-3-small"),
+    ]) {
+      let error: unknown;
+      try {
+        accessor();
+      } catch (e) {
+        error = e;
+      }
+      expect(NoSuchModelError.isInstance(error)).toBe(true);
+      expect((error as NoSuchModelError).modelType).toBe("embeddingModel");
+    }
+
+    expect(calls).toHaveLength(0);
+  });
 });

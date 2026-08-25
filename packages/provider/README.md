@@ -82,10 +82,11 @@ Model ids are passed through **unchanged** to the upstream provider (no
 `vendor/model` namespacing) — use whatever ids your deployment's providers accept.
 
 **Embeddings are not supported yet.** AI Gateway does not intercept
-`/v1/embeddings`, so `coder.textEmbeddingModel(id)` throws the AI SDK's
-`NoSuchModelError` immediately instead of emitting a request the gateway
-rejects with a 404. The accessor stays so it can light up without a breaking
-change once the gateway adds an embeddings route — see
+`/v1/embeddings`, so `coder.textEmbeddingModel(id)` — and the embedding
+accessors on `coder.openai` — throw the AI SDK's `NoSuchModelError`
+immediately instead of emitting a request the gateway rejects with a 404. The
+accessors stay so they can light up without a breaking change once the gateway
+adds an embeddings route — see
 [coder/ai-sdk#69](https://github.com/coder/ai-sdk/issues/69).
 
 ## Authentication

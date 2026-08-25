@@ -97,6 +97,22 @@ function trimTrailingSlash(url: string): string {
 }
 
 /**
+ * Fail fast at accessor time: AI Gateway intercepts only
+ * `/v1/chat/completions`, `/v1/responses`, and `/v1/messages`, so an
+ * embeddings request would always die with a 404 at request time.
+ */
+function unsupportedEmbeddingModel(modelId: string): EmbeddingModelV4 {
+  throw new NoSuchModelError({
+    modelId,
+    modelType: "embeddingModel",
+    message:
+      `Coder AI Gateway does not yet intercept /v1/embeddings, so the ` +
+      `embedding model "${modelId}" cannot be reached through it. ` +
+      `See https://github.com/coder/ai-sdk/issues/69 for status.`,
+  });
+}
+
+/**
  * Create a {@link CoderProvider} that routes Vercel AI SDK calls through a Coder
  * deployment's AI Gateway (formerly "AI Bridge"). AI Gateway exposes two
  * provider-namespaced surfaces; this provider fronts both and selects between
@@ -153,6 +169,11 @@ export function createCoder(settings: CoderProviderSettings): CoderProvider {
     includeUsage: true,
   });
 
+  // `coder.openai` is public, so its embedding accessors must fail fast too —
+  // otherwise they bypass the top-level guard and hit the gateway 404.
+  openai.embeddingModel = unsupportedEmbeddingModel;
+  openai.textEmbeddingModel = unsupportedEmbeddingModel;
+
   const anthropic = createAnthropic({
     name: "coder.anthropic",
     baseURL: anthropicBaseURL,
@@ -172,19 +193,7 @@ export function createCoder(settings: CoderProviderSettings): CoderProvider {
     anthropic,
     chat: (modelId: string): LanguageModelV4 => openai(modelId),
     messages: (modelId: string): LanguageModelV4 => anthropic(modelId),
-    // Fail fast at accessor time: AI Gateway intercepts only
-    // `/v1/chat/completions`, `/v1/responses`, and `/v1/messages`, so an
-    // embeddings request would always die with a 404 at request time.
-    textEmbeddingModel: (modelId: string): EmbeddingModelV4 => {
-      throw new NoSuchModelError({
-        modelId,
-        modelType: "embeddingModel",
-        message:
-          `Coder AI Gateway does not yet intercept /v1/embeddings, so the ` +
-          `embedding model "${modelId}" cannot be reached through it. ` +
-          `See https://github.com/coder/ai-sdk/issues/69 for status.`,
-      });
-    },
+    textEmbeddingModel: unsupportedEmbeddingModel,
   });
 }
 

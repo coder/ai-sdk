@@ -913,7 +913,12 @@ export async function runTurn(workflowId: string, prompt: string): Promise<strin
   });
 
   try {
-    const { text } = await agent.generate({ prompt });
+    const { text } = await agent.generate({
+      prompt,
+      // Total wall-clock for the step: requestTimeoutMs bounds each segment,
+      // not a whole multi-segment (client-tool) turn — see "Bound every step".
+      abortSignal: AbortSignal.timeout(600_000),
+    });
     return text;
   } finally {
     // The durable resume handle — written even when the turn failed: a first
@@ -1069,7 +1074,11 @@ checkpoint:
   (which has no id to interrupt). Either way the retried step starts a fresh
   chat, so orphans are found only by the reconciliation sweep from
   [Preventing stuck turns](#preventing-stuck-turns) — that sweep is not
-  optional in this pattern. (To shrink the window, checkpoint eagerly from the
+  optional in this pattern, and it needs a **wider filter** here: the fleet
+  sweep watches for _non‑terminal_ chats stuck past their budget, but an
+  orphaned first turn may settle terminally on its own and then sit as a
+  live, unarchived chat forever. Sweep every chat no checkpoint accounts
+  for — regardless of status — and interrupt/archive it. (To shrink the window, checkpoint eagerly from the
   first `ws:dial` transport event — it carries the chat id as soon as the chat
   exists — but then the checkpoint's lifecycle is yours too: the retried step
   resumes a chat holding a dead half‑turn, and whenever a `CoderStreamError`

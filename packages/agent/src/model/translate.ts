@@ -180,11 +180,13 @@ export class TurnTranslator {
     number,
     { text: string; reasoning: string; substantive: boolean }
   >();
-  // Same-id revision snapshots that arrived while the NEXT step's deltas were
-  // open (latest wins). chatd sends each revision once on a healthy
-  // connection, so the suffix cannot wait for a replay — it is reconciled as
-  // soon as the next step's snapshot settles ownership of the pending deltas.
-  readonly #deferredRevisions = new Map<number, { text: string; reasoning: string }>();
+  // Same-id revision snapshots (their full wire content) that arrived while
+  // the NEXT step's deltas were open (latest wins). chatd sends each revision
+  // once on a healthy connection, so the suffix cannot wait for a replay — it
+  // is reconciled as soon as the next step's snapshot settles ownership of
+  // the pending deltas, or flushed by finish() when the segment ends without
+  // one (see #78).
+  readonly #deferredRevisions = new Map<number, readonly ChatMessagePart[]>();
   #error: ChatErrorPayload | undefined;
   #terminalStatus: ChatStatus | undefined;
   #maxMessageId = 0;
@@ -280,30 +282,42 @@ export class TurnTranslator {
   #reconcileRevision(
     out: LanguageModelV4StreamPart[],
     rec: { text: string; reasoning: string },
-    fullText: string,
-    fullReasoning: string,
+    content: readonly ChatMessagePart[],
   ): void {
-    const textSuffix =
-      fullText.length > rec.text.length && fullText.startsWith(rec.text)
-        ? fullText.slice(rec.text.length)
-        : "";
-    const reasoningSuffix =
-      fullReasoning.length > rec.reasoning.length && fullReasoning.startsWith(rec.reasoning)
-        ? fullReasoning.slice(rec.reasoning.length)
-        : "";
-    if (!textSuffix && !reasoningSuffix) return;
+    const fullText = joinContent(content, "text");
+    const fullReasoning = joinContent(content, "reasoning");
+    // Per-kind extension gates: a kind's suffix emits only when the revision
+    // strictly extends what the ledger already emitted for it.
+    const textOk = fullText.length > rec.text.length && fullText.startsWith(rec.text);
+    const reasoningOk =
+      fullReasoning.length > rec.reasoning.length && fullReasoning.startsWith(rec.reasoning);
+    if (!textOk && !reasoningOk) return;
     this.#closeText(out);
     this.#closeReasoning(out);
-    if (reasoningSuffix) {
-      this.#emitReasoningDelta(out, reasoningSuffix);
-      rec.reasoning = fullReasoning;
-      this.#closeReasoning(out);
+    // Emit each kind's missing sub-span walking the snapshot in WIRE order —
+    // the same walk as first-sight reconciliation (see #ingestMessage) — so a
+    // revision appending both kinds surfaces its suffixes the way the model
+    // produced them, not reasoning-first (#79).
+    let seenText = 0;
+    let seenReasoning = 0;
+    for (const p of content) {
+      if (p.type === "text") {
+        const end = seenText + (p.text ?? "").length;
+        const from = Math.max(seenText, rec.text.length);
+        if (textOk && end > from) this.#emitTextDelta(out, fullText.slice(from, end));
+        seenText = end;
+      } else if (p.type === "reasoning") {
+        const end = seenReasoning + (p.text ?? "").length;
+        const from = Math.max(seenReasoning, rec.reasoning.length);
+        if (reasoningOk && end > from)
+          this.#emitReasoningDelta(out, fullReasoning.slice(from, end));
+        seenReasoning = end;
+      }
     }
-    if (textSuffix) {
-      this.#emitTextDelta(out, textSuffix);
-      rec.text = fullText;
-      this.#closeText(out);
-    }
+    if (textOk) rec.text = fullText;
+    if (reasoningOk) rec.reasoning = fullReasoning;
+    this.#closeText(out);
+    this.#closeReasoning(out);
   }
 
   // --- tool helpers ---------------------------------------------------------
@@ -518,7 +532,7 @@ export class TurnTranslator {
         // the current message: deltas carry no message id, so while the next
         // step streams, #currentAssistantId still names the last committed
         // one and its pending deltas must join the reconciliation below.
-        this.#reconcileRevision(out, known, fullText, fullReasoning);
+        this.#reconcileRevision(out, known, content);
       } else if (known && this.#deltasSinceSnapshot && known.substantive) {
         // A same-id snapshot racing the NEXT step's open deltas. A message
         // whose earlier snapshot already carried content — text, reasoning,
@@ -532,7 +546,7 @@ export class TurnTranslator {
         // Announce-style commits (the earlier snapshot was EMPTY) stay on
         // the attribution path below — their deltas ARE this message's
         // content.
-        this.#deferredRevisions.set(message.id, { text: fullText, reasoning: fullReasoning });
+        this.#deferredRevisions.set(message.id, content);
       } else {
         // First sight of this message, or a re-snapshot of the CURRENT one —
         // progressive snapshot-mode growth, or an announce-style commit
@@ -612,8 +626,7 @@ export class TurnTranslator {
         for (const [id, deferred] of this.#deferredRevisions) {
           if (id === message.id) continue;
           const deferredRec = this.#emittedByMessageId.get(id);
-          if (deferredRec)
-            this.#reconcileRevision(out, deferredRec, deferred.text, deferred.reasoning);
+          if (deferredRec) this.#reconcileRevision(out, deferredRec, deferred);
           this.#deferredRevisions.delete(id);
         }
       }
@@ -639,6 +652,18 @@ export class TurnTranslator {
 
   finish(): LanguageModelV4StreamPart[] {
     const out: LanguageModelV4StreamPart[] = [];
+    // Flush revisions still deferred behind a delta-ownership race that never
+    // settled — the racing step ended terminally (e.g. an error) without
+    // committing a snapshot, so the drain in #ingestMessage never ran. chatd
+    // sent each revision once; this is the segment's last chance to emit its
+    // suffix (#78). Attribution care: the pending deltas' owner never
+    // committed, so they attribute to no one — reconciliation is against the
+    // ledger alone, and only ledger-extension suffixes may emit.
+    for (const [id, deferred] of this.#deferredRevisions) {
+      const rec = this.#emittedByMessageId.get(id);
+      if (rec) this.#reconcileRevision(out, rec, deferred);
+    }
+    this.#deferredRevisions.clear();
     this.#closeText(out);
     this.#closeReasoning(out);
 

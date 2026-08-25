@@ -980,6 +980,95 @@ describe("TurnTranslator — earlier-message revision reconciliation (#57)", () 
   });
 });
 
+describe("TurnTranslator — deferred-revision flush at segment end (#78)", () => {
+  it("flushes a deferred revision when the segment ends terminally without a settling snapshot", () => {
+    // A same-id revision deferred behind the next step's open deltas is
+    // normally drained by that step's settling snapshot. If the step instead
+    // dies terminally (error mid-generation) WITHOUT committing, finish() is
+    // the segment's last chance — chatd sent the revision once and will not
+    // re-send it on a healthy connection.
+    const { parts } = run([
+      msg(2, "assistant", [{ type: "text", text: "A" }]),
+      part("assistant", { type: "text", text: "B" }), // next step's deltas, never committed
+      msg(2, "assistant", [{ type: "text", text: "A+" }]), // mid-race revision, sent once
+      status("error"), // terminal: no settling snapshot ever arrives
+    ]);
+    // The unclaimed next-step delta "B" stays in its block; the revision
+    // suffix "+" lands bracketed at finish.
+    expect(textBlocks(parts)).toEqual(["AB", "+"]);
+  });
+
+  it("keeps suppressing a deferred rewrite at the terminal flush", () => {
+    // Attribution care: at finish the pending deltas' owner never committed,
+    // so the flush may emit only ledger-extension suffixes — a deferred
+    // REWRITE ("X" does not extend "A") stays suppressed, exactly as it
+    // would on the settled path.
+    const { parts } = run([
+      msg(2, "assistant", [{ type: "text", text: "A" }]),
+      part("assistant", { type: "text", text: "B" }),
+      msg(2, "assistant", [{ type: "text", text: "X" }]), // rewrite, deferred
+      status("error"),
+    ]);
+    expect(textBlocks(parts)).toEqual(["AB"]);
+  });
+});
+
+describe("TurnTranslator — multi-kind revision suffixes in wire order (#79)", () => {
+  /** Kind-tagged delta sequence, for asserting cross-kind emission order. */
+  const deltas = (parts: ReturnType<TurnTranslator["ingest"]>): string[] =>
+    parts.flatMap((p) =>
+      p.type === "text-delta" || p.type === "reasoning-delta"
+        ? [`${p.type === "text-delta" ? "text" : "reasoning"}:${p.delta}`]
+        : [],
+    );
+
+  it("emits an earlier-message revision's suffixes in wire-part order, not kind-grouped", () => {
+    // Message 2 emitted [text "A", reasoning "R"]; a revision appends to BOTH
+    // kinds: [text "AB", reasoning "RQ"]. The suffixes must surface in the
+    // snapshot's wire order — "B" then "Q" — not reasoning-first.
+    const { parts } = run([
+      msg(2, "assistant", [
+        { type: "text", text: "A" },
+        { type: "reasoning", text: "R" },
+      ]),
+      msg(4, "assistant", [{ type: "text", text: "Second" }]),
+      msg(2, "assistant", [
+        { type: "text", text: "AB" },
+        { type: "reasoning", text: "RQ" },
+      ]),
+      status("waiting"),
+    ]);
+    expect(deltas(parts)).toEqual([
+      "text:A",
+      "reasoning:R",
+      "text:Second",
+      "text:B",
+      "reasoning:Q",
+    ]);
+    // The suffixes stay bracketed in their own blocks, outside "Second"'s.
+    expect(textBlocks(parts)).toEqual(["A", "Second", "B"]);
+  });
+
+  it("emits a deferred multi-kind revision in wire order once the race settles", () => {
+    // The deferred-revision drain reconciles through the same path, so a
+    // revision cached during a delta race must also keep wire-part order.
+    const { parts } = run([
+      msg(2, "assistant", [
+        { type: "text", text: "A" },
+        { type: "reasoning", text: "R" },
+      ]),
+      part("assistant", { type: "text", text: "B" }), // next step's deltas open
+      msg(2, "assistant", [
+        { type: "text", text: "A2" },
+        { type: "reasoning", text: "RQ" },
+      ]), // mid-race revision: deferred
+      msg(4, "assistant", [{ type: "text", text: "B" }]), // settles the race
+      status("waiting"),
+    ]);
+    expect(deltas(parts)).toEqual(["text:A", "reasoning:R", "text:B", "text:2", "reasoning:Q"]);
+  });
+});
+
 describe("TurnTranslator — retained-stream replays (#44)", () => {
   it("clears a stale terminal status when a non-terminal transition follows", () => {
     // A stream retained across a client-tool pause can redial mid-resume:

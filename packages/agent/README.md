@@ -1104,24 +1104,38 @@ checkpoint:
   if the tool's external effect committed before the crash, that pause is the
   only pending record of it, so reconcile the tool ledger **before** any
   interrupt ([Make client tools crash-safe](#make-client-tools-crash-safe)).
-  Both cases have one remedy — after a crash, interrupt the chat and **wait
-  until it actually settles** before resuming:
+  Both cases have one remedy — stop what the crash left behind and **wait
+  until the chat actually settles** before deciding: a client‑tool pause is
+  reconciled, never interrupted away; anything else is interrupted:
   `interrupt()` resolves on acknowledgment while the run keeps winding down
   (and committing) for a few more seconds, so poll the chat's status to a
   terminal one first. On a chat with no live run the interrupt rejects with a
   409 `CoderApiError`; that's the good case — ignore it:
 
   ```ts
+  // The ledger reconciliation from "Make client tools crash-safe" (below);
+  // resolves to its `unstarted` — true only when it fell back to interrupting.
+  declare function reconcileClientTools(): Promise<boolean>;
+
   // Bounded: a stalled deployment must fail the step, not hang it.
   const deadline = AbortSignal.timeout(15_000);
-  // Whether the interrupt stopped a live run drives the resubmit decision
+  // Whether an interrupt stopped a live run drives the resubmit decision
   // below: a 409 means there was nothing to stop.
   let cutShort = true;
-  await agent.interrupt({ signal: deadline }).catch((err) => {
-    if (err instanceof CoderApiError && err.status === 409) cutShort = false;
-    else throw err;
-  });
-  let status;
+  let { status } = await agent.client.getChat(agent.chatId!, deadline);
+  if (status === "requires_action") {
+    // The crash hit a client tool mid-execution: this pause is the only
+    // pending record of its committed effects. Never interrupt it away —
+    // reconcile the ledger instead (below): it submits recorded results
+    // (reviving the run — nothing was cut short) or interrupts itself only
+    // when nothing committed.
+    cutShort = await reconcileClientTools();
+  } else {
+    await agent.interrupt({ signal: deadline }).catch((err) => {
+      if (err instanceof CoderApiError && err.status === 409) cutShort = false;
+      else throw err;
+    });
+  }
   do {
     ({ status } = await agent.client.getChat(agent.chatId!, deadline));
     if (status === "waiting" || status === "completed" || status === "error") break;
@@ -1253,6 +1267,8 @@ for (const call of pending) {
 }
 if (results.length > 0) await agent.client.submitToolResults(agent.chatId!, { results }, deadline);
 if (unstarted) await agent.client.interruptChat(agent.chatId!, deadline);
+// As `reconcileClientTools()` in the settle-wait snippet above: resolve to
+// `unstarted` — cutShort is true only when this fell back to interrupting.
 ```
 
 - **Only interrupt when the ledger shows no committed effect.** Submitted
@@ -1261,15 +1277,16 @@ if (unstarted) await agent.client.interruptChat(agent.chatId!, deadline);
   recorded outcome survives for the resubmitted turn to see.
 - **Submitting answers the pause; it does not revive your tool loop.** Once
   every pending call is answered, the turn resumes **server‑side** with no
-  process streaming it. In the settle‑wait that follows, skip the interrupt —
-  nothing stranded is left to stop, and an interrupt now would cut down the
-  very run the submission revived — and **pin `cutShort = false`**: nothing
-  was cut short, and the next section's `!cutShort` check must classify the
-  resumed run's finish as a completed attempt, not resubmit it. Give the
-  poll a turn‑scale deadline rather than the 15 s interrupt bound; it exits
-  on `requires_action` (stable here, with no accepted interrupt clearing
-  it), which means the resumed run called a _new_ tool — reconcile again; a
-  call with no ledger entry is safe to interrupt.
+  process streaming it. That is why the settle‑wait's reconcile branch never
+  interrupts a pause — nothing stranded is left to stop, and an interrupt
+  now would cut down the very run the submission revived — and why the
+  resolved `unstarted` leaves **`cutShort = false`** after a submission:
+  nothing was cut short, and the next section's `!cutShort` check must
+  classify the resumed run's finish as a completed attempt, not resubmit
+  it. Give the poll a turn‑scale deadline rather than the 15 s interrupt
+  bound; it exits on `requires_action` (stable here, with no accepted
+  interrupt clearing it), which means the resumed run called a _new_ tool —
+  reconcile again; a call with no ledger entry is safe to interrupt.
 - **The finished run's output lands only in history** — recover it like any
   completed‑but‑unrecorded attempt (next section) instead of resubmitting.
 

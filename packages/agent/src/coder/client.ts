@@ -355,7 +355,12 @@ export class CoderChatClient {
 
   streamEvents(
     chatId: string,
-    opts?: { afterId?: number; signal?: AbortSignal },
+    opts?: {
+      afterId?: number;
+      signal?: AbortSignal;
+      /** Pre-allocated reader id for `ws:*` events — see {@link streamChatEvents}. */
+      reader?: number;
+    },
   ): AsyncGenerator<ChatStreamEvent, void, void> {
     return streamChatEvents({
       baseUrl: this.baseUrl,
@@ -363,6 +368,7 @@ export class CoderChatClient {
       chatId,
       afterId: opts?.afterId,
       signal: opts?.signal,
+      reader: opts?.reader,
       webSocketFactory: this.#webSocketFactory,
       onTransportEvent: this.#onTransportEvent,
     });

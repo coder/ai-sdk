@@ -40,6 +40,12 @@ import type { ChatStreamEvent } from "../coder/types.js";
  */
 export class SessionChatStream {
   readonly chatId: string;
+  /**
+   * The reader id stamped on the wrapped reader's `ws:*` transport events —
+   * the model stamps it on `segment:settle` so segments correlate with the
+   * connection that served them (issue #94).
+   */
+  readonly reader: number;
   readonly #events: AsyncGenerator<ChatStreamEvent, void, void>;
   readonly #controller = new AbortController();
 
@@ -50,10 +56,13 @@ export class SessionChatStream {
 
   constructor(opts: {
     chatId: string;
+    /** The reader id `open` passes to the underlying `streamChatEvents` call. */
+    reader: number;
     /** Opens the underlying reader, bound to the stream's lifetime signal. */
     open: (signal: AbortSignal) => AsyncGenerator<ChatStreamEvent, void, void>;
   }) {
     this.chatId = opts.chatId;
+    this.reader = opts.reader;
     this.#events = opts.open(this.#controller.signal);
   }
 

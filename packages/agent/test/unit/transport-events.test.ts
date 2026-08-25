@@ -997,3 +997,292 @@ describe("transport events: isolation and overhead", () => {
     }
   });
 });
+
+// --- reader ids (#94) ----------------------------------------------------------
+
+type WsEvent = Extract<CoderTransportEvent, { type: `ws:${string}` }>;
+type SegmentEvent = Extract<CoderTransportEvent, { type: `segment:${string}` }>;
+
+describe("transport events: reader ids (#94)", () => {
+  const clientToolFixtures = () => {
+    const tools = [
+      { type: "function", name: "getWeather", description: "w", inputSchema: { type: "object" } },
+    ];
+    const pauseFrame = streamFrame(
+      status("running"),
+      delta(1, 1, "Checking."),
+      msg(3, "assistant", [
+        { type: "text", text: "Checking." },
+        { type: "tool-call", tool_call_id: "c1", tool_name: "getWeather", args: { city: "Paris" } },
+      ]),
+      status("requires_action"),
+      {
+        type: "action_required",
+        chat_id: "chat-1",
+        action_required: {
+          tool_calls: [{ tool_call_id: "c1", tool_name: "getWeather", args: '{"city":"Paris"}' }],
+        },
+      },
+    );
+    return { tools, pauseFrame };
+  };
+
+  it("an abandoned pause's reader keeps its id; the replacement dials with a new one at attempt 1", async () => {
+    vi.useFakeTimers();
+    try {
+      const { events, model, sockets } = harness();
+      const { tools, pauseFrame } = clientToolFixtures();
+      // Segment 1: new turn → requires_action pause; the stream is retained.
+      const s1 = collect(
+        (
+          await model.doStream({
+            prompt: [{ role: "user", content: [{ type: "text", text: "weather?" }] }],
+            tools,
+          } as never)
+        ).stream,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("message", pauseFrame);
+      await vi.advanceTimersByTimeAsync(0);
+      await s1.done;
+
+      // The caller abandons the pause: a fresh user turn (no tool results)
+      // replaces the retained stream — #acquireStream closes the old reader
+      // fire-and-forget and dials a new one on the same chat.
+      const s2 = collect((await model.doStream(newTurnOptions())).stream);
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[1]?.emit(
+        "message",
+        streamFrame(
+          status("running"),
+          delta(2, 1, "Hi."),
+          msg(5, "assistant", [{ type: "text", text: "Hi." }]),
+          status("waiting"),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      await s2.done;
+
+      const dials = events.filter((e) => e.type === "ws:dial") as WsEvent[];
+      expect(dials).toHaveLength(2);
+      const [r1, r2] = [dials[0]!.reader, dials[1]!.reader];
+      // A fresh reader id per streamChatEvents call, monotonically increasing;
+      // attempt restarts at 1 per reader — (chatId, attempt) alone is
+      // ambiguous here, (chatId, reader, attempt) is not.
+      expect(r2).toBeGreaterThan(r1);
+      expect(dials.map((d) => d.attempt)).toEqual([1, 1]);
+      expect(dials.map((d) => d.chatId)).toEqual(["chat-1", "chat-1"]);
+
+      // The abandoned reader's teardown close carries the OLD reader id (it
+      // can emit after the replacement's dial — the id is what disambiguates,
+      // not ordering), locally closed so no close code.
+      const closes = events.filter((e) => e.type === "ws:close") as WsEvent[];
+      expect(closes.map((c) => c.reader).sort((a, b) => a - b)).toEqual([r1, r2]);
+      expect(closes.every((c) => c.attempt === 1 && !("code" in c))).toBe(true);
+
+      // Every ws:* event names its reader; nothing leaks across readers.
+      const wsEvents = events.filter((e) => e.type.startsWith("ws:")) as WsEvent[];
+      expect(wsEvents.every((e) => e.reader === r1 || e.reader === r2)).toBe(true);
+
+      // Segments correlate with the reader that served them; segment:start
+      // predates stream acquisition and carries none.
+      const segments = events.filter((e) => e.type.startsWith("segment:")) as SegmentEvent[];
+      expect(segments.map((e) => ({ type: e.type, segment: e.segment, reader: e.reader }))).toEqual(
+        [
+          { type: "segment:start", segment: 1, reader: undefined },
+          { type: "segment:settle", segment: 1, reader: r1 },
+          { type: "segment:start", segment: 2, reader: undefined },
+          { type: "segment:settle", segment: 2, reader: r2 },
+        ],
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a redial keeps the reader id (attempt increments); the next turn's reader restarts attempts", async () => {
+    vi.useFakeTimers();
+    try {
+      const { events, model, sockets } = harness();
+      // Turn 1: the first connection drops, the redial (same reader,
+      // attempt 2) completes the turn.
+      const s1 = collect((await model.doStream(newTurnOptions())).stream);
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("close", { code: 1006 });
+      await vi.advanceTimersByTimeAsync(1000);
+      sockets[1]?.emit(
+        "message",
+        streamFrame(
+          status("running"),
+          delta(1, 1, "Hello"),
+          msg(2, "assistant", [{ type: "text", text: "Hello" }]),
+          status("waiting"),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      await s1.done;
+
+      // Turn 2 on the same chat: a fresh reader, attempts restarting at 1.
+      const s2 = collect((await model.doStream(newTurnOptions())).stream);
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[2]?.emit(
+        "message",
+        streamFrame(
+          status("running"),
+          delta(2, 1, "Again"),
+          msg(4, "assistant", [{ type: "text", text: "Again" }]),
+          status("waiting"),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      await s2.done;
+
+      const dials = events.filter((e) => e.type === "ws:dial") as WsEvent[];
+      expect(dials.map((d) => d.attempt)).toEqual([1, 2, 1]);
+      const turn1Reader = dials[0]!.reader;
+      expect(dials[1]!.reader).toBe(turn1Reader);
+      expect(dials[2]!.reader).toBeGreaterThan(turn1Reader);
+      // The redial notice belongs to the reader whose connection dropped.
+      const redial = events.find((e) => e.type === "ws:redial") as WsEvent;
+      expect(redial.reader).toBe(turn1Reader);
+
+      const settles = events.filter((e) => e.type === "segment:settle") as SegmentEvent[];
+      expect(settles.map((s) => s.reader)).toEqual([turn1Reader, dials[2]!.reader]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("segments of one client-tool turn share the retained stream's reader", async () => {
+    vi.useFakeTimers();
+    try {
+      const { events, model, sockets } = harness();
+      const { tools, pauseFrame } = clientToolFixtures();
+      const s1 = collect(
+        (
+          await model.doStream({
+            prompt: [{ role: "user", content: [{ type: "text", text: "weather?" }] }],
+            tools,
+          } as never)
+        ).stream,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("message", pauseFrame);
+      await vi.advanceTimersByTimeAsync(0);
+      await s1.done;
+
+      // Tool-result resume: the SAME stream (and reader) serves segment 2.
+      const s2 = collect(
+        (
+          await model.doStream({
+            prompt: [
+              { role: "user", content: [{ type: "text", text: "weather?" }] },
+              {
+                role: "assistant",
+                content: [
+                  {
+                    type: "tool-call",
+                    toolCallId: "c1",
+                    toolName: "getWeather",
+                    input: { city: "Paris" },
+                  },
+                ],
+              },
+              {
+                role: "tool",
+                content: [
+                  {
+                    type: "tool-result",
+                    toolCallId: "c1",
+                    toolName: "getWeather",
+                    output: { type: "json", value: { temp: 21 } },
+                  },
+                ],
+              },
+            ],
+            tools,
+          } as never)
+        ).stream,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit(
+        "message",
+        streamFrame(
+          status("running"),
+          delta(2, 1, "It is 21C."),
+          msg(5, "assistant", [{ type: "text", text: "It is 21C." }]),
+          status("waiting"),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      await s2.done;
+
+      expect(sockets).toHaveLength(1);
+      const dials = events.filter((e) => e.type === "ws:dial") as WsEvent[];
+      expect(dials).toHaveLength(1);
+      const settles = events.filter((e) => e.type === "segment:settle") as SegmentEvent[];
+      expect(settles.map((s) => s.reader)).toEqual([dials[0]!.reader, dials[0]!.reader]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("direct streamEvents calls get distinct reader ids even across client instances", async () => {
+    const events: CoderTransportEvent[] = [];
+    const sockets: FakeSocket[] = [];
+    const factory: WebSocketFactory = (url) => {
+      const s = new FakeSocket(url);
+      sockets.push(s);
+      return s as WebSocketLike;
+    };
+    const mkClient = () =>
+      new CoderChatClient({
+        baseUrl: "https://x",
+        token: TOKEN,
+        webSocketFactory: factory,
+        onTransportEvent: (ev) => events.push(ev),
+      });
+    // Two clients sharing one subscriber: a per-instance counter would hand
+    // both readers id 1 — the module-global counter keeps them distinct.
+    const genA = mkClient().streamEvents("chat-1");
+    const genB = mkClient().streamEvents("chat-1");
+    const reads = [genA.next(), genB.next()];
+    await Promise.resolve();
+    await genA.return(undefined);
+    await genB.return(undefined);
+    await Promise.allSettled(reads);
+
+    const dials = events.filter((e) => e.type === "ws:dial") as WsEvent[];
+    expect(dials).toHaveLength(2);
+    expect(dials[0]!.reader).not.toBe(dials[1]!.reader);
+    expect(dials.map((d) => d.attempt)).toEqual([1, 1]);
+  });
+
+  it("a settle without an acquired stream carries no reader", async () => {
+    const events: CoderTransportEvent[] = [];
+    const failingFetch = (() =>
+      Promise.resolve(new Response("nope", { status: 500 }))) as unknown as typeof fetch;
+    const client = new CoderChatClient({
+      baseUrl: "https://x",
+      token: TOKEN,
+      fetch: failingFetch,
+      onTransportEvent: (ev) => events.push(ev),
+    });
+    const model = new CoderLanguageModel({
+      client,
+      organizationId: "org-1",
+      onTransportEvent: (ev) => events.push(ev),
+    });
+    // createChat 500s: the segment fails before any stream exists.
+    const s = collect((await model.doStream(newTurnOptions())).stream);
+    await s.done.catch(() => {});
+
+    const settle = events.find((e) => e.type === "segment:settle") as Extract<
+      CoderTransportEvent,
+      { type: "segment:settle" }
+    >;
+    expect(settle.error).toBeDefined();
+    expect(settle.reader).toBeUndefined();
+    expect(events.some((e) => e.type.startsWith("ws:"))).toBe(false);
+  });
+});

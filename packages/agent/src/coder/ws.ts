@@ -58,6 +58,30 @@ export interface StreamChatEventsOptions {
    * listeners are registered. See {@link CoderTransportEvent}.
    */
   onTransportEvent?: TransportEventHandler;
+  /**
+   * Reader id stamped on this call's `ws:*` events, for callers that need to
+   * know it (the model records it to stamp `segment:settle` with the reader
+   * that served the segment). Must come from {@link nextStreamReaderId};
+   * allocated automatically when absent.
+   */
+  reader?: number;
+}
+
+/**
+ * Monotonic reader-id source for `ws:*` transport events (issue #94). One
+ * module-global counter — deliberately not per client or model instance, so
+ * `(chatId, reader, attempt)` stays unique for the lifetime of any subscriber,
+ * even a handler shared across instances. Advanced on every `streamChatEvents`
+ * call (one integer increment per turn — the #45 zero-overhead property is
+ * about event objects and listeners), subscriber or not, so ids stay globally
+ * consistent when only some clients are observed.
+ */
+let readerSeq = 0;
+
+/** Allocates the next reader id (see {@link StreamChatEventsOptions.reader}). */
+export function nextStreamReaderId(): number {
+  readerSeq += 1;
+  return readerSeq;
 }
 
 const STREAM_BACKOFF_INITIAL_MS = 1_000;
@@ -131,7 +155,10 @@ export function streamChatEvents(
     if (external.aborted) chain();
     else external.addEventListener("abort", chain, { once: true });
   }
-  const inner = streamChatEventsLoop({ ...options, signal: controller.signal });
+  // The reader id is fixed at call time (before the first dial), so every
+  // `ws:*` event of this reader — across redials — carries the same id.
+  const reader = options.reader ?? nextStreamReaderId();
+  const inner = streamChatEventsLoop({ ...options, reader, signal: controller.signal });
   const detach = (): void => external?.removeEventListener("abort", chain);
   const finish = async (): Promise<void> => {
     controller.abort();
@@ -176,9 +203,9 @@ export function streamChatEvents(
 }
 
 async function* streamChatEventsLoop(
-  options: StreamChatEventsOptions,
+  options: StreamChatEventsOptions & { reader: number },
 ): AsyncGenerator<ChatStreamEvent, void, void> {
-  const { baseUrl, token, chatId, signal } = options;
+  const { baseUrl, token, chatId, signal, reader } = options;
   const factory = options.webSocketFactory ?? defaultFactory;
   // Exception-isolated observability emitter; undefined without a subscriber,
   // and every emit site below is guarded on that so the no-subscriber path
@@ -237,7 +264,7 @@ async function* streamChatEventsLoop(
     };
 
     attempt += 1;
-    emit?.({ type: "ws:dial", chatId, attempt, url, timestamp: Date.now() });
+    emit?.({ type: "ws:dial", chatId, reader, attempt, url, timestamp: Date.now() });
     let ws: WebSocketLike;
     try {
       ws = factory(url, { headers: { "Coder-Session-Token": token } });
@@ -247,8 +274,8 @@ async function* streamChatEventsLoop(
       // the emitted dial still gets its error and exactly-one close.
       if (emit) {
         const message = err instanceof Error ? err.message : String(err);
-        emit({ type: "ws:error", chatId, attempt, message, timestamp: Date.now() });
-        emit({ type: "ws:close", chatId, attempt, timestamp: Date.now() });
+        emit({ type: "ws:error", chatId, reader, attempt, message, timestamp: Date.now() });
+        emit({ type: "ws:close", chatId, reader, attempt, timestamp: Date.now() });
       }
       throw err;
     }
@@ -281,6 +308,7 @@ async function* streamChatEventsLoop(
         emit?.({
           type: "ws:error",
           chatId,
+          reader,
           attempt,
           message: "failed to parse chat stream frame",
           timestamp: Date.now(),
@@ -300,6 +328,7 @@ async function* streamChatEventsLoop(
           emit?.({
             type: "ws:event",
             chatId,
+            reader,
             attempt,
             event: e as ChatStreamEvent,
             timestamp: Date.now(),
@@ -310,6 +339,7 @@ async function* streamChatEventsLoop(
         emit?.({
           type: "ws:event",
           chatId,
+          reader,
           attempt,
           event: batch as ChatStreamEvent,
           timestamp: Date.now(),
@@ -323,7 +353,7 @@ async function* streamChatEventsLoop(
         ev && typeof ev === "object" && "message" in ev
           ? String((ev as { message: unknown }).message)
           : "chat stream socket error";
-      emit?.({ type: "ws:error", chatId, attempt, message, timestamp: Date.now() });
+      emit?.({ type: "ws:error", chatId, reader, attempt, message, timestamp: Date.now() });
       const status = upgradeStatus(message);
       failure =
         status !== undefined &&
@@ -341,6 +371,7 @@ async function* streamChatEventsLoop(
         const closeEvent: StreamCloseTransportEvent = {
           type: "ws:close",
           chatId,
+          reader,
           attempt,
           timestamp: Date.now(),
         };
@@ -354,7 +385,7 @@ async function* streamChatEventsLoop(
     // Registered only for observability — the reader itself never waits for
     // the handshake (a send-less consumer just reads whatever arrives).
     const onOpen = emit
-      ? (): void => emit({ type: "ws:open", chatId, attempt, timestamp: Date.now() })
+      ? (): void => emit({ type: "ws:open", chatId, reader, attempt, timestamp: Date.now() })
       : undefined;
     if (onOpen) ws.addEventListener("open", onOpen);
     ws.addEventListener("message", onMessage);
@@ -440,7 +471,7 @@ async function* streamChatEventsLoop(
       // `reason` only when the server/network closed the socket.
       if (emit && !closeEmitted) {
         closeEmitted = true;
-        emit({ type: "ws:close", chatId, attempt, timestamp: Date.now() });
+        emit({ type: "ws:close", chatId, reader, attempt, timestamp: Date.now() });
       }
     }
 
@@ -478,6 +509,7 @@ async function* streamChatEventsLoop(
     emit?.({
       type: "ws:redial",
       chatId,
+      reader,
       attempt,
       consecutiveFailures: failures,
       maxConsecutiveFailures: STREAM_MAX_CONSECUTIVE_FAILURES,

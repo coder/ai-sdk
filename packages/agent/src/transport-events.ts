@@ -76,8 +76,23 @@ export interface HttpErrorTransportEvent extends HttpTransportEventBase {
 interface StreamTransportEventBase extends TransportEventBase {
   chatId: string;
   /**
+   * Identifies the reader (one `streamChatEvents` call) this event belongs
+   * to: monotonically increasing, allocated per call from one module-global
+   * (process-wide) counter — NOT per model or client instance, so
+   * `(chatId, reader, attempt)` stays unique for the lifetime of any
+   * subscriber, even one shared across instances (issue #94). Readers on
+   * other chats/clients advance the same counter, so ids are ordered but not
+   * dense per chat. Use it to tell a superseded reader's late events apart
+   * from the live reader's: a client-tool pause abandoned by the caller is
+   * closed fire-and-forget when the next turn dials its replacement, and the
+   * old reader's `ws:close` (or a raced-in frame) can emit after the new
+   * reader's `ws:dial` — both would otherwise be ambiguous at `attempt` 1.
+   */
+  reader: number;
+  /**
    * 1-based connection attempt within one reader (`streamChatEvents` call —
-   * with stream retention (#44), one per turn). Increments on every redial.
+   * with stream retention (#44), one per turn). Increments on every redial
+   * and restarts at 1 for each new reader.
    */
   attempt: number;
 }
@@ -148,6 +163,17 @@ interface SegmentTransportEventBase extends TransportEventBase {
   segment: number;
   /** Undefined on a first turn's start until the chat is created. */
   chatId?: string;
+  /**
+   * The reader (`streamChatEvents` call — the `reader` on `ws:*` events) that
+   * served this segment, correlating it with the connection's `ws:*` events.
+   * Absent on `segment:start`, which is emitted before the segment acquires
+   * its stream (a fresh turn dials only once the chat exists, and even a
+   * stream retained by a client-tool pause can still be replaced — stamping a
+   * predicted reader could lie), and on a settle when the segment failed
+   * before acquiring one. Segments of one turn share the reader: the stream
+   * is retained across `requires_action` pauses (#44).
+   */
+  reader?: number;
 }
 
 /**

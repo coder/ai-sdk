@@ -1300,21 +1300,17 @@ for (const call of pending) {
     unstarted = true; // the tool never ran — interrupting loses nothing
   }
 }
-if (results.length > 0) {
-  // Write-ahead, like the ledger: an accepted submission revives the run,
-  // and a recovery pass that dies after this line must not let the NEXT
-  // pass interrupt the revived run. Clear the journal entry only once the
-  // step's result is finally recorded.
-  await journal.set(agent.chatId!, "resumed");
-  await agent.client.submitToolResults(agent.chatId!, { results }, deadline);
+if (results.length > 0 || unstarted) {
+  // ONE write-ahead with the batch's FINAL verdict, before any network
+  // call — a mixed batch journals "cut-short" before even its submission,
+  // so no crash point can leave a stale "resumed" masking the pending
+  // interrupt. Every crash then either re-reconciles the stable pause or
+  // re-drives the journaled intent. Clear the entry only once the step's
+  // result is finally recorded.
+  await journal.set(agent.chatId!, unstarted ? "cut-short" : "resumed");
 }
-if (unstarted) {
-  // Also write-ahead — and it OVERWRITES a mixed batch's "resumed": once
-  // this interrupt lands the attempt is truncated, and a journal still
-  // saying "resumed" would make the next pass recover it as finished.
-  await journal.set(agent.chatId!, "cut-short");
-  await agent.client.interruptChat(agent.chatId!, deadline);
-}
+if (results.length > 0) await agent.client.submitToolResults(agent.chatId!, { results }, deadline);
+if (unstarted) await agent.client.interruptChat(agent.chatId!, deadline);
 // As `reconcileClientTools()` in the settle-wait snippet above: resolve to
 // `unstarted` — cutShort is true only when this fell back to interrupting.
 ```

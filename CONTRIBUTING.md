@@ -6,6 +6,9 @@ packages — `@coder/ai-sdk-sandbox`, `@coder/ai-sdk-agent`, and
 All three target Vercel AI SDK v7, and pnpm keeps their dependency trees
 isolated.
 
+Repo-operational knowledge — review protocol, release quirks, invariants — lives
+in [AGENTS.md](./AGENTS.md).
+
 ## Setup
 
 The toolchain — node, pnpm, and the workflow linters — is pinned in

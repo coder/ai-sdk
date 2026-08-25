@@ -919,10 +919,10 @@ export async function runTurn(workflowId: string, prompt: string): Promise<strin
     // The durable resume handle — written even when the turn failed: a first
     // step that fails AFTER creating its chat (timeout, stream loss) must
     // still persist the id, or the retried step orphans a live chat and its
-    // partial effects. When an exhausted stream failure killed a chat this
-    // very call created, the SDK has already discarded the dead session
-    // (agent.chatId is undefined again), so nothing is written and a retry
-    // starts fresh — as intended.
+    // partial effects. Exception: after an exhausted stream failure on a
+    // chat this very call created, the SDK has already discarded the dead
+    // session (agent.chatId is undefined) and nothing is written — see the
+    // CoderStreamError notes below for what retrying means then.
     if (agent.chatId) await checkpoints.set(workflowId, agent.chatId);
   }
 }
@@ -1027,7 +1027,14 @@ try {
   created its chat _and_ had no external effects a replay would repeat (no
   workspace, no MCP servers, no fresh inline uploads); the SDK then discards
   the dead session so a retry — `maxRetries` or a re‑run step — starts clean
-  on a fresh chat. **On a resumed chat it is always `isRetryable: false`:**
+  on a fresh chat. The discard happens for _every_ chat the failed turn
+  itself created — **including the effectful, `isRetryable: false` case**:
+  the id is gone, the `finally` checkpoint writes nothing, and the
+  interrupted chat — whose workspace/MCP tools may already have acted —
+  becomes an unacknowledged orphan for the reconciliation sweep (below). A
+  retried step then starts a fresh chat that has _not_ seen the orphan's
+  effects: gate that retry on the same idempotency judgment as any
+  re‑submission. **On a resumed chat it is always `isRetryable: false`:**
   re‑running the step resubmits the same prompt as a _new user turn_, with the
   failed attempt's partial output still in history (usually fine — the model
   sees its own aborted attempt), and any workspace/MCP tool effects that ran
@@ -1050,9 +1057,11 @@ checkpoint:
   not proof of nothing: a crash or `requestTimeoutMs` expiry while the create
   request was _in flight_ can leave a chat the server committed but whose id
   never arrived — unreachable even by the SDK's own interrupt. Treat "no
-  checkpoint" as _at most one unacknowledged chat may exist_, not as a clean
-  slate; the reconciliation sweep below is what retires it (and its
-  workspace/MCP effects, if the deployment auto‑attached any).
+  checkpoint" as _up to one unacknowledged chat per attempt may exist_ — not
+  as a clean slate, and automatic step retries can stack several. The
+  reconciliation sweep below must therefore retire _every_ matching orphan
+  (and its workspace/MCP effects, if the deployment auto‑attached any), not
+  stop at the first.
 - **Crashed after creation, before the checkpoint** — the chat is orphaned:
   its run keeps generating until it settles on its own — or, if the crash hit
   one of your client tools, never settles: it stays paused in

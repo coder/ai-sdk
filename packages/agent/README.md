@@ -1164,9 +1164,11 @@ declare const payments: {
   charge(amountCents: number, opts: { idempotencyKey: string }): Promise<{ receiptId: string }>;
 };
 
+const ChargeArgs = z.object({ amountCents: z.number().int() });
+
 const chargeCard = tool({
   description: "Charge the customer's card.",
-  inputSchema: z.object({ amountCents: z.number().int() }),
+  inputSchema: ChargeArgs, // shared with recovery's re-drive dispatch below
   execute: async ({ amountCents }, { toolCallId }) => {
     // Write-ahead, BEFORE the effect: a crash between the two writes leaves
     // "committing" (ambiguous, but resolvable below); no entry at all proves
@@ -1215,7 +1217,11 @@ for (const call of pending) {
     // "committing" is ambiguous — the crash hit between the write-ahead and
     // "done". Safe to re-drive: the SAME idempotency key makes a committed
     // effect replay as a no-op, and the call's args are committed in history.
-    const { amountCents } = call.args as { amountCents: number };
+    // Dispatch by tool name — every ledgered tool needs its own re-drive
+    // path, its args validated exactly as the live loop would have.
+    if (call.tool_name !== "charge_card")
+      throw new Error(`no re-drive path for tool ${call.tool_name}`);
+    const { amountCents } = ChargeArgs.parse(call.args);
     const { receiptId } = await payments.charge(amountCents, {
       idempotencyKey: call.tool_call_id!,
     });

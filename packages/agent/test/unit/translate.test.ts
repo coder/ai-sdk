@@ -1026,6 +1026,40 @@ describe("TurnTranslator — deferred-revision flush at segment end (#78)", () =
     expect(textBlocks([...before, ...errParts])).toEqual(["AB", "+"]);
   });
 
+  it("flushes deferred revisions before emitting action-required tool calls", () => {
+    // A deferred revision followed by a client-tool pause WITHOUT a settling
+    // assistant snapshot: the revision arrived first, so its suffix must
+    // surface before the tool call — not trail it via the finish-time drain,
+    // which would reverse the stream's content order for consumers.
+    const { parts } = run([
+      msg(2, "assistant", [{ type: "text", text: "A" }]),
+      part("assistant", { type: "text", text: "B" }), // next step's deltas open
+      msg(2, "assistant", [{ type: "text", text: "A+" }]), // mid-race revision: deferred
+      {
+        type: "action_required",
+        chat_id: "c",
+        action_required: {
+          tool_calls: [{ tool_call_id: "tc1", tool_name: "myTool", args: "{}" }],
+        },
+      },
+      status("requires_action"),
+    ]);
+    expect(parts.map((p) => p.type)).toEqual([
+      "text-start",
+      "text-delta", // "A"
+      "text-delta", // "B" — the open next-step block
+      "text-end",
+      "text-start",
+      "text-delta", // flushed revision suffix "+"
+      "text-end",
+      "tool-input-start",
+      "tool-input-end",
+      "tool-call",
+      "finish",
+    ]);
+    expect(textBlocks(parts)).toEqual(["AB", "+"]);
+  });
+
   it("keeps suppressing a deferred rewrite at the terminal flush", () => {
     // Attribution care: at finish the pending deltas' owner never committed,
     // so the flush may emit only ledger-extension suffixes — a deferred

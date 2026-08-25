@@ -419,6 +419,12 @@ export class TurnTranslator {
           // A replayed pause snapshot for a call this session already
           // answered (see the constructor doc) — not this segment's work.
           if (this.#submittedToolCallIds.has(tc.tool_call_id)) continue;
+          // A pause can follow a deferred revision without a settling
+          // assistant snapshot; the revision arrived first, so its suffix
+          // must precede the tool call to keep the stream's content order
+          // (as the error branch already does). Replayed/answered calls
+          // above skip this — a replay must stay a no-op.
+          this.#flushDeferredRevisions(out);
           this.#closeText(out);
           this.#closeReasoning(out);
           this.#clientToolCalls.add(tc.tool_call_id);

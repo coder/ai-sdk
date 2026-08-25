@@ -1128,15 +1128,31 @@ checkpoint:
   // to interrupting — and journals each action write-ahead, so a recovery
   // pass that dies mid-recovery is visible — and classifiable — to the next.
   declare function reconcileClientTools(): Promise<boolean>;
-  // Entries are per-ATTEMPT: clear/supersede them transactionally with
-  // recording the attempt's result, or a stale verdict misclassifies the
-  // next attempt on this chat — attempt-scoped journal keys close the
-  // remaining double-crash window (see
-  // https://github.com/coder/ai-sdk/issues/92).
-  declare const journal: {
-    get(chatId: string): Promise<"resumed" | "cut-short" | undefined>;
-    set(chatId: string, state: "resumed" | "cut-short"): Promise<void>;
+  // Journal entries are per-ATTEMPT, so the chat id alone cannot scope them:
+  // a verdict from attempt N must not classify attempt N+1 (double crash),
+  // and a later step's recovery on the same chat must not inherit this
+  // one's. Every entry pins the step marker and an attempt count at write
+  // time; a consult applies an entry only while both still match, so each
+  // resubmission retires every earlier verdict by itself — there is no
+  // clear step to forget.
+  type JournalEntry = {
+    // "submitting" is written ahead of every send on a checkpointed chat;
+    // "resumed" / "cut-short" are the ledger reconcile's verdict (both in
+    // the next sections).
+    state: "submitting" | "resumed" | "cut-short";
+    marker: string; // the step-scoped marker ("Recover the result…", below)
+    attempt: number; // markerAttempts() at write time
+    at: number; // write time — bounds the in-flight-send wait below
   };
+  declare const journal: {
+    get(chatId: string): Promise<JournalEntry | undefined>;
+    set(chatId: string, entry: JournalEntry): Promise<void>;
+  };
+  // This step's attempts committed so far: user messages in the converted
+  // transcript carrying the marker. Steps run sequentially, so they sit
+  // contiguous at the tail of history — page newest-first (as the recovery
+  // scan below already does) and stop at the first user message without it.
+  declare function markerAttempts(): Promise<number>;
 
   // Bounded: a stalled deployment must fail the step, not hang it.
   const deadline = AbortSignal.timeout(15_000);
@@ -1144,7 +1160,11 @@ checkpoint:
   // below: a 409 means there was nothing to stop.
   let cutShort = true;
   let { status } = await agent.client.getChat(agent.chatId!, deadline);
-  const journaled = await journal.get(agent.chatId!);
+  // Recompute what the entry pinned at write time; a mismatch on either
+  // means it classifies an earlier attempt (or another step's) — dead, skip.
+  const entry = await journal.get(agent.chatId!);
+  const attempts = await markerAttempts();
+  const journaled = entry?.marker === marker && entry.attempt === attempts ? entry : undefined;
   if (status === "requires_action") {
     // The crash hit a client tool mid-execution: this pause is the only
     // pending record of its committed effects. Never interrupt it away —
@@ -1152,8 +1172,8 @@ checkpoint:
     // (reviving the run — nothing was cut short) or interrupts itself only
     // when nothing committed.
     cutShort = await reconcileClientTools();
-  } else if (journaled) {
-    // A previous recovery pass acted on this chat, then died before the
+  } else if (journaled && journaled.state !== "submitting") {
+    // A previous recovery pass acted on this attempt, then died before the
     // step's result was recorded. Its journaled state is the verdict:
     // "resumed" — it revived the run by submitting recorded results;
     // interrupting now would cut down a run doing the step's work, and the
@@ -1161,7 +1181,7 @@ checkpoint:
     // idempotency keys. Let it finish; nothing was cut short.
     // "cut-short" — it went on to interrupt (an unstarted sibling in the
     // batch); the attempt is truncated, so the check below must resubmit.
-    cutShort = journaled === "cut-short";
+    cutShort = journaled.state === "cut-short";
     if (cutShort) {
       // The journal records write-ahead INTENT, not a landed interrupt: the
       // pass may have died in between, leaving the revived run working.
@@ -1181,6 +1201,24 @@ checkpoint:
       if (err instanceof CoderApiError && err.status === 409) cutShort = status === "interrupting";
       else throw err;
     });
+  }
+  // One thing can still be in flight here: the crashed attempt's own SEND. A
+  // matching "submitting" entry — its attempt count has not grown — means the
+  // process died with `createChatMessage` possibly en route, and the server
+  // can commit it AFTER every read above (the 409 only said nothing was
+  // running THEN). Sleep out what remains of the entry's commit window —
+  // requestTimeoutMs past the write is the conservative horizon, and a
+  // restart has usually consumed it already — so a late-landing turn starts
+  // before the settle poll below and the next section's negative history
+  // read is past the window. Then recount: a send that never landed OVER AN
+  // EXISTING attempt pins cutShort — the step only ever plans a resubmission
+  // over a cut-short, errored, or unsubmitted attempt, so the write-ahead
+  // that superseded a "cut-short" verdict still carries its consequence, and
+  // the scan below cannot mistake the old attempt's truncated tail for a
+  // finished result.
+  if (journaled?.state === "submitting") {
+    await new Promise((r) => setTimeout(r, Math.max(0, journaled.at + 300_000 - Date.now())));
+    if ((await markerAttempts()) === journaled.attempt && journaled.attempt > 0) cutShort = true;
   }
   // The 15 s interrupt bound must not cap what follows: a reconciled pause
   // revives a full model/tool continuation. Budget the settle poll — and the
@@ -1276,7 +1314,8 @@ event — and the ledger holds the verdict on each:
 // The step's configured ToolSet names: history does not record which calls
 // were client tools (see [Rehydrating chat history]), so — like the SDK's
 // own derivation — restrict to the names this step registers; a server/MCP
-// call must never reach the ledger as "unstarted".
+// call must never reach the ledger as "unstarted". (The recovery scan's
+// final-text cut reuses this set — next section.)
 const clientTools = new Set(["charge_card"]);
 
 // Pending = the last assistant message's client (non-provider-executed,
@@ -1331,9 +1370,14 @@ if (results.length > 0 || unstarted) {
   // call — a mixed batch journals "cut-short" before even its submission,
   // so no crash point can leave a stale "resumed" masking the pending
   // interrupt. Every crash then either re-reconciles the stable pause or
-  // re-drives the journaled intent. Clear the entry only once the step's
-  // result is finally recorded.
-  await journal.set(agent.chatId!, unstarted ? "cut-short" : "resumed");
+  // re-drives the journaled intent. Scoped to THIS attempt: a resubmission
+  // grows the marker count and retires the verdict on its own.
+  await journal.set(agent.chatId!, {
+    state: unstarted ? "cut-short" : "resumed",
+    marker,
+    attempt: await markerAttempts(),
+    at: Date.now(),
+  });
 }
 if (results.length > 0) await agent.client.submitToolResults(agent.chatId!, { results }, deadline);
 if (unstarted) await agent.client.interruptChat(agent.chatId!, deadline);
@@ -1368,11 +1412,29 @@ step's return value was recorded.** History now holds a perfectly good
 result; a retried step that blindly resubmits runs the whole turn again —
 duplicated output, repeated workspace/MCP/tool effects. This is the
 at‑least‑once boundary every durable engine has around external effects, and
-the chat itself is the record that closes it. Make attempts matchable first —
-the server stores the prompt verbatim, so embed a step‑scoped marker:
+the chat itself is the record that narrows it to one honest window (below).
+Make attempts matchable first — the server stores the prompt verbatim, so
+embed a step‑scoped marker — and journal every send before it leaves the
+process:
 
 ```ts
 const marker = `[${workflowId}/step-2]`; // stable across this step's retries
+// Write-ahead, BEFORE the send — first attempt and recovery resubmit alike.
+// A crash before this write proves no send ever started; a crash after it
+// leaves a dated entry whose commit window the settle-wait sleeps out. On a
+// resubmission this write supersedes the "cut-short" verdict it acts on —
+// safely: an unlanded send over an existing attempt makes the settle-wait
+// pin cutShort right back. A first turn has no chat id to journal under: its
+// send-crash window belongs to the empty-checkpoint sweep
+// ("Recover after a crash").
+if (agent.chatId) {
+  await journal.set(agent.chatId, {
+    state: "submitting",
+    marker,
+    attempt: await markerAttempts(),
+    at: Date.now(),
+  });
+}
 const { text } = await agent.generate({ prompt: `${marker} ${prompt}` });
 ```
 
@@ -1401,25 +1463,27 @@ const submitted = lastUser?.parts.some((p) => p.type === "text" && p.text.includ
 
 if (submitted && !cutShort && (status === "waiting" || status === "completed")) {
   // The attempt finished; only the recording was lost. Recover what
-  // `generate().text` would have returned — the FINAL step's text. A turn
-  // that crossed tool calls commits narration between them too, so cut the
-  // turn's parts after the last tool part and join the text that follows.
+  // `generate().text` would have returned — the FINAL step's text. Only a
+  // CLIENT tool ends an AI SDK step, and narration lands on both sides of a
+  // server-side call, so cut after the last part named in `clientTools`
+  // (shared with the reconcile above) and join the text that follows.
   const parts = transcript
     .slice(transcript.indexOf(lastUser!) + 1)
     .filter((m) => m.role === "assistant")
     .flatMap((m) => m.parts);
   return parts
-    .slice(parts.findLastIndex((p) => p.type === "dynamic-tool") + 1)
+    .slice(parts.findLastIndex((p) => p.type === "dynamic-tool" && clientTools.has(p.toolName)) + 1)
     .filter((p) => p.type === "text")
     .map((p) => p.text)
     .join("");
 }
 // Resubmit only what never finished: the prompt never reached the server
-// (!submitted), the turn failed (status "error" — normal retry judgment
-// applies), or the interrupt cut a live run short (cutShort — the model sees
-// its own aborted attempt in history and continues from it). One exit is
-// neither: a requires_action settle goes back to ledger reconciliation
-// (previous section) — never to recovery or resubmission.
+// (!submitted — sound only behind the write-ahead; see below), the turn
+// failed (status "error" — normal retry judgment applies), or the interrupt
+// cut a live run short (cutShort — the model sees its own aborted attempt in
+// history and continues from it). One exit is neither: a requires_action
+// settle goes back to ledger reconciliation (previous section) — never to
+// recovery or resubmission.
 ```
 
 - **`cutShort` is the completed/interrupted discriminator — but a 409 only
@@ -1431,22 +1495,39 @@ if (submitted && !cutShort && (status === "waiting" || status === "completed")) 
   hard crash, false after a `requestTimeoutMs` expiry — the expiry already
   fired the SDK's own best‑effort interrupt, which may have stopped the run
   before recovery ever looked. Carry the reason recovery ran: when it follows
-  a known timeout or abort — or a journaled earlier interrupt (write‑ahead,
-  like the tool ledger, if the recovery pass can itself crash between its
-  interrupt and the resubmit) — pin `cutShort` to `true` and let only the
-  hard‑crash path trust the 409.
-- **The cut lands after the last tool part of _either_ kind.** History does
-  not mark which tool calls were client tools
-  ([Rehydrating chat history](#rehydrating-chat-history)), so when a final
-  step narrates _before_ a server‑side tool call, that preamble is dropped
-  too — the recovered text is the answer following the turn's last tool
-  activity.
+  a known timeout or abort — or a matching journaled `"cut-short"`, or an
+  unlanded `"submitting"` over an existing attempt (the settle‑wait already
+  pins both) — pin `cutShort` to `true` and let only the hard‑crash path
+  trust the 409.
+- **`!submitted` races the crashed attempt's own send.** A crash kills the
+  process, not necessarily its in‑flight `createChatMessage` — the server can
+  commit that request _after_ an interrupt 409'd and a history read saw no
+  marker, and a resubmit on that evidence queues the turn twice, duplicating
+  its workspace/MCP/tool effects. The write‑ahead is what makes the negative
+  read honest: no matching `"submitting"` entry proves no send ever started,
+  and a matching one held recovery at the settle‑wait until the entry's
+  commit horizon passed. That narrows the window; only server‑enforced
+  submission idempotency could close it, and `POST /chats/{id}/messages`
+  offers none today. A commit that outlasts even the horizon still lands
+  under the same marker, so the duplicate is at least visible — in history,
+  and to the next consult's attempt count.
+- **The cut lands at the last _configured client‑tool_ boundary.** History
+  does not mark which calls were client tools
+  ([Rehydrating chat history](#rehydrating-chat-history)), so the cut
+  classifies by name against the reconcile's `clientTools` set — narration
+  before a trailing _server‑side_ call survives, matching what
+  `generate().text` aggregates. What name‑matching cannot see: a call
+  recorded under a name the step no longer configures (a tool renamed
+  between deploys) reads as server‑side and leaks earlier‑step narration
+  into the result, and a server tool sharing a configured name still cuts
+  final‑step narration away.
 - **Steps with structured results recover the call's input, not the text.**
   A [structured output](#structured-output) step's answer is the
   `structured_output` call's typed input, which rehydrates as a
   `dynamic-tool` part on the recovered turn
-  ([Rehydrating chat history](#rehydrating-chat-history)) — the text join
-  above would slice it away and return only the ack prose that follows.
+  ([Rehydrating chat history](#rehydrating-chat-history)) — and
+  `structured_output` is one of the step's configured client tools, so the
+  text join above cuts at it and returns only the ack prose that follows.
   Recover the filed call instead — this scan replaces the text join
   _inside_ the recovery branch above, reusing its `parts` — validated
   client‑side exactly like the live path (rule 2 there — the schema is the
@@ -1576,7 +1657,8 @@ export async function archiveWorkflowChat(workflowId: string): Promise<void> {
 - Let redials self‑heal; own every retry decision — a re‑run step resubmits
   its prompt as a new user turn.
 - Before resubmitting after a crash: reconcile the tool ledger before any
-  interrupt, and recover a finished attempt's result from history.
+  interrupt, recover a finished attempt's result from history, and trust
+  "never submitted" only past the journaled send's commit window.
 - Keep concurrent steps' fan‑out within workspace quota —
   [Workspaces & quota](#workspaces--quota).
 - Steps that don't need server‑side tools (plan / extract / synthesize) are

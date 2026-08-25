@@ -1118,6 +1118,11 @@ checkpoint:
   // to interrupting — and journals each action write-ahead, so a recovery
   // pass that dies mid-recovery is visible — and classifiable — to the next.
   declare function reconcileClientTools(): Promise<boolean>;
+  // Entries are per-ATTEMPT: clear/supersede them transactionally with
+  // recording the attempt's result, or a stale verdict misclassifies the
+  // next attempt on this chat — attempt-scoped journal keys close the
+  // remaining double-crash window (see
+  // https://github.com/coder/ai-sdk/issues/92).
   declare const journal: {
     get(chatId: string): Promise<"resumed" | "cut-short" | undefined>;
     set(chatId: string, state: "resumed" | "cut-short"): Promise<void>;
@@ -1420,7 +1425,8 @@ if (submitted && !cutShort && (status === "waiting" || status === "completed")) 
   `dynamic-tool` part on the recovered turn
   ([Rehydrating chat history](#rehydrating-chat-history)) — the text join
   above would slice it away and return only the ack prose that follows.
-  Recover the filed call from the turn's parts instead, validated
+  Recover the filed call instead — this scan replaces the text join
+  _inside_ the recovery branch above, reusing its `parts` — validated
   client‑side exactly like the live path (rule 2 there — the schema is the
   real gate):
 

@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/coder/ai-sdk/compare/provider-v0.3.5...provider-v0.4.0) (2026-08-25)
+
+Adds sub-provider accessors so you can access custom-named gateway providers.
+
+### Highlights
+
+- You can now use sub-provider accessors to reach custom-named gateway providers. ([#105](https://github.com/coder/ai-sdk/pull/105))
+
+### Features
+
+* **provider:** add sub-provider accessors for custom-named gateway providers ([#105](https://github.com/coder/ai-sdk/issues/105)) ([c049a45](https://github.com/coder/ai-sdk/commit/c049a4596875bb6d9afbb67efeefa389e86f341e))
+
 ## [0.3.5](https://github.com/coder/ai-sdk/compare/provider-v0.3.4...provider-v0.3.5) (2026-08-25)
 
 A maintenance release with no user-facing changes.

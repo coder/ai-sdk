@@ -816,7 +816,7 @@ sequence pinpoints _where_ a turn died:
 | `segment:settle` carries `error: { name: "CoderChatError", message: "…requestTimeoutMs budget…" }`                                                                                                  | the per‑segment bound expired — wedged server, slow model, or an unschedulable workspace                                                                                                                                                                                                                     | inspect the workspace via the v2 API/UI: a `pending`/`failed` build means the row above; `running` means the turn was genuinely slow — raise `requestTimeoutMs` for long tool work                                                                                                                                                                                                                                        |
 | repeated `ws:redial` with `consecutiveFailures` climbing toward `maxConsecutiveFailures` (5; backoff 1 s → 2 s → 4 s → 8 s, ≈15 s of redialing without forward progress), then a `CoderStreamError` | the network path to the deployment is failing — not workspace scheduling (the server keeps generating through short gaps)                                                                                                                                                                                    | fix connectivity; mind retry ownership above — on workspace‑backed chats the error is `isRetryable: false`, so the replay decision is yours                                                                                                                                                                                                                                                                               |
 | `segment:settle` with `status: "error"` and an `error` payload                                                                                                                                      | the turn failed server‑side — a provider/model error, a tool failure, or a scheduling/build failure that terminated the turn instead of leaving it pending                                                                                                                                                   | the settle event's `error` carries only `{ name, message }` — branch on `kind` / `retryable` / `statusCode` by catching the thrown `CoderChatError`: at the `generate()` call site, or — for `stream()` — around stream consumption, since mid‑stream failures surface on the stream, not from `await agent.stream()` ([Handling errors](#handling-errors)); check the workspace build state to rule scheduling in or out |
-| turn settled `status: "requires_action"`, follow‑up messages queue forever                                                                                                                          | the loop ended on an unanswered client tool call                                                                                                                                                                                                                                                             | submit the stranded results or interrupt — see rule 4 under [Structured output](#structured-output)                                                                                                                                                                                                                                                                                                                       |
+| turn settled `status: "requires_action"`, follow‑up messages queue forever                                                                                                                          | the loop ended on an unanswered client tool call                                                                                                                                                                                                                                                             | submit the stranded results or interrupt — see rule 4 under [Structured output](#structured-output); if a crash left the pause behind, reconcile effects first ([Make client tools crash-safe](#make-client-tools-crash-safe))                                                                                                                                                                                            |
 | `archive()` keeps returning 409 and rethrows after ~15 s                                                                                                                                            | the chat never settled server‑side — usually a stuck run still holding its workspace                                                                                                                                                                                                                         | `interrupt()` with a bounded signal, then re‑archive; if the run stays wedged, stop the workspace itself                                                                                                                                                                                                                                                                                                                  |
 
 ## Configuration
@@ -1031,7 +1031,11 @@ try {
   server interrupt is asynchronous and best‑effort, so the timed‑out run may
   still be committing — run the same interrupt‑and‑wait‑for‑terminal‑status
   recovery as after a crash (below) before the retry, or its trailing output
-  is absorbed into the retried turn.
+  is absorbed into the retried turn. A timed‑out run can also have _finished_
+  before that interrupt landed — but because the interrupt was already fired,
+  the recovery's [result check](#recover-the-result-before-resubmitting)
+  must treat the attempt as cut short (pin `cutShort` there) rather than
+  trusting its own 409.
 - **`CoderStreamError`** (an AI SDK `APICallError`) — the stream could not be
   re‑established. `isRetryable: true` only when the failed turn had just
   created its chat _and_ had no external effects a replay would repeat (no
@@ -1096,25 +1100,363 @@ checkpoint:
   resumed turn seeds its message cursor _before_ submitting — whatever the
   old run commits after that point would be absorbed into the resumed turn's
   output and usage. A crash _inside one of your client tools_ is worse: the
-  chat is paused in `requires_action`, where new messages wait forever (and
-  see [#86](https://github.com/coder/ai-sdk/issues/86) if that tool's effect
-  was non‑idempotent). Both cases have one remedy — after a crash, interrupt
-  the chat and **wait until it actually settles** before resuming:
+  chat is paused in `requires_action`, where new messages wait forever — and
+  if the tool's external effect committed before the crash, that pause is the
+  only pending record of it, so reconcile the tool ledger **before** any
+  interrupt ([Make client tools crash-safe](#make-client-tools-crash-safe)).
+  Both cases have one remedy — stop what the crash left behind and **wait
+  until the chat actually settles** before deciding: a client‑tool pause is
+  reconciled, never interrupted away; anything else is interrupted:
   `interrupt()` resolves on acknowledgment while the run keeps winding down
   (and committing) for a few more seconds, so poll the chat's status to a
   terminal one first. On a chat with no live run the interrupt rejects with a
   409 `CoderApiError`; that's the good case — ignore it:
 
   ```ts
+  // Both shared with "Make client tools crash-safe" (below): the ledger
+  // reconciliation resolves to its `unstarted` — true only when it fell back
+  // to interrupting — and journals each action write-ahead, so a recovery
+  // pass that dies mid-recovery is visible — and classifiable — to the next.
+  declare function reconcileClientTools(): Promise<boolean>;
+  // Entries are per-ATTEMPT: clear/supersede them transactionally with
+  // recording the attempt's result, or a stale verdict misclassifies the
+  // next attempt on this chat — attempt-scoped journal keys close the
+  // remaining double-crash window (see
+  // https://github.com/coder/ai-sdk/issues/92).
+  declare const journal: {
+    get(chatId: string): Promise<"resumed" | "cut-short" | undefined>;
+    set(chatId: string, state: "resumed" | "cut-short"): Promise<void>;
+  };
+
   // Bounded: a stalled deployment must fail the step, not hang it.
   const deadline = AbortSignal.timeout(15_000);
-  await agent.interrupt({ signal: deadline }).catch(() => {}); // 409 = nothing to stop
-  let status;
+  // Whether an interrupt stopped a live run drives the resubmit decision
+  // below: a 409 means there was nothing to stop.
+  let cutShort = true;
+  let { status } = await agent.client.getChat(agent.chatId!, deadline);
+  const journaled = await journal.get(agent.chatId!);
+  if (status === "requires_action") {
+    // The crash hit a client tool mid-execution: this pause is the only
+    // pending record of its committed effects. Never interrupt it away —
+    // reconcile the ledger instead (below): it submits recorded results
+    // (reviving the run — nothing was cut short) or interrupts itself only
+    // when nothing committed.
+    cutShort = await reconcileClientTools();
+  } else if (journaled) {
+    // A previous recovery pass acted on this chat, then died before the
+    // step's result was recorded. Its journaled state is the verdict:
+    // "resumed" — it revived the run by submitting recorded results;
+    // interrupting now would cut down a run doing the step's work, and the
+    // resubmitted prompt would mint NEW tool-call ids, sidestepping the
+    // idempotency keys. Let it finish; nothing was cut short.
+    // "cut-short" — it went on to interrupt (an unstarted sibling in the
+    // batch); the attempt is truncated, so the check below must resubmit.
+    cutShort = journaled === "cut-short";
+    if (cutShort) {
+      // The journal records write-ahead INTENT, not a landed interrupt: the
+      // pass may have died in between, leaving the revived run working.
+      // Re-drive the interrupt to make the intent true — a 409 means the
+      // chat already settled; the cut-short verdict stands either way.
+      await agent.interrupt({ signal: deadline }).catch((err) => {
+        if (!(err instanceof CoderApiError && err.status === 409)) throw err;
+      });
+    }
+  } else {
+    await agent.interrupt({ signal: deadline }).catch((err) => {
+      // A 409 proves nothing is stoppable NOW — that means "never cut short"
+      // only if the probe saw no interrupt already in flight. A probed
+      // "interrupting" is an earlier interrupt (a timeout's best-effort one,
+      // a sweeper) already truncating the attempt; this 409 just says it
+      // landed. Keep cutShort = true then.
+      if (err instanceof CoderApiError && err.status === 409) cutShort = status === "interrupting";
+      else throw err;
+    });
+  }
+  // The 15 s interrupt bound must not cap what follows: a reconciled pause
+  // revives a full model/tool continuation. Budget the settle poll — and the
+  // history reads after it — on the turn scale, like the step itself.
+  const settle = AbortSignal.timeout(600_000);
   do {
-    ({ status } = await agent.client.getChat(agent.chatId!, deadline));
+    ({ status } = await agent.client.getChat(agent.chatId!, settle));
     if (status === "waiting" || status === "completed" || status === "error") break;
+    // With no accepted interrupt racing to clear it, requires_action is a
+    // STABLE pause: a run resumed by submitted tool results called a NEW
+    // client tool. Exit and reconcile the ledger again (below) instead of
+    // polling out the deadline.
+    if (status === "requires_action" && !cutShort) break;
     await new Promise((r) => setTimeout(r, 1_000)); // acknowledged ≠ settled — wait it out
   } while (true);
+  ```
+
+  Settled is necessary, not sufficient: a terminal status doesn't say whether
+  the crashed attempt already _finished the step's work_ — check history
+  before resubmitting
+  ([Recover the result before resubmitting](#recover-the-result-before-resubmitting)).
+
+### Make client tools crash-safe
+
+Interrupting un‑strands a `requires_action` pause — but if the crashed
+process died _between_ a non‑idempotent client tool committing its external
+effect (a payment, a deploy, an email) and that result reaching the server,
+the pause is the **only pending record of the execution**. Interrupt it away
+and the resubmitted prompt is free to call the tool again — and duplicate the
+effect. Close the window with a tool‑invocation ledger in the same durable
+store as the `chatId` checkpoint, keyed by **chat id + `toolCallId`** — the
+server assigns the call id and commits it to history, so both sides of the
+reconciliation survive the crash. The chat id must be part of the key (and
+of the idempotency key handed to the external system): call ids are only
+unique _within_ a chat, and a store shared across workflows must never let
+one chat's `done` entry answer — or deduplicate — another chat's call. In
+multi‑tenant stores, fold the tenant in too:
+
+```ts
+import { tool } from "ai";
+import { z } from "zod";
+import { CoderAgent } from "@coder/ai-sdk-agent";
+
+type LedgerEntry = { state: "committing" } | { state: "done"; output: string };
+declare const ledger: {
+  get(key: string): Promise<LedgerEntry | undefined>;
+  set(key: string, entry: LedgerEntry): Promise<void>;
+};
+declare const payments: {
+  charge(amountCents: number, opts: { idempotencyKey: string }): Promise<{ receiptId: string }>;
+};
+
+const ledgerKey = (chatId: string, toolCallId: string) => `${chatId}/${toolCallId}`;
+const ChargeArgs = z.object({ amountCents: z.number().int() });
+
+// A factory taking a getter, not an id: the chat may not exist until the
+// turn creates it, so the id must be read lazily — it is set before any
+// tool runs.
+const chargeCard = (chatId: () => string) =>
+  tool({
+    description: "Charge the customer's card.",
+    inputSchema: ChargeArgs, // shared with recovery's re-drive dispatch below
+    execute: async ({ amountCents }, { toolCallId }) => {
+      const key = ledgerKey(chatId(), toolCallId);
+      // Write-ahead, BEFORE the effect: a crash between the two writes leaves
+      // "committing" (ambiguous, but resolvable below); no entry at all proves
+      // the effect never started.
+      await ledger.set(key, { state: "committing" });
+      // Hand the external system the SAME key as its idempotency key, so
+      // re-driving this exact call can never double-charge.
+      const { receiptId } = await payments.charge(amountCents, { idempotencyKey: key });
+      await ledger.set(key, { state: "done", output: `charged: receipt ${receiptId}` });
+      return `charged: receipt ${receiptId}`;
+    },
+  });
+
+// Wire-up: a direct self-reference in the constructor call is circular for
+// the type checker — defer it through a box assigned right after.
+let self: { chatId?: string } | undefined;
+const agent = new CoderAgent({
+  /* …base options as in runTurn… */
+  tools: { charge_card: chargeCard(() => self!.chatId!) },
+});
+self = agent;
+```
+
+On crash recovery, when the checkpointed chat is paused in `requires_action`,
+reconcile _before_ any interrupt. The pending calls are in committed history —
+the same derivation the SDK itself uses to recover a lost `action_required`
+event — and the ledger holds the verdict on each:
+
+```ts
+// The step's configured ToolSet names: history does not record which calls
+// were client tools (see [Rehydrating chat history]), so — like the SDK's
+// own derivation — restrict to the names this step registers; a server/MCP
+// call must never reach the ledger as "unstarted".
+const clientTools = new Set(["charge_card"]);
+
+// Pending = the last assistant message's client (non-provider-executed,
+// ToolSet-named) tool calls, minus ids answered by a later message's tool
+// result.
+const { messages } = await agent.client.getMessages(agent.chatId!, { limit: 200 }, deadline);
+const ordered = [...messages].sort((a, b) => a.id - b.id);
+const lastAssistant = ordered.findLast((m) => m.role === "assistant");
+const handled = new Set(
+  ordered
+    .filter((m) => m.id > (lastAssistant?.id ?? 0))
+    .flatMap((m) => m.content ?? [])
+    .filter((p) => p.type === "tool-result")
+    .map((p) => p.tool_call_id),
+);
+const pending = (lastAssistant?.content ?? []).filter(
+  (p) =>
+    p.type === "tool-call" &&
+    !p.provider_executed &&
+    clientTools.has(p.tool_name!) &&
+    !handled.has(p.tool_call_id),
+);
+
+const results: { tool_call_id: string; output: unknown }[] = [];
+let unstarted = false;
+for (const call of pending) {
+  const key = ledgerKey(agent.chatId!, call.tool_call_id!);
+  const entry = await ledger.get(key);
+  if (entry?.state === "done") {
+    // Effect committed, result stranded: submit the record — the pause is
+    // answered and nothing re-executes.
+    results.push({ tool_call_id: call.tool_call_id!, output: entry.output });
+  } else if (entry) {
+    // "committing" is ambiguous — the crash hit between the write-ahead and
+    // "done". Safe to re-drive: the SAME idempotency key makes a committed
+    // effect replay as a no-op, and the call's args are committed in history.
+    // Dispatch by tool name — every ledgered tool needs its own re-drive
+    // path, its args validated exactly as the live loop would have.
+    if (call.tool_name !== "charge_card")
+      throw new Error(`no re-drive path for tool ${call.tool_name}`);
+    const { amountCents } = ChargeArgs.parse(call.args);
+    const { receiptId } = await payments.charge(amountCents, { idempotencyKey: key });
+    const output = `charged: receipt ${receiptId}`;
+    await ledger.set(key, { state: "done", output });
+    results.push({ tool_call_id: call.tool_call_id!, output });
+  } else {
+    unstarted = true; // the tool never ran — interrupting loses nothing
+  }
+}
+if (results.length > 0 || unstarted) {
+  // ONE write-ahead with the batch's FINAL verdict, before any network
+  // call — a mixed batch journals "cut-short" before even its submission,
+  // so no crash point can leave a stale "resumed" masking the pending
+  // interrupt. Every crash then either re-reconciles the stable pause or
+  // re-drives the journaled intent. Clear the entry only once the step's
+  // result is finally recorded.
+  await journal.set(agent.chatId!, unstarted ? "cut-short" : "resumed");
+}
+if (results.length > 0) await agent.client.submitToolResults(agent.chatId!, { results }, deadline);
+if (unstarted) await agent.client.interruptChat(agent.chatId!, deadline);
+// As `reconcileClientTools()` in the settle-wait snippet above: resolve to
+// `unstarted` — cutShort is true only when this fell back to interrupting.
+```
+
+- **Only interrupt when the ledger shows no committed effect.** Submitted
+  results are committed to chat history, so even when a mixed batch (one call
+  done, a sibling never started) still ends in an interrupt, the effect's
+  recorded outcome survives for the resubmitted turn to see.
+- **Submitting answers the pause; it does not revive your tool loop.** Once
+  every pending call is answered, the turn resumes **server‑side** with no
+  process streaming it. That is why the settle‑wait's reconcile branch never
+  interrupts a pause — nothing stranded is left to stop, and an interrupt
+  now would cut down the very run the submission revived — and why the
+  resolved `unstarted` leaves **`cutShort = false`** after a submission:
+  nothing was cut short, and the next section's `!cutShort` check must
+  classify the resumed run's finish as a completed attempt, not resubmit
+  it. Give the poll a turn‑scale deadline rather than the 15 s interrupt
+  bound; it exits on `requires_action` (stable here, with no accepted
+  interrupt clearing it), which means the resumed run called a _new_ tool —
+  reconcile again; a call with no ledger entry is safe to interrupt.
+- **The finished run's output lands only in history** — recover it like any
+  completed‑but‑unrecorded attempt (next section) instead of resubmitting.
+
+### Recover the result before resubmitting
+
+The settle‑wait resolves overlap with a still‑live run, but not the last
+crash window: **the server finished the turn, and the process died before the
+step's return value was recorded.** History now holds a perfectly good
+result; a retried step that blindly resubmits runs the whole turn again —
+duplicated output, repeated workspace/MCP/tool effects. This is the
+at‑least‑once boundary every durable engine has around external effects, and
+the chat itself is the record that closes it. Make attempts matchable first —
+the server stores the prompt verbatim, so embed a step‑scoped marker:
+
+```ts
+const marker = `[${workflowId}/step-2]`; // stable across this step's retries
+const { text } = await agent.generate({ prompt: `${marker} ${prompt}` });
+```
+
+Then, after the settle‑wait, three states are distinguishable — and only one
+of them resubmits:
+
+```ts
+import { chatMessagesToUIMessages } from "@coder/ai-sdk-agent";
+
+// A long turn can commit more than a page of messages after the prompt —
+// page newest-first (the endpoint's default order) until the turn's user
+// message is on hand; "never submitted" must never be concluded from a
+// truncated read, or this recovery resubmits exactly the turn it was meant
+// to deduplicate.
+const fetched = [];
+let page = await agent.client.getMessages(agent.chatId!, { limit: 200 }, settle);
+fetched.push(...page.messages);
+while (!fetched.some((m) => m.role === "user") && page.has_more) {
+  const oldestId = Math.min(...fetched.map((m) => m.id));
+  page = await agent.client.getMessages(agent.chatId!, { before_id: oldestId, limit: 200 }, settle);
+  fetched.push(...page.messages);
+}
+const transcript = chatMessagesToUIMessages(fetched); // chronological
+const lastUser = transcript.findLast((m) => m.role === "user");
+const submitted = lastUser?.parts.some((p) => p.type === "text" && p.text.includes(marker));
+
+if (submitted && !cutShort && (status === "waiting" || status === "completed")) {
+  // The attempt finished; only the recording was lost. Recover what
+  // `generate().text` would have returned — the FINAL step's text. A turn
+  // that crossed tool calls commits narration between them too, so cut the
+  // turn's parts after the last tool part and join the text that follows.
+  const parts = transcript
+    .slice(transcript.indexOf(lastUser!) + 1)
+    .filter((m) => m.role === "assistant")
+    .flatMap((m) => m.parts);
+  return parts
+    .slice(parts.findLastIndex((p) => p.type === "dynamic-tool") + 1)
+    .filter((p) => p.type === "text")
+    .map((p) => p.text)
+    .join("");
+}
+// Resubmit only what never finished: the prompt never reached the server
+// (!submitted), the turn failed (status "error" — normal retry judgment
+// applies), or the interrupt cut a live run short (cutShort — the model sees
+// its own aborted attempt in history and continues from it). One exit is
+// neither: a requires_action settle goes back to ledger reconciliation
+// (previous section) — never to recovery or resubmission.
+```
+
+- **`cutShort` is the completed/interrupted discriminator — but a 409 only
+  proves nothing is running _now_.** An interrupted attempt leaves the same
+  marker and a truncated answer in history, so history alone can't tell
+  "finished" from "stopped"; what can is whether any interrupt stopped the
+  run. The inference "409 ⇒ the attempt finished" is therefore sound only
+  when recovery's interrupt is the _first_ one that could have: true after a
+  hard crash, false after a `requestTimeoutMs` expiry — the expiry already
+  fired the SDK's own best‑effort interrupt, which may have stopped the run
+  before recovery ever looked. Carry the reason recovery ran: when it follows
+  a known timeout or abort — or a journaled earlier interrupt (write‑ahead,
+  like the tool ledger, if the recovery pass can itself crash between its
+  interrupt and the resubmit) — pin `cutShort` to `true` and let only the
+  hard‑crash path trust the 409.
+- **The cut lands after the last tool part of _either_ kind.** History does
+  not mark which tool calls were client tools
+  ([Rehydrating chat history](#rehydrating-chat-history)), so when a final
+  step narrates _before_ a server‑side tool call, that preamble is dropped
+  too — the recovered text is the answer following the turn's last tool
+  activity.
+- **Steps with structured results recover the call's input, not the text.**
+  A [structured output](#structured-output) step's answer is the
+  `structured_output` call's typed input, which rehydrates as a
+  `dynamic-tool` part on the recovered turn
+  ([Rehydrating chat history](#rehydrating-chat-history)) — the text join
+  above would slice it away and return only the ack prose that follows.
+  Recover the filed call instead — this scan replaces the text join
+  _inside_ the recovery branch above, reusing its `parts` — validated
+  client‑side exactly like the live path (rule 2 there — the schema is the
+  real gate):
+
+  ```ts
+  // Scan backward to the last call that VALIDATES, as in the live path — a
+  // schema-invalid re-file must not shadow a valid answer.
+  const filed = parts
+    .filter((p) => p.type === "dynamic-tool")
+    .filter((p) => p.toolName === "structured_output");
+  let answer: z.infer<typeof Answer> | undefined;
+  for (const call of filed.reverse()) {
+    const parsed = Answer.safeParse(call.input);
+    if (parsed.success) {
+      answer = parsed.data;
+      break;
+    }
+  }
+  // recovered ⇔ answer !== undefined
   ```
 
 ### Watch turn health from inside the step
@@ -1223,6 +1565,8 @@ export async function archiveWorkflowChat(workflowId: string): Promise<void> {
   total wall‑clock.
 - Let redials self‑heal; own every retry decision — a re‑run step resubmits
   its prompt as a new user turn.
+- Before resubmitting after a crash: reconcile the tool ledger before any
+  interrupt, and recover a finished attempt's result from history.
 - Keep concurrent steps' fan‑out within workspace quota —
   [Workspaces & quota](#workspaces--quota).
 - Steps that don't need server‑side tools (plan / extract / synthesize) are

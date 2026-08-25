@@ -1038,13 +1038,19 @@ checkpoint:
   early behaves the same: `agent.chatId` is still `undefined` and the
   checkpoint stays empty.)
 - **Crashed after creation, before the checkpoint** — the chat is orphaned:
-  its run keeps generating until it settles on its own, then idles as a live,
-  unarchived chat. The retried step starts a fresh one; catch orphans with the
-  reconciliation sweep from
-  [Preventing stuck turns](#preventing-stuck-turns). (To shrink the window,
-  checkpoint eagerly from the first `ws:dial` transport event — it carries the
-  chat id as soon as the chat exists — at the price of the retried step
-  resuming a chat that holds a dead half‑turn.)
+  its run keeps generating until it settles on its own — or, if the crash hit
+  one of your client tools, never settles: it stays paused in
+  `requires_action`, holding its workspace, invisible to the retried step
+  (which has no id to interrupt). Either way the retried step starts a fresh
+  chat, so orphans are found only by the reconciliation sweep from
+  [Preventing stuck turns](#preventing-stuck-turns) — that sweep is not
+  optional in this pattern. (To shrink the window, checkpoint eagerly from the
+  first `ws:dial` transport event — it carries the chat id as soon as the chat
+  exists — but then the checkpoint's lifecycle is yours too: the retried step
+  resumes a chat holding a dead half‑turn, and on a retryable
+  `CoderStreamError` — which discards only the SDK's in‑memory session — you
+  must clear the eagerly checkpointed id yourself, or the "starts clean on a
+  fresh chat" promise above silently turns into resuming the dead one.)
 - **Crashed after the checkpoint** — the normal resume path, with two
   wrinkles. The crashed attempt's run may still be live server‑side: the
   resumed turn's message queues behind it and starts once it settles, all

@@ -772,9 +772,13 @@ either a generic turn error or, worse, a chat that sits in a non‑terminal
 status indefinitely. Defend in this order:
 
 1. **Set `requestTimeoutMs` — always, in fleets.** It is unbounded by default.
-   On expiry the run is interrupted server‑side (releasing the chat) and the
-   call rejects with a `CoderChatError` (`kind: "timeout"`, `retryable: true`)
-   instead of pinning a fleet slot ([Timeouts](#timeouts--cancellation)).
+   On expiry the call rejects with a `CoderChatError` (`kind: "timeout"`,
+   `retryable: true`) so your dispatcher gets its slot back, and a server‑side
+   interrupt is fired **best‑effort** — fire‑and‑forget, and unreachable when
+   the timeout lands before chat creation returned an id — so the run usually
+   stops, but is not guaranteed released ([Timeouts](#timeouts--cancellation)).
+   Pair it with reconciliation: periodically sweep for non‑terminal chats older
+   than your budget and interrupt/archive them.
 2. **Cap total wall‑clock** with `abortSignal: AbortSignal.timeout(…)` —
    `requestTimeoutMs` bounds each segment, not a whole multi‑tool call.
 3. **Own the retries.** Workspace‑backed turns are **never auto‑retried**: the
@@ -788,6 +792,11 @@ status indefinitely. Defend in this order:
    across per‑tenant credentials, run one watcher per identity (or watch with
    a credential that can see them all). Alert on chats sitting in a
    non‑terminal status (e.g. `pending`) longer than your `requestTimeoutMs`.
+   Events alone aren't a complete monitor: reconnects resubscribe fresh (no
+   cursor or replay), so a chat already stuck before the watcher started — or
+   one that transitioned during a gap — never emits an event to start your
+   timer from. Seed and periodically reconcile against a chat listing
+   (`GET /api/experimental/chats`) instead of trusting the event stream alone.
 
 ### Troubleshooting: unschedulable & stuck chats
 

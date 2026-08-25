@@ -1369,10 +1369,20 @@ if (submitted && !cutShort && (status === "waiting" || status === "completed")) 
   real gate):
 
   ```ts
+  // Scan backward to the last call that VALIDATES, as in the live path — a
+  // schema-invalid re-file must not shadow a valid answer.
   const filed = parts
     .filter((p) => p.type === "dynamic-tool")
-    .findLast((p) => p.toolName === "structured_output");
-  const answer = Answer.safeParse(filed?.input); // recovered ⇔ answer.success
+    .filter((p) => p.toolName === "structured_output");
+  let answer: z.infer<typeof Answer> | undefined;
+  for (const call of filed.reverse()) {
+    const parsed = Answer.safeParse(call.input);
+    if (parsed.success) {
+      answer = parsed.data;
+      break;
+    }
+  }
+  // recovered ⇔ answer !== undefined
   ```
 
 ### Watch turn health from inside the step

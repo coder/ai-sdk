@@ -1147,40 +1147,51 @@ effect (a payment, a deploy, an email) and that result reaching the server,
 the pause is the **only pending record of the execution**. Interrupt it away
 and the resubmitted prompt is free to call the tool again — and duplicate the
 effect. Close the window with a tool‑invocation ledger in the same durable
-store as the `chatId` checkpoint, keyed by the call's `toolCallId` — the
-server assigns that id and commits it to history, so both sides of the
-reconciliation survive the crash:
+store as the `chatId` checkpoint, keyed by **chat id + `toolCallId`** — the
+server assigns the call id and commits it to history, so both sides of the
+reconciliation survive the crash. The chat id must be part of the key (and
+of the idempotency key handed to the external system): call ids are only
+unique _within_ a chat, and a store shared across workflows must never let
+one chat's `done` entry answer — or deduplicate — another chat's call. In
+multi‑tenant stores, fold the tenant in too:
 
 ```ts
 import { tool } from "ai";
 import { z } from "zod";
+import type { CoderAgent } from "@coder/ai-sdk-agent";
 
 type LedgerEntry = { state: "committing" } | { state: "done"; output: string };
 declare const ledger: {
-  get(toolCallId: string): Promise<LedgerEntry | undefined>;
-  set(toolCallId: string, entry: LedgerEntry): Promise<void>;
+  get(key: string): Promise<LedgerEntry | undefined>;
+  set(key: string, entry: LedgerEntry): Promise<void>;
 };
 declare const payments: {
   charge(amountCents: number, opts: { idempotencyKey: string }): Promise<{ receiptId: string }>;
 };
 
+const ledgerKey = (chatId: string, toolCallId: string) => `${chatId}/${toolCallId}`;
 const ChargeArgs = z.object({ amountCents: z.number().int() });
 
-const chargeCard = tool({
-  description: "Charge the customer's card.",
-  inputSchema: ChargeArgs, // shared with recovery's re-drive dispatch below
-  execute: async ({ amountCents }, { toolCallId }) => {
-    // Write-ahead, BEFORE the effect: a crash between the two writes leaves
-    // "committing" (ambiguous, but resolvable below); no entry at all proves
-    // the effect never started.
-    await ledger.set(toolCallId, { state: "committing" });
-    // Hand the external system the SAME id as its idempotency key, so
-    // re-driving this exact call can never double-charge.
-    const { receiptId } = await payments.charge(amountCents, { idempotencyKey: toolCallId });
-    await ledger.set(toolCallId, { state: "done", output: `charged: receipt ${receiptId}` });
-    return `charged: receipt ${receiptId}`;
-  },
-});
+// A factory taking a getter, not the agent value: wire it up as
+// `tools: { charge_card: chargeCard(() => agent) }` — the getter defers the
+// reference, and the chat id is set before any tool runs.
+const chargeCard = (agent: () => CoderAgent) =>
+  tool({
+    description: "Charge the customer's card.",
+    inputSchema: ChargeArgs, // shared with recovery's re-drive dispatch below
+    execute: async ({ amountCents }, { toolCallId }) => {
+      const key = ledgerKey(agent().chatId!, toolCallId);
+      // Write-ahead, BEFORE the effect: a crash between the two writes leaves
+      // "committing" (ambiguous, but resolvable below); no entry at all proves
+      // the effect never started.
+      await ledger.set(key, { state: "committing" });
+      // Hand the external system the SAME key as its idempotency key, so
+      // re-driving this exact call can never double-charge.
+      const { receiptId } = await payments.charge(amountCents, { idempotencyKey: key });
+      await ledger.set(key, { state: "done", output: `charged: receipt ${receiptId}` });
+      return `charged: receipt ${receiptId}`;
+    },
+  });
 ```
 
 On crash recovery, when the checkpointed chat is paused in `requires_action`,
@@ -1208,7 +1219,8 @@ const pending = (lastAssistant?.content ?? []).filter(
 const results: { tool_call_id: string; output: unknown }[] = [];
 let unstarted = false;
 for (const call of pending) {
-  const entry = await ledger.get(call.tool_call_id!);
+  const key = ledgerKey(agent.chatId!, call.tool_call_id!);
+  const entry = await ledger.get(key);
   if (entry?.state === "done") {
     // Effect committed, result stranded: submit the record — the pause is
     // answered and nothing re-executes.
@@ -1222,11 +1234,9 @@ for (const call of pending) {
     if (call.tool_name !== "charge_card")
       throw new Error(`no re-drive path for tool ${call.tool_name}`);
     const { amountCents } = ChargeArgs.parse(call.args);
-    const { receiptId } = await payments.charge(amountCents, {
-      idempotencyKey: call.tool_call_id!,
-    });
+    const { receiptId } = await payments.charge(amountCents, { idempotencyKey: key });
     const output = `charged: receipt ${receiptId}`;
-    await ledger.set(call.tool_call_id!, { state: "done", output });
+    await ledger.set(key, { state: "done", output });
     results.push({ tool_call_id: call.tool_call_id!, output });
   } else {
     unstarted = true; // the tool never ran — interrupting loses nothing

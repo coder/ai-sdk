@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.0](https://github.com/coder/ai-sdk/compare/agent-v0.6.3...agent-v0.7.0) (2026-08-25)
+
+Adds a monotonic reader id stamped onto ws:* transport events, giving consumers a reliable way to order and correlate WebSocket transport events.
+
+### Highlights
+
+- ws:* transport events now carry a monotonic reader id for ordering and correlation. ([#95](https://github.com/coder/ai-sdk/pull/95))
+
+### Features
+
+* **agent:** stamp ws:* transport events with a monotonic reader id ([#95](https://github.com/coder/ai-sdk/issues/95)) ([11f88c2](https://github.com/coder/ai-sdk/commit/11f88c2446b2f94cdd71c48cd88790b0e546ba1a)), refs [#94](https://github.com/coder/ai-sdk/issues/94)
+
 ## [0.6.3](https://github.com/coder/ai-sdk/compare/agent-v0.6.2...agent-v0.6.3) (2026-08-25)
 
 Adds a fix ensuring deferred revisions are flushed when a run finishes and revision suffixes are emitted in wire order, along with expanded durability documentation covering crash-safe client tools and result recovery.

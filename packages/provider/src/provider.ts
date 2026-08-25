@@ -1,6 +1,6 @@
 import { type AnthropicProvider, createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAICompatible, type OpenAICompatibleProvider } from "@ai-sdk/openai-compatible";
-import type { EmbeddingModelV4, LanguageModelV4 } from "@ai-sdk/provider";
+import { type EmbeddingModelV4, type LanguageModelV4, NoSuchModelError } from "@ai-sdk/provider";
 
 /** Default mount path of AI Gateway on a Coder deployment. */
 const DEFAULT_AI_GATEWAY_PATH = "/api/v2/aibridge";
@@ -72,7 +72,12 @@ export interface CoderProvider {
   chat(modelId: string): LanguageModelV4;
   /** Shorthand for an {@link CoderProvider.anthropic} messages model. */
   messages(modelId: string): LanguageModelV4;
-  /** Text-embedding model via the OpenAI-compatible surface. */
+  /**
+   * Text embeddings are not supported: AI Gateway does not yet intercept
+   * `/v1/embeddings`, so this always throws {@link NoSuchModelError} instead of
+   * emitting a request that the gateway rejects with a 404. Tracked in
+   * https://github.com/coder/ai-sdk/issues/69.
+   */
   textEmbeddingModel(modelId: string): EmbeddingModelV4;
 }
 
@@ -89,6 +94,22 @@ export function isAnthropicModelId(modelId: string): boolean {
 
 function trimTrailingSlash(url: string): string {
   return url.replace(/\/+$/, "");
+}
+
+/**
+ * Fail fast at accessor time: AI Gateway intercepts only
+ * `/v1/chat/completions`, `/v1/responses`, and `/v1/messages`, so an
+ * embeddings request would always die with a 404 at request time.
+ */
+function unsupportedEmbeddingModel(modelId: string): EmbeddingModelV4 {
+  throw new NoSuchModelError({
+    modelId,
+    modelType: "embeddingModel",
+    message:
+      `Coder AI Gateway does not yet intercept /v1/embeddings, so the ` +
+      `embedding model "${modelId}" cannot be reached through it. ` +
+      `See https://github.com/coder/ai-sdk/issues/69 for status.`,
+  });
 }
 
 /**
@@ -148,6 +169,11 @@ export function createCoder(settings: CoderProviderSettings): CoderProvider {
     includeUsage: true,
   });
 
+  // `coder.openai` is public, so its embedding accessors must fail fast too —
+  // otherwise they bypass the top-level guard and hit the gateway 404.
+  openai.embeddingModel = unsupportedEmbeddingModel;
+  openai.textEmbeddingModel = unsupportedEmbeddingModel;
+
   const anthropic = createAnthropic({
     name: "coder.anthropic",
     baseURL: anthropicBaseURL,
@@ -167,7 +193,7 @@ export function createCoder(settings: CoderProviderSettings): CoderProvider {
     anthropic,
     chat: (modelId: string): LanguageModelV4 => openai(modelId),
     messages: (modelId: string): LanguageModelV4 => anthropic(modelId),
-    textEmbeddingModel: (modelId: string): EmbeddingModelV4 => openai.textEmbeddingModel(modelId),
+    textEmbeddingModel: unsupportedEmbeddingModel,
   });
 }
 

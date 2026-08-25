@@ -1261,8 +1261,24 @@ of them resubmits:
 ```ts
 import { chatMessagesToUIMessages } from "@coder/ai-sdk-agent";
 
-const history = await agent.client.getMessages(agent.chatId!, { limit: 200 }, deadline);
-const transcript = chatMessagesToUIMessages(history.messages); // chronological
+// A long turn can commit more than a page of messages after the prompt —
+// page newest-first (the endpoint's default order) until the turn's user
+// message is on hand; "never submitted" must never be concluded from a
+// truncated read, or this recovery resubmits exactly the turn it was meant
+// to deduplicate.
+const fetched = [];
+let page = await agent.client.getMessages(agent.chatId!, { limit: 200 }, deadline);
+fetched.push(...page.messages);
+while (!fetched.some((m) => m.role === "user") && page.has_more) {
+  const oldestId = Math.min(...fetched.map((m) => m.id));
+  page = await agent.client.getMessages(
+    agent.chatId!,
+    { before_id: oldestId, limit: 200 },
+    deadline,
+  );
+  fetched.push(...page.messages);
+}
+const transcript = chatMessagesToUIMessages(fetched); // chronological
 const lastUser = transcript.findLast((m) => m.role === "user");
 const submitted = lastUser?.parts.some((p) => p.type === "text" && p.text.includes(marker));
 
@@ -1306,11 +1322,22 @@ if (submitted && !cutShort && status !== "error") {
   step narrates _before_ a server‑side tool call, that preamble is dropped
   too — the recovered text is the answer following the turn's last tool
   activity.
-- **Steps with structured results recover them the same way** — a
-  [structured output](#structured-output) step's answer is the
+- **Steps with structured results recover the call's input, not the text.**
+  A [structured output](#structured-output) step's answer is the
   `structured_output` call's typed input, which rehydrates as a
   `dynamic-tool` part on the recovered turn
-  ([Rehydrating chat history](#rehydrating-chat-history)).
+  ([Rehydrating chat history](#rehydrating-chat-history)) — the text join
+  above would slice it away and return only the ack prose that follows.
+  Recover the filed call from the turn's parts instead, validated
+  client‑side exactly like the live path (rule 2 there — the schema is the
+  real gate):
+
+  ```ts
+  const filed = parts
+    .filter((p) => p.type === "dynamic-tool")
+    .findLast((p) => p.toolName === "structured_output");
+  const answer = Answer.safeParse(filed?.input); // recovered ⇔ answer.success
+  ```
 
 ### Watch turn health from inside the step
 

@@ -521,9 +521,10 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
    *
    * A freshly interrupted/settled chat can keep winding down server-side for a
    * few seconds, during which the server rejects archiving with a 409. Those
-   * 409s are retried (~1s apart, ~15s overall — see `settleDeadlineMs` /
-   * `settleRetryDelayMs`) and the last one is rethrown if the chat never
-   * settles; any other failure, including a caller abort, rethrows immediately.
+   * 409s are retried (~1s apart — see `settleRetryDelayMs`) inside ONE
+   * `settleDeadlineMs` window (~15s) shared by the whole call — however many
+   * chats it archives — and the last 409 is rethrown if the window closes
+   * first; any other failure, including a caller abort, rethrows immediately.
    * Chats are archived oldest first, each id cleared as its archive succeeds —
    * a mid-list failure rethrows and leaves the remaining ids targetable by a
    * later retry.
@@ -542,9 +543,15 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
     // runs were interrupted attempts ago, so they archive without a settle
     // wait, and a failure part-way leaves the rest pending, not forgotten.
     const targets = [...new Set([...this.#model.strandedChatIds, primary])];
+    // One settle window for the WHOLE batch, not per target, so archive()
+    // keeps its documented ~settleDeadlineMs bound however many chats it
+    // retires: each target gets only the remaining budget (floored at 1ms
+    // for AbortSignal.timeout's sake — with the window already exhausted,
+    // the attempt aborts at once and the id stays targetable later).
+    const deadline = Date.now() + this.#settleDeadlineMs;
     for (const id of targets) {
       await archiveWhenSettled(this.#client, id, {
-        deadlineMs: this.#settleDeadlineMs,
+        deadlineMs: Math.max(deadline - Date.now(), 1),
         retryDelayMs: this.#settleRetryDelayMs,
         signal: opts?.signal,
       });

@@ -2995,6 +2995,63 @@ describe("stranded chat cleanup (#113)", () => {
     expect(agent.lastKnownChatId).toBeUndefined();
   });
 
+  it("archive() spends ONE settle window across the whole batch, not one per target", async () => {
+    /** 409s archiveChat a scripted number of times per chat before succeeding. */
+    class SettlingClient extends StrandingClient {
+      /** chat id → number of 409s left to serve (Infinity = never settles). */
+      readonly fail409 = new Map<string, number>();
+      readonly archiveAttempts: string[] = [];
+      override async archiveChat(chatId: string): Promise<void> {
+        this.archiveAttempts.push(chatId);
+        const left = this.fail409.get(chatId) ?? 0;
+        if (left > 0) {
+          this.fail409.set(chatId, left - 1);
+          throw new CoderApiError({
+            status: 409,
+            method: "PATCH",
+            path: `/chats/${chatId}`,
+            message: "chat is still settling",
+          });
+        }
+        await super.archiveChat(chatId);
+      }
+    }
+    const fake = new SettlingClient([], 2);
+    const agent = new CoderAgent({
+      client: fake as unknown as CoderChatClient,
+      organizationId: "org-1",
+      settleDeadlineMs: 400,
+      settleRetryDelayMs: 100,
+    });
+    for (let i = 0; i < 2; i++) {
+      await agent.generate({ prompt: "hi" }).then(
+        () => undefined,
+        () => undefined,
+      );
+    }
+    expect(agent.strandedChatIds).toEqual(["chat-1", "chat-2"]);
+    // chat-1 needs three 409 rounds (~3/4 of the shared window) to settle;
+    // chat-2 never settles. Sharing the window means chat-2 only gets the
+    // remnant — an attempt or two — instead of a fresh full window, and the
+    // whole call stays bounded by ~settleDeadlineMs.
+    fake.fail409.set("chat-1", 3);
+    fake.fail409.set("chat-2", Infinity);
+    await expect(agent.archive()).rejects.toMatchObject({ name: "CoderApiError", status: 409 });
+    // chat-1 settled and was cleared; chat-2's failure left it targetable.
+    expect(fake.archived).toEqual(["chat-1"]);
+    expect(agent.strandedChatIds).toEqual(["chat-2"]);
+    // A fresh per-target window would fit ~4 attempts (400ms / 100ms).
+    expect(fake.archiveAttempts.filter((id) => id === "chat-2").length).toBeLessThanOrEqual(2);
+    // The leftover is retired by a later call.
+    fake.fail409.clear();
+    await expect(agent.archive()).resolves.toEqual({
+      archived: true,
+      chatId: "chat-2",
+      archivedChatIds: ["chat-2"],
+    });
+    expect(agent.strandedChatIds).toEqual([]);
+  });
+
   it("interrupt() targets the last-known chat after a discard", async () => {
     const { fake, agent } = await strandedAgent();
     await expect(agent.interrupt()).resolves.toEqual({ interrupted: true, chatId: "chat-1" });

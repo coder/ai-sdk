@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.9.0](https://github.com/coder/ai-sdk/compare/agent-v0.8.0...agent-v0.9.0) (2026-08-26)
+
+Agent now retains stranded chat IDs so they can be cleaned up and stamped onto stream errors, and it annotates transport events with replay disposition and operation names for improved observability.
+
+### Highlights
+
+- Stranded chat IDs are retained for cleanup and included in stream error metadata. ([#116](https://github.com/coder/ai-sdk/pull/116))
+- Transport events are now stamped with replay disposition and operation names. ([#117](https://github.com/coder/ai-sdk/pull/117))
+
+### Features
+
+* **agent:** stamp replay disposition and operation names on transport events ([#117](https://github.com/coder/ai-sdk/issues/117)) ([c601ed8](https://github.com/coder/ai-sdk/commit/c601ed8ed55d98497965da52ec6af1af56762f31))
+
+
+### Bug Fixes
+
+* **agent:** retain stranded chat id for cleanup and stamp it on stream errors ([#116](https://github.com/coder/ai-sdk/issues/116)) ([0bf18db](https://github.com/coder/ai-sdk/commit/0bf18dbf4141b8e7674b33268941ac64a8f235c6))
+
 ## [0.8.0](https://github.com/coder/ai-sdk/compare/agent-v0.7.2...agent-v0.8.0) (2026-08-26)
 
 The agent now falls back to the CODER_URL and CODER_SESSION_TOKEN environment variables for its default connection settings, simplifying configuration in environments where those variables are already present.

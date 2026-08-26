@@ -207,6 +207,16 @@ export interface CoderAgentSettings<TOOLS extends ToolSet = {}> {
   planMode?: "" | "plan";
   /** Resume an existing chat (session) instead of creating a new one. */
   chatId?: string;
+  /**
+   * Resume cursor for `chatId`: the newest chat message id a previous
+   * instance had already seen. Persist {@link CoderAgent.lastSeenMessageId}
+   * alongside the chat id when a turn ends and supply both here — the resumed
+   * turn then skips its pre-prompt seed GET (the single-message history probe
+   * that would otherwise establish the cursor). Without it, behavior is
+   * unchanged. Must be a positive integer obtained from the getter, and
+   * requires `chatId`; anything else fails construction.
+   */
+  lastSeenMessageId?: number;
 
   // --- agent configuration ---
   /** Stable agent id (exposed as {@link CoderAgent.id}). */
@@ -384,6 +394,7 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
       mcpServerIds: settings.mcpServerIds,
       planMode: settings.planMode,
       chatId: settings.chatId,
+      lastSeenMessageId: settings.lastSeenMessageId,
       requestTimeoutMs: settings.requestTimeoutMs,
       onTransportEvent: settings.onTransportEvent,
     });
@@ -420,6 +431,17 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
   /** The current chatd chat id, once a turn has started. */
   get chatId(): string | undefined {
     return this.#model.chatId;
+  }
+
+  /**
+   * The session's resume cursor: the newest chat message id observed, or
+   * `undefined` before any turn has streamed. Persist it alongside
+   * {@link chatId} when a turn ends and supply both to a future instance
+   * ({@link CoderAgentSettings.lastSeenMessageId}) to skip the resumed turn's
+   * pre-prompt seed GET. Read it between turns, not mid-generation.
+   */
+  get lastSeenMessageId(): number | undefined {
+    return this.#model.lastSeenMessageId;
   }
 
   /**

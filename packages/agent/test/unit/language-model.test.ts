@@ -161,3 +161,39 @@ describe("CoderLanguageModel.doGenerate aggregation", () => {
     ]);
   });
 });
+
+describe("CoderLanguageModel resume cursor validation (#115)", () => {
+  const config = (overrides: Record<string, unknown>) =>
+    ({
+      client: new FakeClient([]) as unknown as CoderChatClient,
+      organizationId: "org-1",
+      ...overrides,
+    }) as never;
+
+  it("rejects a cursor without its chat id", () => {
+    expect(() => new CoderLanguageModel(config({ lastSeenMessageId: 40 }))).toThrow(
+      /requires chatId/,
+    );
+  });
+
+  it("rejects non-positive and non-integer cursors (0 is the internal sentinel)", () => {
+    for (const bad of [0, -3, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(
+        () => new CoderLanguageModel(config({ chatId: "chat-1", lastSeenMessageId: bad })),
+      ).toThrow(/positive integer/);
+    }
+  });
+
+  it("accepts a valid pair and exposes it via the getter", () => {
+    const model = new CoderLanguageModel(config({ chatId: "chat-1", lastSeenMessageId: 40 }));
+    expect(model.lastSeenMessageId).toBe(40);
+    // resetSession drops the cursor with the session.
+    model.resetSession();
+    expect(model.lastSeenMessageId).toBeUndefined();
+  });
+
+  it("exposes undefined before any turn on a fresh model", () => {
+    const model = new CoderLanguageModel(config({}));
+    expect(model.lastSeenMessageId).toBeUndefined();
+  });
+});

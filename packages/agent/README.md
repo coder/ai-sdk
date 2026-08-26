@@ -223,9 +223,11 @@ conversation with server‑side history). `agent.chatId` is the current chat id.
 - `agent.interrupt({ signal? })` — interrupt an in‑flight generation.
 - `agent.archive({ signal? })` — archive the underlying chat (cleanup; see [Cleanup](#cleanup)).
 - `agent.listModels()` — list the deployment's model configs, so you don't have to guess the `model` hint.
-- Resume a prior chat: `new CoderAgent({ …, chatId: "…" })` — see
-  [Durable workflows](#durable-workflows-persist-resume-recover) for the full
-  resumption how‑to.
+- Resume a prior chat: `new CoderAgent({ …, chatId: "…" })` — optionally with
+  `lastSeenMessageId` (the persisted resume cursor, read from
+  `agent.lastSeenMessageId`) to skip the resumed turn's pre‑prompt history
+  probe. See [Durable workflows](#durable-workflows-persist-resume-recover)
+  for the full resumption how‑to.
 
 Interrupting is asynchronous on the server: `interrupt()` resolves as soon as the
 interrupt is acknowledged, and the run keeps winding down for a few seconds
@@ -883,24 +885,25 @@ sequence pinpoints _where_ a turn died:
 
 `CoderAgentSettings`:
 
-| field                             | description                                                                                      |
-| --------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `client` \| (`baseUrl` + `token`) | connection (one or the other; `baseUrl`/`token` default from `CODER_URL`/`CODER_SESSION_TOKEN`)  |
-| `organizationId`                  | org UUID that owns the chat (required)                                                           |
-| `model`                           | model hint: UUID, `provider:model`, model id, or display‑name substring                          |
-| `instructions`                    | system prompt                                                                                    |
-| `tools`                           | AI SDK `ToolSet` (client‑executed)                                                               |
-| `workspaceId`                     | bind the chat to a Coder workspace (enables workspace‑scoped tools)                              |
-| `workspaceFiles`                  | adapter enabling `uploadToWorkspace()` (write files to the workspace FS)                         |
-| `mcpServerIds`                    | server‑side MCP servers to enable                                                                |
-| `planMode`                        | enable plan mode (`"plan"`)                                                                      |
-| `stopWhen`                        | AI SDK stop condition(s); default `stepCountIs(64)`                                              |
-| `maxRetries`                      | default `0` — SDK retries can duplicate server‑side turns; override with care                    |
-| `requestTimeoutMs`                | per‑turn time budget (ms); interrupts the run and rejects (`kind: "timeout"`) instead of hanging |
-| `onTransportEvent`                | observability hook for typed transport events (see [Observability](#observability))              |
-| `settleDeadlineMs`                | overall deadline for bounded cleanup (`archive()` 409 retries, disposal); default 15 000         |
-| `settleRetryDelayMs`              | pause between `archive()` retries while the chat settles; default 1000                           |
-| `chatId`                          | resume an existing chat                                                                          |
+| field                             | description                                                                                                        |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `client` \| (`baseUrl` + `token`) | connection (one or the other; `baseUrl`/`token` default from `CODER_URL`/`CODER_SESSION_TOKEN`)                    |
+| `organizationId`                  | org UUID that owns the chat (required)                                                                             |
+| `model`                           | model hint: UUID, `provider:model`, model id, or display‑name substring                                            |
+| `instructions`                    | system prompt                                                                                                      |
+| `tools`                           | AI SDK `ToolSet` (client‑executed)                                                                                 |
+| `workspaceId`                     | bind the chat to a Coder workspace (enables workspace‑scoped tools)                                                |
+| `workspaceFiles`                  | adapter enabling `uploadToWorkspace()` (write files to the workspace FS)                                           |
+| `mcpServerIds`                    | server‑side MCP servers to enable                                                                                  |
+| `planMode`                        | enable plan mode (`"plan"`)                                                                                        |
+| `stopWhen`                        | AI SDK stop condition(s); default `stepCountIs(64)`                                                                |
+| `maxRetries`                      | default `0` — SDK retries can duplicate server‑side turns; override with care                                      |
+| `requestTimeoutMs`                | per‑turn time budget (ms); interrupts the run and rejects (`kind: "timeout"`) instead of hanging                   |
+| `onTransportEvent`                | observability hook for typed transport events (see [Observability](#observability))                                |
+| `settleDeadlineMs`                | overall deadline for bounded cleanup (`archive()` 409 retries, disposal); default 15 000                           |
+| `settleRetryDelayMs`              | pause between `archive()` retries while the chat settles; default 1000                                             |
+| `chatId`                          | resume an existing chat                                                                                            |
+| `lastSeenMessageId`               | resume cursor for `chatId` (persist `agent.lastSeenMessageId`) — skips the resumed turn's pre‑prompt history probe |
 
 The `model` hint resolves against the deployment's model configs in order: a
 config UUID is used as‑is, then an exact `provider:model` match, an exact model
@@ -943,7 +946,9 @@ Two facts make the pattern work:
 
 - **All chat state lives on the Coder server.** Messages, tool activity, the
   run itself — none of it is in your process. The only durable thing a
-  workflow has to carry between steps is **`agent.chatId`: a string.**
+  workflow has to carry between steps is **`agent.chatId`: a string** — plus,
+  optionally, **`agent.lastSeenMessageId`: the resume cursor**, which saves the
+  resumed turn one serial round‑trip (below).
 - **`CoderAgent` can't ride a `fetch`‑shim durability layer** (it talks REST +
   WebSocket through its own client), so each turn runs **inside** a durable
   step — and the checkpointed chat id is the thread between steps.
@@ -956,18 +961,29 @@ on another machine, hours apart, retried after failures.
 ```ts
 import { CoderAgent, type CoderTransportEvent } from "@coder/ai-sdk-agent";
 
+interface WorkflowCheckpoint {
+  chatId: string;
+  /** The resume cursor — pairs with chatId, never persisted without it. */
+  lastSeenMessageId?: number;
+}
+
 // Any durable KV your engine gives you: step state, a job row, a DB table.
 declare const checkpoints: {
-  get(workflowId: string): Promise<string | undefined>;
-  set(workflowId: string, chatId: string): Promise<void>;
+  get(workflowId: string): Promise<WorkflowCheckpoint | undefined>;
+  set(workflowId: string, checkpoint: WorkflowCheckpoint): Promise<void>;
 };
 
 export async function runTurn(workflowId: string, prompt: string): Promise<string> {
+  const checkpoint = await checkpoints.get(workflowId); // undefined on the first step → the turn creates the chat
   const agent = new CoderAgent({
     baseUrl: process.env.CODER_URL!,
     token: process.env.CODER_SESSION_TOKEN!, // read per step — never checkpoint or log it
     organizationId: process.env.CODER_ORG_ID!,
-    chatId: await checkpoints.get(workflowId), // undefined on the first step → the turn creates the chat
+    chatId: checkpoint?.chatId,
+    // The previous step's cursor lets this step skip its pre-prompt history
+    // probe; absent (first resume, older checkpoints), the turn seeds it from
+    // the chat's newest message instead — one extra GET, same result.
+    lastSeenMessageId: checkpoint?.lastSeenMessageId,
     requestTimeoutMs: 300_000, // always bound workflow steps — see below
     onTransportEvent: observe, // per-step telemetry — see below
   });
@@ -990,7 +1006,15 @@ export async function runTurn(workflowId: string, prompt: string): Promise<strin
     // CoderStreamError's chatId still names the stranded chat, and
     // agent.archive() retires it via agent.lastKnownChatId — see the
     // CoderStreamError notes below for what retrying means then.
-    if (agent.chatId) await checkpoints.set(workflowId, agent.chatId);
+    if (agent.chatId) {
+      const next: WorkflowCheckpoint = { chatId: agent.chatId };
+      // The cursor is optional sugar: persist it when a turn established one
+      // (a turn that failed before streaming may not have), skip it otherwise.
+      if (agent.lastSeenMessageId !== undefined) {
+        next.lastSeenMessageId = agent.lastSeenMessageId;
+      }
+      await checkpoints.set(workflowId, next);
+    }
   }
 }
 ```
@@ -1023,12 +1047,16 @@ await archiveWorkflowChat("wf-1042");
 
 What resuming does (and doesn't do):
 
-- **Construction is free.** `new CoderAgent({ …, chatId })` performs no I/O
-  and no validation — a bad or archived id fails the _turn_, not the
-  constructor.
+- **Construction is free.** `new CoderAgent({ …, chatId })` performs no I/O —
+  a bad or archived id fails the _turn_, not the constructor. (The one
+  exception is local validation of `lastSeenMessageId`: a cursor that isn't a
+  positive integer, or arrives without its `chatId`, throws immediately.)
 - **The first resumed turn seeds its cursor** from the chat's newest message
   (one single‑message history probe), so it streams only its own events —
-  it never re‑absorbs earlier turns' content or usage.
+  it never re‑absorbs earlier turns' content or usage. Supplying the
+  checkpointed `lastSeenMessageId` skips that probe: the previous step already
+  knew the cursor, so the resumed prompt goes out without any pre‑prompt
+  round‑trip.
 - **Re‑supply process‑local configuration.** Client `tools` live in your
   process, not on the server, so each step that expects tool calls must pass
   them again. The workspace binding is the opposite: fixed at creation,
@@ -1036,7 +1064,10 @@ What resuming does (and doesn't do):
 - **Sessions stay single‑flight across the whole system**, not just within one
   process: run steps strictly sequentially per chat. A second job posting to
   the same chat queues behind the live run and burns its own
-  `requestTimeoutMs` waiting.
+  `requestTimeoutMs` waiting — it attributes nothing of the live run's output
+  to itself (its window opens only when its own queued prompt materializes),
+  and if it times out first, it withdraws its queued prompt rather than
+  leaving it to run unattended.
 
 ### Let the SDK absorb drops — and handle what it re‑throws
 
@@ -1162,9 +1193,11 @@ checkpoint:
   turns into resuming the dead chat.)
 - **Crashed after the checkpoint** — the chat is resumable, but don't just
   resubmit. The crashed attempt's run may still be live server‑side, and a
-  resumed turn seeds its message cursor _before_ submitting — whatever the
-  old run commits after that point would be absorbed into the resumed turn's
-  output and usage. A crash _inside one of your client tools_ is worse: the
+  resubmission then queues behind it: nothing the old run commits is
+  attributed to the resumed turn (its window opens only at its own queued
+  prompt's materialization), but the step burns its `requestTimeoutMs`
+  waiting for the old run to finish first — and a timeout withdraws the
+  queued prompt again. A crash _inside one of your client tools_ is worse: the
   chat is paused in `requires_action`, where new messages wait forever — and
   if the tool's external effect committed before the crash, that pause is the
   only pending record of it, so reconcile the tool ledger **before** any

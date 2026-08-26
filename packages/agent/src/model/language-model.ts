@@ -13,6 +13,7 @@ import { CoderAgentError, CoderApiError, CoderChatError, CoderStreamError } from
 import { CoderChatClient } from "../coder/client.js";
 import type {
   ChatInputPart,
+  ChatQueuedMessage,
   ChatStatus,
   ChatStreamEvent,
   ChatStreamToolCall,
@@ -30,7 +31,7 @@ import {
 } from "./prompt.js";
 import { nextStreamReaderId } from "../coder/ws.js";
 import { SessionChatStream } from "./session-stream.js";
-import { TurnTranslator } from "./translate.js";
+import { TurnTranslator, type TurnTranslatorOptions } from "./translate.js";
 import {
   safeTransportEmitter,
   type SegmentSettleTransportEvent,
@@ -118,6 +119,17 @@ export interface CoderLanguageModelConfig {
   planMode?: "" | "plan";
   /** Resume an existing chat instead of creating a new one. */
   chatId?: string;
+  /**
+   * Resume cursor for `chatId`: the newest chat message id a previous
+   * instance had already seen — persist {@link CoderLanguageModel.lastSeenMessageId}
+   * alongside the chat id and supply both here. Skips the resumed turn's
+   * pre-prompt seed GET (the single-message history probe that would
+   * otherwise establish the cursor); without it, behavior is unchanged and
+   * the seed GET remains the fallback. Must be a positive integer obtained
+   * from the getter, and requires `chatId` (the constructor rejects anything
+   * else — a wrong cursor would silently misattribute replayed history).
+   */
+  lastSeenMessageId?: number;
   /**
    * Per-segment time budget in milliseconds, applied to each model round-trip
    * (one `doStream`/`doGenerate` call: chat creation or message/tool-result
@@ -210,11 +222,43 @@ export class CoderLanguageModel implements LanguageModelV4 {
     this.modelId = config.model ?? "chatd";
     this.#chatId = config.chatId;
     this.#lastKnownChatId = config.chatId;
+    // The resume cursor is validated eagerly: internally 0 is the "no cursor
+    // yet" sentinel (it triggers the seed GET), so a zero/negative/fractional
+    // value from the caller must fail fast here rather than silently corrupt
+    // the turn boundary — and a cursor without its chat is a caller bug (the
+    // pair is persisted together; see the lastSeenMessageId getter).
+    if (config.lastSeenMessageId !== undefined) {
+      if (!Number.isSafeInteger(config.lastSeenMessageId) || config.lastSeenMessageId <= 0) {
+        throw new CoderAgentError(
+          `lastSeenMessageId must be a positive integer (got ${config.lastSeenMessageId}); ` +
+            "persist the value of the lastSeenMessageId getter and supply it verbatim.",
+        );
+      }
+      if (!config.chatId) {
+        throw new CoderAgentError(
+          "lastSeenMessageId requires chatId: a resume cursor is meaningless without the chat it belongs to.",
+        );
+      }
+      this.#lastSeenMessageId = config.lastSeenMessageId;
+    }
     this.#emitTransportEvent = safeTransportEmitter(config.onTransportEvent);
   }
 
   get chatId(): string | undefined {
     return this.#chatId;
+  }
+
+  /**
+   * The resume cursor: the newest chat message id this session has observed,
+   * or `undefined` before any turn has streamed (nothing to persist then —
+   * a fresh instance seeds from history instead). Persist it alongside
+   * {@link chatId} once a turn settles and supply both to a future instance
+   * ({@link CoderLanguageModelConfig.lastSeenMessageId}) to skip the resumed
+   * turn's pre-prompt seed GET. Read it between turns, not mid-generation:
+   * the cursor advances when a segment ends.
+   */
+  get lastSeenMessageId(): number | undefined {
+    return this.#lastSeenMessageId > 0 ? this.#lastSeenMessageId : undefined;
   }
 
   /**
@@ -391,7 +435,8 @@ export class CoderLanguageModel implements LanguageModelV4 {
   async #recoverRequiresAction(
     chatId: string,
     dynamicNames: ReadonlySet<string>,
-    afterId: number | undefined,
+    /** The turn's EFFECTIVE cursor (`TurnTranslator.turnCursor`). */
+    turnCursor: number,
     signal?: AbortSignal,
   ): Promise<ChatStreamEvent[]> {
     // Fetch WITHOUT an `after_id` cursor: cursored reads page ASCENDING
@@ -404,7 +449,7 @@ export class CoderLanguageModel implements LanguageModelV4 {
     const { messages } = await this.#config.client.getMessages(chatId, { limit: 200 }, signal);
     // Restrict to this turn's messages (the translator would skip older ids
     // anyway, but the derivation must not see earlier turns), in id order.
-    const turnMessages = messages.filter((m) => m.id > (afterId ?? 0)).sort((a, b) => a.id - b.id);
+    const turnMessages = messages.filter((m) => m.id > turnCursor).sort((a, b) => a.id - b.id);
     // Mirror chatd's own derivation (`actionRequiredFromHistory` →
     // `unresolvedToolCallsFromHistory`): the pending calls are the LAST
     // assistant message's non-provider-executed dynamic tool-call parts,
@@ -632,10 +677,33 @@ export class CoderLanguageModel implements LanguageModelV4 {
     // session id mid-segment (which also closes the attached stream and fails
     // the segment — whose teardown then still stops the orphaned server run).
     let turnChatId: string | undefined;
+    // Whether the submission was QUEUED (chat busy — see #114), and its queue
+    // entry, once known. Set before the translator exists, so the teardown
+    // below can classify a REST-phase failure after the queueing response.
+    let queuedTurn = false;
+    let queuedEntry: ChatQueuedMessage | undefined;
     const interrupt = (): void => {
       const id = turnChatId ?? this.#chatId;
       if (interruptSent || !id) return;
       interruptSent = true;
+      // A QUEUED turn that never anchored has no server run of its own: the
+      // chat's active run belongs to a concurrent/predecessor submission, and
+      // interrupting it would kill someone else's work — and, worse, make
+      // chatd promote this turn's queue entry into a run nobody is watching.
+      // Withdraw the entry instead (best-effort, like the interrupt): the
+      // turn is dead, so its prompt must not run unattended later. If the
+      // entry is already gone (promoted during the race, or deleted
+      // externally), there is no reliable ownership evidence for whatever is
+      // running now — leave it alone rather than risk killing an innocent
+      // run. Without an entry id (unexpected wire shape) do nothing, for the
+      // same reason.
+      if (queuedTurn && (translator === undefined || translator.awaitingQueuedSubmission)) {
+        const entryId = queuedEntry?.id;
+        if (entryId !== undefined) {
+          void this.#config.client.deleteQueuedMessage(id, entryId).catch(() => {});
+        }
+        return;
+      }
       void this.#config.client.interruptChat(id).catch(() => {});
     };
     signal?.addEventListener("abort", interrupt, { once: true });
@@ -710,7 +778,10 @@ export class CoderLanguageModel implements LanguageModelV4 {
       // history and this turn would absorb every earlier turn's content and
       // usage. Seed the cursor from the chat's newest message instead (the
       // messages endpoint pages newest-first; an empty chat has nothing to
-      // replay, so 0 stays correct there).
+      // replay, so 0 stays correct there). Skipped when the caller supplied
+      // the cursor (config.lastSeenMessageId, validated at construction) —
+      // that is the same value a previous instance's turn established, minus
+      // this round-trip (#115).
       if (this.#chatId && this.#lastSeenMessageId === 0) {
         const { messages } = await this.#config.client.getMessages(
           this.#chatId,
@@ -759,7 +830,27 @@ export class CoderLanguageModel implements LanguageModelV4 {
             },
             signal,
           );
-          afterId = resp.message?.id ?? this.#lastSeenMessageId;
+          if (resp.message) {
+            afterId = resp.message.id;
+          } else if (resp.queued) {
+            // QUEUED submission (#114): the chat was busy, so the response
+            // carries only a queue entry — no committed message id. The
+            // stream window from the pre-turn cursor up to the entry's
+            // materialization belongs to the chat's CURRENT run, so the
+            // translator withholds attribution until this turn's own
+            // user-message snapshot is observed (`queuedSubmission` below).
+            // The stream still dials from the pre-turn cursor: the
+            // materialized id is unknown here, and a later cursor would skip
+            // the very snapshot the gate anchors on.
+            afterId = this.#lastSeenMessageId;
+            queuedTurn = true;
+            queuedEntry = resp.queued_message;
+          } else {
+            // Out-of-contract response (neither a committed message nor the
+            // queued flag): keep the historical pre-turn-cursor fallback
+            // rather than gating on a signal the wire never sent.
+            afterId = this.#lastSeenMessageId;
+          }
         }
       } else {
         // resume
@@ -788,14 +879,25 @@ export class CoderLanguageModel implements LanguageModelV4 {
       // translator with the cursor makes it impossible to ingest before the
       // boundary is known.
       const dynamicNames = dynamicToolNames(options.tools);
-      translator = new TurnTranslator({
+      const translatorOptions: TurnTranslatorOptions = {
         dynamicToolNames: dynamicNames,
         turnCursor: afterId ?? 0,
         // The retained stream redials with the TURN's original cursor, so a
         // reconnect can replay an earlier segment's `action_required`
         // snapshot; calls this session already answered must not run again.
         submittedToolCallIds: this.#submittedToolCallIds,
-      });
+      };
+      if (queuedTurn) {
+        // For a queued submission the cursor above is only the PRE-turn
+        // boundary: the translator additionally withholds attribution until
+        // the queue entry materializes as this turn's own user message and
+        // then advances its effective cursor to that message's id (#114).
+        const queuedSubmission: NonNullable<TurnTranslatorOptions["queuedSubmission"]> = {};
+        if (queuedEntry?.id !== undefined) queuedSubmission.id = queuedEntry.id;
+        if (queuedEntry?.content !== undefined) queuedSubmission.content = queuedEntry.content;
+        translatorOptions.queuedSubmission = queuedSubmission;
+      }
+      translator = new TurnTranslator(translatorOptions);
       // chatd emits the `requires_action` status BEFORE the `action_required`
       // event that carries the pending tool calls, so for that status we keep
       // reading until the client tool calls have actually been emitted (bounded
@@ -891,7 +993,11 @@ export class CoderLanguageModel implements LanguageModelV4 {
               recovery = this.#recoverRequiresAction(
                 chatId,
                 dynamicNames,
-                afterId,
+                // The turn's EFFECTIVE cursor: for a queued submission it has
+                // advanced past the materialized user message (a pause can
+                // only arm after the gate anchored), so the derivation never
+                // sees the concurrent predecessor run's tail (#114).
+                translator.turnCursor,
                 signal ? AbortSignal.any([signal, recoveryAbort.signal]) : recoveryAbort.signal,
               ).catch(() => []);
               continue;
@@ -921,6 +1027,16 @@ export class CoderLanguageModel implements LanguageModelV4 {
           stream.consumed(next);
           if (raced.done) break;
           const parts = translator.ingest(raced.value);
+          // A queued submission whose wait can never complete — the chat
+          // settled in error with the entry still queued (chatd does not
+          // auto-promote the queue after an error), or the entry left the
+          // queue without materializing as this turn's user message. Thrown
+          // rather than streamed as an error part: the failure is this
+          // client's WAIT, not a settle of this turn's run (which never
+          // started), so no terminal status is recorded — which also routes
+          // teardown to withdraw the stuck entry (see interrupt()).
+          const deadEnd = translator.queuedSubmissionDeadEnd;
+          if (deadEnd) throw new CoderChatError(deadEnd);
           if (raced.value.type === "error" && translator.error && !translator.terminalStatus) {
             // chatd batches the terminal `status: "error"` right behind the
             // `error` event in the same WS frame, but a doGenerate() consumer

@@ -1170,3 +1170,240 @@ describe("TurnTranslator — retained-stream replays (#44)", () => {
     expect(calls[0]).toMatchObject({ toolCallId: "tc-new" });
   });
 });
+
+describe("TurnTranslator — queued-submission gate (#114)", () => {
+  const queuedContent: ChatMessagePart[] = [{ type: "text", text: "hi again" }];
+  /**
+   * A `queue_update` carrying the full queue with the given entry ids. The
+   * wire field is `omitempty`, so an EMPTY queue arrives with
+   * `queued_messages` absent — this helper mirrors that shape exactly.
+   */
+  const queueUpdate = (...ids: number[]): ChatStreamEvent => {
+    const ev: ChatStreamEvent = { type: "queue_update", chat_id: "c" };
+    if (ids.length > 0) {
+      ev.queued_messages = ids.map((id) => ({
+        id,
+        chat_id: "c",
+        content: [{ type: "text", text: `entry ${id}` }],
+        created_at: "",
+      }));
+    }
+    return ev;
+  };
+  const gated = (queuedSubmission?: { id?: number; content?: ChatMessagePart[] }) =>
+    new TurnTranslator({
+      dynamicToolNames: new Set(["getWeather"]),
+      turnCursor: 40,
+      queuedSubmission: queuedSubmission ?? { id: 7, content: queuedContent },
+    });
+  const ingestAll = (t: TurnTranslator, events: ChatStreamEvent[]) => {
+    const parts = [] as ReturnType<TurnTranslator["ingest"]>;
+    for (const ev of events) parts.push(...t.ingest(ev));
+    return parts;
+  };
+  /** The concurrent (dying) run's tail: deltas, a commit with usage, a settle. */
+  const concurrentTail: ChatStreamEvent[] = [
+    status("running"),
+    part("assistant", { type: "text", text: "old tail" }),
+    msg(41, "assistant", [{ type: "text", text: "old tail" }], {
+      input_tokens: 999,
+      output_tokens: 999,
+    }),
+    {
+      type: "action_required",
+      chat_id: "c",
+      action_required: {
+        tool_calls: [{ tool_call_id: "dying-1", tool_name: "getWeather", args: "{}" }],
+      },
+    },
+    status("waiting"),
+  ];
+
+  it("withholds the concurrent run's tail and anchors on its own materialized user message", () => {
+    const t = gated();
+    // The entire concurrent window — including its terminal settle and its
+    // pending client tool calls — emits nothing and settles nothing.
+    const suppressed = ingestAll(t, concurrentTail);
+    expect(suppressed).toEqual([]);
+    expect(t.terminalStatus).toBeUndefined();
+    expect(t.clientToolCallSeen).toBe(false);
+    expect(t.awaitingQueuedSubmission).toBe(true);
+    // Cursor bookkeeping still advances past observed commits.
+    expect(t.maxMessageId).toBe(41);
+
+    // Materialization: our user message (note the reordered JSON keys — the
+    // match is structural, not byte-order), confirmed by the queue update
+    // that drops our entry.
+    const anchorParts = ingestAll(t, [
+      msg(42, "user", [{ text: "hi again", type: "text" } as ChatMessagePart]),
+      queueUpdate(),
+    ]);
+    expect(anchorParts).toEqual([]);
+    expect(t.awaitingQueuedSubmission).toBe(false);
+    expect(t.turnCursor).toBe(42);
+
+    // From here on, attribution is normal — and the pre-anchor usage is gone.
+    const parts = ingestAll(t, [
+      status("running"),
+      part("assistant", { type: "text", text: "Fresh" }),
+      msg(43, "assistant", [{ type: "text", text: "Fresh" }], {
+        input_tokens: 100,
+        output_tokens: 10,
+      }),
+      status("waiting"),
+    ]);
+    parts.push(...t.finish());
+    expect(textBlocks(parts)).toEqual(["Fresh"]);
+    const finish = parts.at(-1)!;
+    expect(finish.type === "finish" && finish.usage.inputTokens.total).toBe(100);
+    expect(finish.type === "finish" && finish.usage.outputTokens.total).toBe(10);
+    expect(t.terminalStatus).toBe("waiting");
+  });
+
+  it("an identical-content entry queued ahead materializes first: candidate is cleared, ours anchors later", () => {
+    const t = gated();
+    const parts = ingestAll(t, [
+      // The earlier identical entry materializes — a perfect content match…
+      msg(41, "user", [{ type: "text", text: "hi again" }]),
+      // …but the confirming queue update still lists OUR entry: not ours.
+      queueUpdate(7),
+      // Its run streams and commits — all withheld.
+      status("running"),
+      part("assistant", { type: "text", text: "their answer" }),
+      msg(42, "assistant", [{ type: "text", text: "their answer" }], { input_tokens: 999 }),
+      status("waiting"),
+      // OUR entry materializes and is confirmed gone from the queue.
+      msg(43, "user", [{ type: "text", text: "hi again" }]),
+      queueUpdate(),
+      status("running"),
+      msg(44, "assistant", [{ type: "text", text: "our answer" }], {
+        input_tokens: 5,
+        output_tokens: 5,
+      }),
+      status("waiting"),
+    ]);
+    parts.push(...t.finish());
+    expect(t.turnCursor).toBe(43);
+    expect(textBlocks(parts)).toEqual(["our answer"]);
+    const finish = parts.at(-1)!;
+    expect(finish.type === "finish" && finish.usage.inputTokens.total).toBe(5);
+  });
+
+  it("skips other clients' user messages by content and buffers own commits until confirmation", () => {
+    const t = gated();
+    const parts = ingestAll(t, [
+      // Another client's different prompt — never a candidate.
+      msg(41, "user", [{ type: "text", text: "something else" }]),
+      msg(42, "assistant", [{ type: "text", text: "their answer" }], { input_tokens: 999 }),
+      // Reconnect-style replay flush: our user message and our run's commits
+      // arrive BEFORE the connect-time queue update that confirms them.
+      msg(43, "user", [{ type: "text", text: "hi again" }]),
+      msg(44, "assistant", [{ type: "text", text: "Done." }], {
+        input_tokens: 7,
+        output_tokens: 2,
+      }),
+      queueUpdate(),
+      status("waiting"),
+    ]);
+    parts.push(...t.finish());
+    // The buffered own commit replays through normal ingestion on anchor.
+    expect(t.turnCursor).toBe(43);
+    expect(textBlocks(parts)).toEqual(["Done."]);
+    const finish = parts.at(-1)!;
+    expect(finish.type === "finish" && finish.usage.inputTokens.total).toBe(7);
+    expect(finish.type === "finish" && finish.usage.outputTokens.total).toBe(2);
+  });
+
+  it("anchors directly on the first matching user message when no queue-entry id is known", () => {
+    const t = gated({ content: queuedContent });
+    ingestAll(t, [msg(42, "user", [{ type: "text", text: "hi again" }])]);
+    expect(t.awaitingQueuedSubmission).toBe(false);
+    expect(t.turnCursor).toBe(42);
+  });
+
+  it("matches any user message when the queue entry carried no content", () => {
+    const t = gated({ id: 7 });
+    ingestAll(t, [msg(42, "user", [{ type: "text", text: "whatever" }]), queueUpdate()]);
+    expect(t.awaitingQueuedSubmission).toBe(false);
+    expect(t.turnCursor).toBe(42);
+  });
+
+  it("post-anchor replays of the pre-anchor tail stay filtered (redials reuse the ORIGINAL cursor)", () => {
+    const t = gated();
+    const parts = ingestAll(t, [
+      ...concurrentTail,
+      msg(42, "user", [{ type: "text", text: "hi again" }]),
+      queueUpdate(),
+      msg(43, "assistant", [{ type: "text", text: "Fresh" }], { input_tokens: 100 }),
+    ]);
+    // A drop now redials with the turn's original after_id (40) and replays
+    // everything: the tail, our user message, our own commit.
+    parts.push(
+      ...ingestAll(t, [
+        status("running"),
+        msg(41, "assistant", [{ type: "text", text: "old tail" }], { input_tokens: 999 }),
+        msg(42, "user", [{ type: "text", text: "hi again" }]),
+        msg(43, "assistant", [{ type: "text", text: "Fresh" }], { input_tokens: 100 }),
+        status("waiting"),
+      ]),
+      ...t.finish(),
+    );
+    // Across the drop: the turn's own text exactly once, the tail's never,
+    // and the replayed snapshots double-count nothing.
+    expect(textBlocks(parts)).toEqual(["Fresh"]);
+    const finish = parts.at(-1)!;
+    expect(finish.type === "finish" && finish.usage.inputTokens.total).toBe(100);
+  });
+
+  it("fails fast when the concurrent run settles in error (the queue is not auto-promoted)", () => {
+    const t = gated();
+    const parts = ingestAll(t, [
+      status("running"),
+      // chatd flushes `status: error` before the `error` payload event.
+      status("error"),
+      { type: "error", chat_id: "c", error: { message: "boom", detail: "provider died" } },
+    ]);
+    expect(parts).toEqual([]);
+    // The other run's failure is neither absorbed as this turn's error nor
+    // its settle — it surfaces as a dead end for the model layer to throw.
+    expect(t.error).toBeUndefined();
+    expect(t.terminalStatus).toBeUndefined();
+    expect(t.queuedSubmissionDeadEnd).toMatchObject({
+      kind: "queued_submission_lost",
+      retryable: false,
+      detail: "boom: provider died",
+    });
+  });
+
+  it("fails fast when the entry leaves the queue without materializing", () => {
+    const t = gated();
+    // Our entry (7) is gone from the full queue list, yet no user message
+    // matched: deleted externally or uncorrelatable.
+    ingestAll(t, [queueUpdate(9)]);
+    expect(t.queuedSubmissionDeadEnd).toMatchObject({
+      kind: "queued_submission_lost",
+      retryable: false,
+    });
+  });
+
+  it("a queue update that still lists the entry is not a dead end", () => {
+    const t = gated();
+    ingestAll(t, [queueUpdate(9, 7)]);
+    expect(t.queuedSubmissionDeadEnd).toBeUndefined();
+    expect(t.awaitingQueuedSubmission).toBe(true);
+  });
+});
+
+describe("TurnTranslator — queued-submission gate wire shapes", () => {
+  it("treats a queue_update with an explicit empty array as confirmation too", () => {
+    const t = new TurnTranslator({
+      dynamicToolNames: new Set(),
+      turnCursor: 40,
+      queuedSubmission: { id: 7, content: [{ type: "text", text: "hi again" }] },
+    });
+    t.ingest(msg(42, "user", [{ type: "text", text: "hi again" }]));
+    t.ingest({ type: "queue_update", chat_id: "c", queued_messages: [] });
+    expect(t.awaitingQueuedSubmission).toBe(false);
+    expect(t.turnCursor).toBe(42);
+  });
+});

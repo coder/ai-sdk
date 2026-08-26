@@ -282,6 +282,28 @@ export class CoderChatClient {
     );
   }
 
+  /**
+   * Withdraw a QUEUED (not yet materialized) message from the chat's
+   * submission queue (`DELETE /queue/{id}`). `queuedMessageId` is the
+   * queue-entry id from `CreateChatMessageResponse.queued_message` — a
+   * different id space from committed chat message ids. Rejects with a
+   * {@link CoderApiError}: 404 when the entry no longer exists (already
+   * promoted into history, or deleted), 409 when the chat has no queue.
+   */
+  deleteQueuedMessage(
+    chatId: string,
+    queuedMessageId: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    return this.#request<void>(
+      "deleteQueuedMessage",
+      "DELETE",
+      `${API_PREFIX}/${chatId}/queue/${queuedMessageId}`,
+      undefined,
+      signal,
+    );
+  }
+
   updateChat(chatId: string, req: UpdateChatRequest, signal?: AbortSignal): Promise<void> {
     return this.#request<void>("updateChat", "PATCH", `${API_PREFIX}/${chatId}`, req, signal);
   }

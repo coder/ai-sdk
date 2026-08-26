@@ -3095,3 +3095,342 @@ describe("stranded chat cleanup (#113)", () => {
     expect(fake.archived).toEqual(["chat-1"]);
   });
 });
+
+// --- queued submissions (#114) ---------------------------------------------------
+
+/**
+ * A `queue_update` stream event carrying the full queue with the given ids.
+ * Mirrors the wire's `omitempty` field: an empty queue omits `queued_messages`.
+ */
+function queueUpdate(...ids: number[]): ChatStreamEvent {
+  const ev: ChatStreamEvent = { type: "queue_update", chat_id: "chat-1" };
+  if (ids.length > 0) {
+    ev.queued_messages = ids.map((id) => ({ id, chat_id: "chat-1", content: [], created_at: "" }));
+  }
+  return ev;
+}
+
+/** A fake for QUEUED submissions: busy chat, entry id 7, newest message id 40. */
+class QueuedChatClient extends FakeClient {
+  getMessagesCalls = 0;
+  override async getMessages(): Promise<ChatMessagesResponse> {
+    this.getMessagesCalls += 1;
+    return {
+      messages: [{ id: 40, chat_id: "chat-1", role: "assistant", created_at: "" }],
+      queued_messages: [],
+      has_more: false,
+    };
+  }
+  override async createChatMessage(): Promise<CreateChatMessageResponse> {
+    return {
+      queued: true,
+      queued_message: {
+        id: 7,
+        chat_id: "chat-1",
+        content: [{ type: "text", text: "hi again" }],
+        created_at: "",
+      },
+    };
+  }
+}
+
+/** The concurrent (dying) run's tail, then our entry's materialization + run. */
+const queuedTurnEvents: ChatStreamEvent[] = [
+  status("running"),
+  textPart("old tail"),
+  msg(41, "assistant", [{ type: "text", text: "old tail" }], {
+    input_tokens: 999,
+    output_tokens: 999,
+    total_cost_micros: 999,
+  }),
+  // The concurrent run settles — this must NOT settle the queued turn.
+  status("waiting"),
+  // The queued entry materializes as this turn's user message; the queue
+  // update confirming our entry left the queue follows in the same flush.
+  msg(42, "user", [{ type: "text", text: "hi again" }]),
+  queueUpdate(),
+  status("running"),
+  textPart("Fresh answer."),
+  msg(43, "assistant", [{ type: "text", text: "Fresh answer." }], {
+    input_tokens: 100,
+    output_tokens: 10,
+  }),
+  status("waiting"),
+];
+
+describe("queued submissions (#114)", () => {
+  it("does not absorb the concurrent run's tail: content, usage, and settle all start at the own user message", async () => {
+    const fake = new QueuedChatClient([queuedTurnEvents]);
+    const agent = new CoderAgent({
+      client: fake as unknown as CoderChatClient,
+      organizationId: "org-1",
+      chatId: "chat-1",
+    });
+
+    const result = await agent.generate({ prompt: "hi again" });
+
+    expect(result.text).toBe("Fresh answer.");
+    expect(result.usage.inputTokens).toBe(100);
+    expect(result.usage.outputTokens).toBe(10);
+    // The dying run's cost must not leak into provider metadata either.
+    expect(result.steps[0]?.providerMetadata).toBeUndefined();
+  });
+
+  it("withdraws the queue entry on timeout instead of interrupting the concurrent run", async () => {
+    const interrupted: string[] = [];
+    const deleted: Array<[string, number]> = [];
+    const client = {
+      resolveModelConfigId: async () => undefined,
+      getMessages: async () => ({
+        messages: [{ id: 40, chat_id: "chat-1", role: "assistant", created_at: "" }],
+        queued_messages: [],
+        has_more: false,
+      }),
+      createChatMessage: async () => ({
+        queued: true,
+        queued_message: { id: 7, chat_id: "chat-1", content: [], created_at: "" },
+      }),
+      interruptChat: async (id: string) => {
+        interrupted.push(id);
+        return chatStub(id);
+      },
+      deleteQueuedMessage: async (id: string, queuedMessageId: number) => {
+        deleted.push([id, queuedMessageId]);
+      },
+      archiveChat: async () => {},
+      streamEvents: (_id: string, opts?: { signal?: AbortSignal }) =>
+        (async function* () {
+          // The concurrent run keeps streaming; our entry never materializes.
+          yield status("running");
+          await waitForAbort(opts?.signal);
+        })(),
+    };
+    const agent = new CoderAgent({
+      client: client as unknown as CoderChatClient,
+      organizationId: "org-1",
+      chatId: "chat-1",
+      requestTimeoutMs: 30,
+    });
+
+    await expect(agent.generate({ prompt: "hi again" })).rejects.toMatchObject({
+      name: "CoderChatError",
+      kind: "timeout",
+    });
+    // The dead turn's prompt must not run unattended later — and the
+    // OTHER submission's run must not be interrupted.
+    expect(deleted).toEqual([["chat-1", 7]]);
+    expect(interrupted).toEqual([]);
+  });
+
+  it("interrupts normally once the queued turn has anchored", async () => {
+    const interrupted: string[] = [];
+    const deleted: Array<[string, number]> = [];
+    const client = {
+      resolveModelConfigId: async () => undefined,
+      getMessages: async () => ({
+        messages: [{ id: 40, chat_id: "chat-1", role: "assistant", created_at: "" }],
+        queued_messages: [],
+        has_more: false,
+      }),
+      createChatMessage: async () => ({
+        queued: true,
+        queued_message: {
+          id: 7,
+          chat_id: "chat-1",
+          content: [{ type: "text", text: "hi again" }],
+          created_at: "",
+        },
+      }),
+      interruptChat: async (id: string) => {
+        interrupted.push(id);
+        return chatStub(id);
+      },
+      deleteQueuedMessage: async (id: string, queuedMessageId: number) => {
+        deleted.push([id, queuedMessageId]);
+      },
+      archiveChat: async () => {},
+      streamEvents: (_id: string, opts?: { signal?: AbortSignal }) =>
+        (async function* () {
+          // Our entry materializes and is confirmed; the run then stalls.
+          yield msg(42, "user", [{ type: "text", text: "hi again" }]);
+          yield queueUpdate();
+          yield status("running");
+          await waitForAbort(opts?.signal);
+        })(),
+    };
+    const agent = new CoderAgent({
+      client: client as unknown as CoderChatClient,
+      organizationId: "org-1",
+      chatId: "chat-1",
+      requestTimeoutMs: 30,
+    });
+
+    await expect(agent.generate({ prompt: "hi again" })).rejects.toMatchObject({
+      kind: "timeout",
+    });
+    // Anchored: the active run IS this turn's — interrupt it, keep no entry.
+    expect(interrupted).toEqual(["chat-1"]);
+    expect(deleted).toEqual([]);
+  });
+
+  it("fails fast when the concurrent run settles in error (the queue is not auto-promoted)", async () => {
+    const deleted: Array<[string, number]> = [];
+    const interrupted: string[] = [];
+    const client = {
+      resolveModelConfigId: async () => undefined,
+      getMessages: async () => ({
+        messages: [{ id: 40, chat_id: "chat-1", role: "assistant", created_at: "" }],
+        queued_messages: [],
+        has_more: false,
+      }),
+      createChatMessage: async () => ({
+        queued: true,
+        queued_message: { id: 7, chat_id: "chat-1", content: [], created_at: "" },
+      }),
+      interruptChat: async (id: string) => {
+        interrupted.push(id);
+        return chatStub(id);
+      },
+      deleteQueuedMessage: async (id: string, queuedMessageId: number) => {
+        deleted.push([id, queuedMessageId]);
+      },
+      archiveChat: async () => {},
+      streamEvents: (_id: string, opts?: { signal?: AbortSignal }) =>
+        (async function* () {
+          yield status("running");
+          yield status("error");
+          yield {
+            type: "error",
+            chat_id: "chat-1",
+            error: { message: "boom" },
+          } as ChatStreamEvent;
+          await waitForAbort(opts?.signal);
+        })(),
+    };
+    const agent = new CoderAgent({
+      client: client as unknown as CoderChatClient,
+      organizationId: "org-1",
+      chatId: "chat-1",
+    });
+
+    await expect(agent.generate({ prompt: "hi again" })).rejects.toMatchObject({
+      name: "CoderChatError",
+      kind: "queued_submission_lost",
+      retryable: false,
+    });
+    // The stuck entry is withdrawn so it cannot run unattended after a
+    // later revival of the errored chat; nothing is interrupted.
+    expect(deleted).toEqual([["chat-1", 7]]);
+    expect(interrupted).toEqual([]);
+  });
+});
+
+// --- resume cursor (#115) --------------------------------------------------------
+
+describe("resume cursor (#115)", () => {
+  it("a supplied cursor skips the seed GET; absent, the seed GET still runs", async () => {
+    class CountingClient extends FakeClient {
+      getMessagesCalls = 0;
+      override async getMessages(): Promise<ChatMessagesResponse> {
+        this.getMessagesCalls += 1;
+        return {
+          messages: [{ id: 40, chat_id: "chat-1", role: "assistant", created_at: "" }],
+          queued_messages: [],
+          has_more: false,
+        };
+      }
+    }
+    const turn = () => [
+      status("running"),
+      msg(1002, "assistant", [{ type: "text", text: "Resumed." }]),
+      status("waiting"),
+    ];
+
+    const withCursor = new CountingClient([turn()]);
+    const agent = new CoderAgent({
+      client: withCursor as unknown as CoderChatClient,
+      organizationId: "org-1",
+      chatId: "chat-1",
+      lastSeenMessageId: 40,
+    });
+    const result = await agent.generate({ prompt: "hi again" });
+    expect(result.text).toBe("Resumed.");
+    expect(withCursor.getMessagesCalls).toBe(0);
+
+    const withoutCursor = new CountingClient([turn()]);
+    const seeded = new CoderAgent({
+      client: withoutCursor as unknown as CoderChatClient,
+      organizationId: "org-1",
+      chatId: "chat-1",
+    });
+    await seeded.generate({ prompt: "hi again" });
+    expect(withoutCursor.getMessagesCalls).toBe(1);
+  });
+
+  it("the getter round-trips: persist chatId + cursor, resume without the seed GET", async () => {
+    class CountingClient extends FakeClient {
+      getMessagesCalls = 0;
+      override async getMessages(): Promise<ChatMessagesResponse> {
+        this.getMessagesCalls += 1;
+        return { messages: [], queued_messages: [], has_more: false };
+      }
+    }
+    const first = new FakeClient([
+      [
+        status("running"),
+        msg(2, "assistant", [{ type: "text", text: "Hello!" }]),
+        status("waiting"),
+      ],
+    ]);
+    const agent = makeAgent(first);
+    // Nothing to persist before any turn has streamed.
+    expect(agent.lastSeenMessageId).toBeUndefined();
+    await agent.generate({ prompt: "hi" });
+    expect(agent.chatId).toBe("chat-1");
+    expect(agent.lastSeenMessageId).toBe(2);
+
+    // A fresh instance resumes with the persisted pair — no seed GET.
+    const second = new CountingClient([
+      [
+        status("running"),
+        msg(1002, "assistant", [{ type: "text", text: "Still here." }]),
+        status("waiting"),
+      ],
+    ]);
+    const resumed = new CoderAgent({
+      client: second as unknown as CoderChatClient,
+      organizationId: "org-1",
+      chatId: agent.chatId!,
+      lastSeenMessageId: agent.lastSeenMessageId,
+    });
+    const result = await resumed.generate({ prompt: "more" });
+    expect(result.text).toBe("Still here.");
+    expect(second.getMessagesCalls).toBe(0);
+    expect(resumed.lastSeenMessageId).toBe(1002);
+  });
+
+  it("a queued submission composes with a supplied cursor: no seed GET, no misattribution", async () => {
+    const fake = new QueuedChatClient([
+      [
+        // Initial sync replays history at or below the supplied cursor too.
+        msg(38, "assistant", [{ type: "text", text: "old answer" }], { input_tokens: 999 }),
+        msg(40, "assistant", [{ type: "text", text: "older answer" }], { input_tokens: 999 }),
+        ...queuedTurnEvents,
+      ],
+    ]);
+    const agent = new CoderAgent({
+      client: fake as unknown as CoderChatClient,
+      organizationId: "org-1",
+      chatId: "chat-1",
+      lastSeenMessageId: 40,
+    });
+
+    const result = await agent.generate({ prompt: "hi again" });
+
+    expect(fake.getMessagesCalls).toBe(0);
+    expect(result.text).toBe("Fresh answer.");
+    expect(result.usage.inputTokens).toBe(100);
+    expect(result.usage.outputTokens).toBe(10);
+    expect(agent.lastSeenMessageId).toBe(43);
+  });
+});

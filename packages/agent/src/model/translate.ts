@@ -231,6 +231,17 @@ export interface TurnTranslatorOptions {
  * the queue entry materializes as this turn's own user message, every event
  * belongs to the chat's concurrent run and is withheld (see
  * {@link QueuedSubmissionGate} and {@link TurnTranslatorOptions.queuedSubmission}).
+ *
+ * The mirror direction is the PROMOTION SETTLE BOUNDARY: a user-role
+ * `message` snapshot past the turn's effective cursor settles this turn
+ * mid-run and freezes the translator, because chatd starts the chat's next
+ * run without ever emitting a terminal status for the finished one (see
+ * {@link settledAtPromotionBoundary}, issue #120). Both behaviors key off
+ * the SAME promoted user snapshot — it is the submitting turn's anchor
+ * (turn start) and the finishing turn's boundary (turn end) — and stay
+ * independent because each keys strictly off its OWN turn's cursor: the
+ * anchor advances the submitter's cursor TO the snapshot's id, while the
+ * boundary requires an id strictly PAST the finisher's cursor.
  */
 export class TurnTranslator {
   readonly #dynamicToolNames: ReadonlySet<string>;
@@ -290,16 +301,29 @@ export class TurnTranslator {
    * initial sync when resuming a chat, or a mid-turn `history_reset` re-send
    * of the full history. Ingest skips them entirely so a replay can neither
    * re-emit earlier turns' content nor inflate this turn's usage. Mutable for
-   * exactly one transition: a QUEUED submission starts at the pre-turn cursor
+   * exactly two transitions, both of which pin the turn's OWN user message as
+   * the effective floor: a QUEUED submission starts at the pre-turn cursor
    * and advances to the materialized user message's id when the gate anchors
-   * (see {@link QueuedSubmissionGate}) — replayed pre-anchor tail messages
-   * then stay filtered on every redial, which reuses the turn's ORIGINAL
-   * `after_id` and therefore re-delivers them.
+   * (see {@link QueuedSubmissionGate}), and a ZERO cursor (this turn created
+   * the chat) adopts the replay's first user snapshot — this turn's own
+   * prompt — as the cursor (see #ingestMessage). Either way, replayed
+   * pre-cursor tail messages then stay filtered on every redial, which reuses
+   * the turn's ORIGINAL `after_id` and therefore re-delivers them.
    */
   #turnCursor: number;
 
   /** The queued-submission attribution gate; undefined once anchored (#114). */
   #queuedGate: QueuedSubmissionGate | undefined;
+
+  /**
+   * Set when the turn settled at a PROMOTION BOUNDARY (issue #120): a
+   * user-role `message` snapshot with an id past the turn's effective cursor
+   * arrived mid-run. Once set, the translator is FROZEN — every later event
+   * is the successor run's traffic and ingests as a no-op — so nothing past
+   * the boundary can leak into this turn's content, usage, or settle state.
+   * See {@link settledAtPromotionBoundary} for why the snapshot is reliable.
+   */
+  #promotionBoundary = false;
 
   constructor(opts: TurnTranslatorOptions) {
     this.#dynamicToolNames = opts.dynamicToolNames;
@@ -332,9 +356,10 @@ export class TurnTranslator {
   }
   /**
    * The turn's EFFECTIVE attribution cursor: the constructor's `turnCursor`
-   * until a queued submission anchors, the materialized user message's id
-   * after. Distinct from the stream's redial cursor, which deliberately stays
-   * the turn's original `after_id` (see `streamChatEvents`).
+   * until a queued submission anchors (the materialized user message's id
+   * after) or a zero-cursor turn adopts its own prompt's id (see
+   * #ingestMessage). Distinct from the stream's redial cursor, which
+   * deliberately stays the turn's original `after_id` (see `streamChatEvents`).
    */
   get turnCursor(): number {
     return this.#turnCursor;
@@ -355,6 +380,23 @@ export class TurnTranslator {
    */
   get queuedSubmissionDeadEnd(): ChatErrorPayload | undefined {
     return this.#queuedGate?.deadEnd;
+  }
+  /**
+   * Whether the turn settled at a PROMOTION BOUNDARY (issue #120): a
+   * user-role `message` snapshot with an id past the turn's effective cursor
+   * arrived mid-run. chatd commits a mid-run user message only when it starts
+   * the chat's NEXT run — `FinishTurn`/`FinishInterruption` promote the queue
+   * head atomically with the previous run's finish (the chat transitions
+   * `running → running` and NO terminal status is ever emitted for the
+   * finished run), and interrupting a `requires_action` pause queues and then
+   * promotes the same way — so the snapshot is proof this turn's own run is
+   * over even though no terminal status was (or ever will be) sent for it.
+   * The segment loop settles the turn here instead of absorbing the promoted
+   * run's content, usage, and settle events; the successor run stays alive
+   * and belongs to whoever submitted it, so teardown must NOT interrupt it.
+   */
+  get settledAtPromotionBoundary(): boolean {
+    return this.#promotionBoundary;
   }
 
   // --- block helpers --------------------------------------------------------
@@ -530,6 +572,10 @@ export class TurnTranslator {
   // --- ingest ---------------------------------------------------------------
 
   ingest(ev: ChatStreamEvent): LanguageModelV4StreamPart[] {
+    // Frozen at the promotion boundary (issue #120): everything after it —
+    // the successor run's deltas, commits (usage included), statuses, errors,
+    // pauses — is the NEXT turn's traffic and must not mutate this turn.
+    if (this.#promotionBoundary) return [];
     const gate = this.#queuedGate;
     if (gate) return this.#ingestGated(gate, ev);
     const out: LanguageModelV4StreamPart[] = [];
@@ -756,6 +802,10 @@ export class TurnTranslator {
   }
 
   #ingestMessage(out: LanguageModelV4StreamPart[], message: ChatMessage): void {
+    // The anchor drain (#anchorQueuedTurn's caller replays buffered
+    // snapshots through here directly) can cross the promotion boundary
+    // mid-loop; the freeze applies to the rest of the buffer too.
+    if (this.#promotionBoundary) return;
     if (message.id > this.#maxMessageId) this.#maxMessageId = message.id;
     // Replay of an earlier turn (or an already-streamed segment): skip it
     // entirely — see #turnCursor. In the normal path the server-side
@@ -763,6 +813,49 @@ export class TurnTranslator {
     // replays, where processing them would re-emit old content as this
     // turn's output and double-count its usage.
     if (message.id <= this.#turnCursor) return;
+    // PROMOTION SETTLE BOUNDARY (issue #120). A user-role message with an id
+    // past the turn's effective cursor can only be committed when chatd
+    // starts the chat's NEXT run: `FinishTurn` and `FinishInterruption`
+    // promote the queue head atomically with the previous run's finish (the
+    // chat transitions `running → running` — no terminal status is ever
+    // emitted for the finished run), and interrupting a `requires_action`
+    // pause commits its cancellations as role "tool" and promotes the same
+    // way. Verified against chatd source: every other user-role insert
+    // happens only on an idle/terminal chat; the turn's own submission id is
+    // at or below the effective cursor (a new turn's cursor IS its message
+    // id; a queued turn's gate anchors the cursor AT its materialized
+    // message); tool results commit as role "tool"; and compaction's
+    // user-role summary has visibility "model" and never reaches the stream.
+    // Redial replays cannot false-settle: message ids are strictly
+    // increasing at commit time, so a replay re-delivers only ids at or
+    // below the cursor, which the filter above drops. Settle here rather
+    // than absorb the successor run's content, usage, and settle events —
+    // the mirror of the #114 submission-side gate.
+    if (message.role === "user") {
+      // A ZERO cursor means this turn created the chat (or resumed an empty
+      // one): there is no committed-message id to anchor on, the stream dials
+      // without `after_id`, and the replay opens with this turn's OWN prompt —
+      // the one user snapshot that is not a boundary. It is guaranteed first:
+      // chatd commits the prompt in the chat-creation transaction, so any
+      // foreign submission gets a strictly higher id, and both initial replay
+      // and redials deliver messages in id order. Adopt its id as the
+      // effective cursor — the same normalization every other turn shape gets
+      // from its submission response or gate anchor — so replays of it stay
+      // filtered above and any LATER user snapshot is a true boundary.
+      if (this.#turnCursor === 0) {
+        this.#turnCursor = message.id;
+        return;
+      }
+      this.#promotionBoundary = true;
+      // A recorded `requires_action` is stale by definition here — the pause
+      // it announced was superseded by the interrupt that produced this
+      // boundary. Clear it so finish() cannot classify the settled turn as
+      // "tool-calls" and send the AI SDK to resume a run that no longer
+      // exists. (Real terminal statuses never coexist with the boundary: the
+      // segment loop breaks on them before another event is ingested.)
+      this.#terminalStatus = undefined;
+      return;
+    }
     // chatd attaches usage to the assistant messages it commits (one per
     // internal model step); tool messages never carry usage, and under
     // summing, accepting a hypothetical mirrored copy would double-count.
@@ -931,7 +1024,24 @@ export class TurnTranslator {
 
     let unified: LanguageModelV4FinishReason["unified"];
     if (this.#error || this.#terminalStatus === "error") unified = "error";
-    else if (this.#clientToolCallSeen || this.#terminalStatus === "requires_action")
+    else if (this.#promotionBoundary) {
+      // The wire cannot say WHY a run ended at a promotion boundary:
+      // "completed, then promoted" (FinishTurn) and "interrupted, then
+      // promoted" (FinishInterruption, `busy_behavior: "interrupt"`) emit the
+      // same events — promoted user message, queue_update, `running` — and no
+      // terminal status for the finished run. "stop" is a deliberate
+      // approximation covering both: completion is the common case (every
+      // queued follow-up on a healthy run promotes through FinishTurn), and
+      // no unified reason expresses "interrupted". It also outranks
+      // "tool-calls": a pause superseded by the interrupt that produced this
+      // boundary must not send the AI SDK to resume a run that no longer
+      // exists. `raw` stays undefined — fabricating a terminal status the
+      // server never sent would mislead observability (the segment:settle
+      // event carries a finishReason but no `status` for this settle shape).
+      // Exact classification needs a wire signal for the finished run;
+      // issue #119 is the upstream ask.
+      unified = "stop";
+    } else if (this.#clientToolCallSeen || this.#terminalStatus === "requires_action")
       unified = "tool-calls";
     else unified = "stop";
 

@@ -1067,7 +1067,16 @@ What resuming does (and doesn't do):
   `requestTimeoutMs` waiting — it attributes nothing of the live run's output
   to itself (its window opens only when its own queued prompt materializes),
   and if it times out first, it withdraws its queued prompt rather than
-  leaving it to run unattended.
+  leaving it to run unattended. The live run's turn is guarded symmetrically:
+  the server starts the queued prompt's run **without ever emitting a
+  terminal settle for the finished one**, so the SDK settles the finishing
+  turn the moment the promoted prompt appears on its stream — nothing of the
+  next turn's output or usage leaks into it. That settle reports
+  `finishReason: "stop"` as a documented approximation: the wire doesn't
+  distinguish a run that completed into a promotion from one interrupted by
+  `busy_behavior: "interrupt"`, so an interrupted turn also settles `"stop"`
+  (with whatever partial output it committed) rather than surfacing an
+  interruption.
 
 ### Let the SDK absorb drops — and handle what it re‑throws
 

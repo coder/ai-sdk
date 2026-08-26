@@ -1407,3 +1407,230 @@ describe("TurnTranslator — queued-submission gate wire shapes", () => {
     expect(t.turnCursor).toBe(42);
   });
 });
+
+describe("TurnTranslator — promotion settle boundary (#120)", () => {
+  const ingestAll = (t: TurnTranslator, events: ChatStreamEvent[]) => {
+    const parts = [] as ReturnType<TurnTranslator["ingest"]>;
+    for (const ev of events) parts.push(...t.ingest(ev));
+    return parts;
+  };
+  /** A finishing run: deltas, one usage-bearing commit — and NO terminal status. */
+  const finishingRun: ChatStreamEvent[] = [
+    status("running"),
+    part("assistant", { type: "text", text: "…DONE-FIRST" }),
+    msg(11, "assistant", [{ type: "text", text: "…DONE-FIRST" }], {
+      input_tokens: 100,
+      output_tokens: 200,
+    }),
+  ];
+  /** The promoted turn's run, as chatd flushes it after the boundary. */
+  const promotedRun: ChatStreamEvent[] = [
+    { type: "queue_update", chat_id: "c" }, // full queue, now empty (omitempty)
+    part("assistant", { type: "text", text: "SECONDANSWER" }),
+    msg(13, "assistant", [{ type: "text", text: "SECONDANSWER" }], {
+      input_tokens: 50,
+      output_tokens: 11,
+    }),
+    status("waiting"),
+  ];
+
+  it("settles the finishing turn at the promoted user message — no absorbed content or usage", () => {
+    const t = new TurnTranslator({ dynamicToolNames: new Set(), turnCursor: 10 });
+    const parts = ingestAll(t, finishingRun);
+    expect(t.settledAtPromotionBoundary).toBe(false);
+
+    // FinishTurn promotes the queue head atomically with the finish: the
+    // promoted user message is the ONLY settle signal the finished run gets.
+    expect(t.ingest(msg(12, "user", [{ type: "text", text: "second prompt" }]))).toEqual([]);
+    expect(t.settledAtPromotionBoundary).toBe(true);
+    // The boundary message is still observed for cursor bookkeeping.
+    expect(t.maxMessageId).toBe(12);
+
+    // Everything after the boundary is the promoted run's — frozen out.
+    expect(ingestAll(t, promotedRun)).toEqual([]);
+    expect(t.terminalStatus).toBeUndefined();
+
+    parts.push(...t.finish());
+    expect(textBlocks(parts)).toEqual(["…DONE-FIRST"]);
+    const finish = parts.at(-1)!;
+    if (finish.type !== "finish") throw new Error("expected finish part");
+    // The boundary cuts usage exactly: the promoted run's step is excluded.
+    expect(finish.usage.inputTokens.total).toBe(100);
+    expect(finish.usage.outputTokens.total).toBe(200);
+    // Approximate by design: "completed then promoted" and "interrupted then
+    // promoted" are indistinguishable on the wire (#119 is the upstream ask);
+    // no fabricated raw status.
+    expect(finish.finishReason).toEqual({ unified: "stop", raw: undefined });
+  });
+
+  it("a zero-cursor turn adopts its own prompt as the cursor — and still settles at the next one", () => {
+    // A turn that CREATED the chat has no committed-message id to anchor on
+    // (cursor 0) and the stream replays from the beginning: its own prompt is
+    // the first user snapshot and must anchor, not settle.
+    const t = new TurnTranslator({ dynamicToolNames: new Set(), turnCursor: 0 });
+    t.ingest(msg(1, "user", [{ type: "text", text: "own prompt" }]));
+    expect(t.settledAtPromotionBoundary).toBe(false);
+    expect(t.turnCursor).toBe(1);
+    // A redial replays the own prompt (original after_id): filtered, no settle.
+    t.ingest(msg(1, "user", [{ type: "text", text: "own prompt" }]));
+    expect(t.settledAtPromotionBoundary).toBe(false);
+    const parts = ingestAll(t, [
+      msg(2, "assistant", [{ type: "text", text: "answer" }], { output_tokens: 4 }),
+      msg(3, "user", [{ type: "text", text: "foreign promotion" }]),
+    ]);
+    expect(t.settledAtPromotionBoundary).toBe(true);
+    parts.push(...t.finish());
+    expect(textBlocks(parts)).toEqual(["answer"]);
+  });
+
+  it("replayed pre-cursor user snapshots never settle (redials reuse the ORIGINAL cursor)", () => {
+    const t = new TurnTranslator({ dynamicToolNames: new Set(), turnCursor: 10 });
+    // A redial replays earlier turns' user messages and this turn's OWN user
+    // message (id == cursor) — none are boundaries.
+    ingestAll(t, [
+      msg(9, "user", [{ type: "text", text: "earlier turn" }]),
+      msg(10, "user", [{ type: "text", text: "this turn's own prompt" }]),
+    ]);
+    expect(t.settledAtPromotionBoundary).toBe(false);
+    // Attribution continues normally after the replay…
+    const parts = ingestAll(t, finishingRun);
+    expect(textBlocks(parts.concat(t.finish()))).toEqual(["…DONE-FIRST"]);
+    // …until a genuinely NEW user message settles the turn.
+    t.ingest(msg(12, "user", [{ type: "text", text: "second prompt" }]));
+    expect(t.settledAtPromotionBoundary).toBe(true);
+  });
+
+  it("settles the interrupted turn on the busy-interrupt path (partial commit kept)", () => {
+    const t = new TurnTranslator({ dynamicToolNames: new Set(), turnCursor: 10 });
+    const parts = ingestAll(t, [
+      status("running"),
+      part("assistant", { type: "text", text: "partial…" }),
+      // busy_behavior "interrupt": the queue update and non-terminal
+      // "interrupting" precede FinishInterruption's flush.
+      {
+        type: "queue_update",
+        chat_id: "c",
+        queued_messages: [
+          {
+            id: 7,
+            chat_id: "c",
+            content: [{ type: "text", text: "interrupting prompt" }],
+            created_at: "",
+          },
+        ],
+      },
+      status("interrupting"),
+      // FinishInterruption commits the partial step and promotes — again
+      // with no terminal status for the interrupted run.
+      msg(11, "assistant", [{ type: "text", text: "partial…" }], { output_tokens: 5 }),
+      msg(12, "user", [{ type: "text", text: "interrupting prompt" }]),
+      status("running"),
+    ]);
+    expect(t.settledAtPromotionBoundary).toBe(true);
+    parts.push(...t.finish());
+    expect(textBlocks(parts)).toEqual(["partial…"]);
+    const finish = parts.at(-1)!;
+    if (finish.type !== "finish") throw new Error("expected finish part");
+    expect(finish.usage.outputTokens.total).toBe(5);
+    // The documented approximation: the wire cannot distinguish "interrupted
+    // then promoted" from "completed then promoted" — both settle "stop".
+    expect(finish.finishReason).toEqual({ unified: "stop", raw: undefined });
+  });
+
+  it("clears a stale requires_action: a superseded pause settles stop, not tool-calls", () => {
+    const t = new TurnTranslator({ dynamicToolNames: new Set(["getWeather"]), turnCursor: 10 });
+    // The pause status lands, but before its action_required event arrives the
+    // chat is interrupted by a new submission (interrupt-requires-action
+    // path): cancellations commit as role "tool", then the promotion.
+    ingestAll(t, [status("requires_action")]);
+    expect(t.terminalStatus).toBe("requires_action");
+    t.ingest(msg(12, "user", [{ type: "text", text: "interrupting prompt" }]));
+    expect(t.settledAtPromotionBoundary).toBe(true);
+    expect(t.terminalStatus).toBeUndefined();
+    const finish = t.finish().at(-1)!;
+    // "tool-calls" would send the AI SDK to resume a run that no longer
+    // exists — the superseded pause settles "stop".
+    expect(finish.type === "finish" && finish.finishReason.unified).toBe("stop");
+  });
+
+  it("post-boundary errors and statuses belong to the successor run (frozen out)", () => {
+    const t = new TurnTranslator({ dynamicToolNames: new Set(), turnCursor: 10 });
+    ingestAll(t, finishingRun);
+    t.ingest(msg(12, "user", [{ type: "text", text: "second prompt" }]));
+    // The promoted run fails immediately — that error is ITS settle, not ours.
+    expect(
+      ingestAll(t, [
+        { type: "error", chat_id: "c", error: { message: "their failure" } },
+        status("error"),
+      ]),
+    ).toEqual([]);
+    expect(t.error).toBeUndefined();
+    expect(t.terminalStatus).toBeUndefined();
+    const finish = t.finish().at(-1)!;
+    expect(finish.type === "finish" && finish.finishReason.unified).toBe("stop");
+  });
+
+  it("composes with the #114 gate: one snapshot is the finisher's boundary and the submitter's anchor", () => {
+    // Two agent instances in one process, one chat on the wire: A's run is
+    // live (cursor 10 = A's own prompt id), B queued "hi again" (entry 7,
+    // pre-turn cursor 10). The SAME event sequence feeds both translators.
+    const a = new TurnTranslator({ dynamicToolNames: new Set(), turnCursor: 10 });
+    const b = new TurnTranslator({
+      dynamicToolNames: new Set(),
+      turnCursor: 10,
+      queuedSubmission: { id: 7, content: [{ type: "text", text: "hi again" }] },
+    });
+    const wire: ChatStreamEvent[] = [
+      ...finishingRun,
+      msg(12, "user", [{ type: "text", text: "hi again" }]), // the promotion
+      ...promotedRun,
+    ];
+    const aParts = ingestAll(a, wire).concat(a.finish());
+    const bParts = ingestAll(b, wire).concat(b.finish());
+
+    // A settles at the boundary: its own content/usage only.
+    expect(a.settledAtPromotionBoundary).toBe(true);
+    expect(textBlocks(aParts)).toEqual(["…DONE-FIRST"]);
+    const aFinish = aParts.at(-1)!;
+    if (aFinish.type !== "finish") throw new Error("expected finish part");
+    expect(aFinish.usage.outputTokens.total).toBe(200);
+    expect(aFinish.finishReason.unified).toBe("stop");
+
+    // B anchors at the very same snapshot (cursor advances TO id 12, so the
+    // boundary check — strictly PAST the cursor — can never fire on it) and
+    // attributes exactly the promoted run.
+    expect(b.settledAtPromotionBoundary).toBe(false);
+    expect(b.turnCursor).toBe(12);
+    expect(textBlocks(bParts)).toEqual(["SECONDANSWER"]);
+    const bFinish = bParts.at(-1)!;
+    if (bFinish.type !== "finish") throw new Error("expected finish part");
+    expect(bFinish.usage.outputTokens.total).toBe(11);
+    expect(b.terminalStatus).toBe("waiting");
+  });
+
+  it("a gated turn's anchor drain settles at a LATER promotion replayed in the same window", () => {
+    // A reconnect replay can span our materialization, our whole run, AND the
+    // next turn's promotion, with only the connect-time queue_update at the
+    // end: the drain must attribute our run and stop at the later boundary.
+    const t = new TurnTranslator({
+      dynamicToolNames: new Set(),
+      turnCursor: 10,
+      queuedSubmission: { id: 7, content: [{ type: "text", text: "hi again" }] },
+    });
+    const parts = ingestAll(t, [
+      msg(12, "user", [{ type: "text", text: "hi again" }]), // our candidate
+      msg(13, "assistant", [{ type: "text", text: "MINE" }], { output_tokens: 3 }), // buffered
+      msg(14, "user", [{ type: "text", text: "third prompt" }]), // buffered (content differs)
+      msg(15, "assistant", [{ type: "text", text: "THEIRS" }], { output_tokens: 999 }), // buffered
+      { type: "queue_update", chat_id: "c" }, // confirmation → anchor → drain
+    ]);
+    expect(t.awaitingQueuedSubmission).toBe(false);
+    expect(t.turnCursor).toBe(12);
+    expect(t.settledAtPromotionBoundary).toBe(true);
+    parts.push(...t.finish());
+    expect(textBlocks(parts)).toEqual(["MINE"]);
+    const finish = parts.at(-1)!;
+    if (finish.type !== "finish") throw new Error("expected finish part");
+    expect(finish.usage.outputTokens.total).toBe(3);
+  });
+});

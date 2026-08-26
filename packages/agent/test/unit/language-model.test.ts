@@ -6,6 +6,8 @@ import type { Chat, ChatMessage, ChatMessagePart, ChatStreamEvent } from "../../
 /** A minimal scripted stand-in for {@link CoderChatClient} (single turn). */
 class FakeClient {
   #events: ChatStreamEvent[];
+  /** interruptChat() invocations — settled turns must never interrupt (#120). */
+  interrupts = 0;
 
   constructor(events: ChatStreamEvent[]) {
     this.#events = events;
@@ -29,6 +31,7 @@ class FakeClient {
   }
 
   async interruptChat(): Promise<Chat> {
+    this.interrupts++;
     throw new Error("not used");
   }
 
@@ -159,6 +162,51 @@ describe("CoderLanguageModel.doGenerate aggregation", () => {
     expect(sources).toEqual([
       { type: "source", sourceType: "url", id: "src-1", url: "https://example.com/a", title: "A" },
     ]);
+  });
+});
+
+describe("CoderLanguageModel promotion settle boundary (#120)", () => {
+  it("settles at the promoted user message without absorbing or interrupting the successor run", async () => {
+    // chatd finishes a run that has a queued message waiting by promoting the
+    // head atomically: the stream carries the promoted USER message and the
+    // successor run — never a terminal status for the finished run.
+    const client = new FakeClient([
+      status("running"),
+      // Zero-cursor turn (this call created the chat): the replay opens with
+      // the turn's OWN prompt, which must anchor — not settle — the turn.
+      msg(1, "user", [{ type: "text", text: "count, then say DONE-FIRST" }]),
+      msg(2, "assistant", [{ type: "text", text: "…DONE-FIRST" }], {
+        input_tokens: 100,
+        output_tokens: 200,
+      }),
+      // The promotion boundary: another client's queued prompt materializes.
+      msg(3, "user", [{ type: "text", text: "Reply with exactly: SECONDANSWER" }]),
+      part({ type: "text", text: "SECONDANSWER" }),
+      msg(4, "assistant", [{ type: "text", text: "SECONDANSWER" }], {
+        input_tokens: 50,
+        output_tokens: 11,
+      }),
+      status("waiting"),
+    ]);
+    const model = new CoderLanguageModel({
+      client: client as unknown as CoderChatClient,
+      organizationId: "org-1",
+    });
+    const result = await model.doGenerate({
+      prompt: [{ role: "user", content: [{ type: "text", text: "count, then say DONE-FIRST" }] }],
+    } as never);
+
+    // The finishing turn ends at the boundary: no absorbed text or usage.
+    expect(result.content.filter((c) => c.type === "text")).toEqual([
+      { type: "text", text: "…DONE-FIRST" },
+    ]);
+    expect(result.usage.inputTokens.total).toBe(100);
+    expect(result.usage.outputTokens.total).toBe(200);
+    // Approximate by design — and no fabricated raw terminal status (#119).
+    expect(result.finishReason).toEqual({ unified: "stop", raw: undefined });
+    // The settled turn must NOT interrupt: the chat's live run now belongs to
+    // the promoted submission.
+    expect(client.interrupts).toBe(0);
   });
 });
 

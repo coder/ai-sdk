@@ -685,6 +685,12 @@ export class CoderLanguageModel implements LanguageModelV4 {
     const interrupt = (): void => {
       const id = turnChatId ?? this.#chatId;
       if (interruptSent || !id) return;
+      // Settled at a promotion boundary (issue #120): the chat's live run
+      // belongs to the promoted submission, not to this turn — a late
+      // abort/timeout racing the settle must not kill someone else's turn.
+      // (Terminal-status settles don't need this: their chat is idle and an
+      // interrupt is a harmless 409.)
+      if (translator?.settledAtPromotionBoundary) return;
       interruptSent = true;
       // A QUEUED turn that never anchored has no server run of its own: the
       // chat's active run belongs to a concurrent/predecessor submission, and
@@ -1062,6 +1068,12 @@ export class CoderLanguageModel implements LanguageModelV4 {
             }
           }
           for (const part of parts) yield part;
+          // Promotion settle boundary (issue #120): a user-role message past
+          // the turn's cursor means the run is over on the wire even though
+          // no terminal status was (or will be) emitted for it — chatd
+          // started the chat's next run atomically with the finish. Settle
+          // NOW: everything after this event is the successor run's.
+          if (translator.settledAtPromotionBoundary) break;
           const status = translator.terminalStatus;
           if (status) {
             if (status !== "requires_action") break;
@@ -1192,8 +1204,14 @@ export class CoderLanguageModel implements LanguageModelV4 {
       // `status: error`), fall through to finish() so the real error surfaces
       // (unified:"error" + the error part), consistent with the
       // `status: error` path; otherwise surface the premature close rather
-      // than a clean (truncated) `stop`.
-      if (!translator.terminalStatus && !translator.error) {
+      // than a clean (truncated) `stop`. A promotion-boundary settle is a
+      // settled turn despite carrying no terminal status (issue #120) — the
+      // server never emits one for a run that finished into a promotion.
+      if (
+        !translator.terminalStatus &&
+        !translator.error &&
+        !translator.settledAtPromotionBoundary
+      ) {
         throw new CoderChatError({
           message:
             "Coder chat stream ended before the turn settled (connection closed or the server ended the stream without a terminal status).",
@@ -1232,7 +1250,10 @@ export class CoderLanguageModel implements LanguageModelV4 {
       // timeout, a terminal stream failure (4xx / redial budget exhausted /
       // unparseable frame), or a REST-phase error — all cases where the healthy
       // server run must not keep burning tokens on an audience of zero.
-      if (!translator?.terminalStatus) interrupt();
+      // A promotion-boundary settle carries no terminal status but IS settled
+      // (issue #120) — and the chat's live run now belongs to the promoted
+      // submission, so interrupting here would kill someone else's turn.
+      if (!translator?.terminalStatus && !translator?.settledAtPromotionBoundary) interrupt();
       // A failure before the stream section ran (REST phase: tool-result
       // submission, uploads, chat creation, cursor seeding) leaves the
       // predecessor segment's paused stream ownerless while its turn is now

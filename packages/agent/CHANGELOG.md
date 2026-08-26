@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.3](https://github.com/coder/ai-sdk/compare/agent-v0.9.2...agent-v0.9.3) (2026-08-26)
+
+Fixes a turn-settling bug where a finishing turn is now correctly resolved at a queued promotion boundary.
+
+### Highlights
+
+- Corrected handling so a finishing turn settles properly when a queued promotion boundary is reached. ([#127](https://github.com/coder/ai-sdk/pull/127))
+
+### Bug Fixes
+
+* **agent:** settle a finishing turn at a queued promotion boundary ([#127](https://github.com/coder/ai-sdk/issues/127)) ([727f0a7](https://github.com/coder/ai-sdk/commit/727f0a71a38d8027f9fe1e738ca03cd0e5653c50)), refs [#120](https://github.com/coder/ai-sdk/issues/120)
+
 ## [0.9.2](https://github.com/coder/ai-sdk/compare/agent-v0.9.1...agent-v0.9.2) (2026-08-26)
 
 A maintenance release with internal changes only; no user-facing functionality was modified.

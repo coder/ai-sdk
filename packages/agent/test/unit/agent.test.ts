@@ -2871,6 +2871,8 @@ describe("stranded chat cleanup (#113)", () => {
   class StrandingClient extends FakeClient {
     archived: string[] = [];
     interrupted: string[] = [];
+    /** Omit chatId from thrown errors (a custom stream source that doesn't stamp). */
+    omitChatId = false;
     #failures: number;
     #chatSeq = 0;
     constructor(turns: ChatStreamEvent[][], failures = 1) {
@@ -2887,14 +2889,15 @@ describe("stranded chat cleanup (#113)", () => {
     ): AsyncGenerator<ChatStreamEvent, void, void> {
       if (this.#failures > 0) {
         this.#failures -= 1;
+        const args: ConstructorParameters<typeof CoderStreamError>[0] = {
+          message: "stream lost (test)",
+          url: "wss://x/stream",
+        };
+        if (!this.omitChatId) args.chatId = chatId;
         return (async function* () {
           // The run started streaming, then the connection died for good.
           yield status("running");
-          throw new CoderStreamError({
-            message: "stream lost (test)",
-            url: "wss://x/stream",
-            chatId,
-          });
+          throw new CoderStreamError(args);
         })();
       }
       return super.streamEvents(chatId, opts);
@@ -2936,12 +2939,60 @@ describe("stranded chat cleanup (#113)", () => {
 
   it("archive() targets the last-known chat after a discard and clears it on success", async () => {
     const { fake, agent } = await strandedAgent();
-    await expect(agent.archive()).resolves.toEqual({ archived: true, chatId: "chat-1" });
+    expect(agent.strandedChatIds).toEqual(["chat-1"]);
+    await expect(agent.archive()).resolves.toEqual({
+      archived: true,
+      chatId: "chat-1",
+      archivedChatIds: ["chat-1"],
+    });
     expect(fake.archived).toEqual(["chat-1"]);
     expect(agent.lastKnownChatId).toBeUndefined();
+    expect(agent.strandedChatIds).toEqual([]);
     // Cleanup succeeded against it — a second archive has nothing to target.
     await expect(agent.archive()).resolves.toEqual({ archived: false });
     expect(fake.archived).toEqual(["chat-1"]);
+  });
+
+  it("stamps the turn's chat id on stream errors from sources that don't name it", async () => {
+    // A custom client's stream source may throw a CoderStreamError without a
+    // chatId; the model layer must stamp the turn's own id so the documented
+    // "the error names the failed turn's chat" guarantee still holds.
+    const fake = new StrandingClient([]);
+    fake.omitChatId = true;
+    const agent = makeAgent(fake);
+    const err = await agent.generate({ prompt: "hi" }).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err).toMatchObject({ name: "CoderStreamError", chatId: "chat-1" });
+  });
+
+  it("accumulates every chat stranded by repeated failures and archive() retires them all", async () => {
+    // Each failed fresh-chat attempt strands its own chat (an AI-SDK
+    // maxRetries loop does exactly this); a single last-known slot would leak
+    // all but the newest.
+    const { fake, agent } = await strandedAgent(2, [settledTurn]);
+    const err2 = await agent.generate({ prompt: "again" }).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err2).toMatchObject({ name: "CoderStreamError", chatId: "chat-2" });
+    expect(agent.lastKnownChatId).toBe("chat-2");
+    expect(agent.strandedChatIds).toEqual(["chat-1", "chat-2"]);
+    // A successful turn supersedes the cleanup target but keeps the ledger.
+    const result = await agent.generate({ prompt: "third time lucky" });
+    expect(result.text).toBe("ok");
+    expect(agent.chatId).toBe("chat-3");
+    expect(agent.strandedChatIds).toEqual(["chat-1", "chat-2"]);
+    // One archive() retires the stranded chats AND the live session's chat.
+    await expect(agent.archive()).resolves.toEqual({
+      archived: true,
+      chatId: "chat-3",
+      archivedChatIds: ["chat-1", "chat-2", "chat-3"],
+    });
+    expect(fake.archived).toEqual(["chat-1", "chat-2", "chat-3"]);
+    expect(agent.strandedChatIds).toEqual([]);
+    expect(agent.lastKnownChatId).toBeUndefined();
   });
 
   it("interrupt() targets the last-known chat after a discard", async () => {
@@ -2961,10 +3012,15 @@ describe("stranded chat cleanup (#113)", () => {
     // A NEW chat — the retry did not resurrect the stranded session …
     expect(fake.createdChats).toHaveLength(2);
     expect(agent.chatId).toBe("chat-2");
-    // … and the new chat supersedes the stranded one as the cleanup target
-    // (the stranded id remains reachable via the earlier error's `chatId`).
+    // … and the new chat supersedes the stranded one as the PRIMARY cleanup
+    // target, while the stranded id stays on the ledger until archived.
     expect(agent.lastKnownChatId).toBe("chat-2");
-    await expect(agent.archive()).resolves.toEqual({ archived: true, chatId: "chat-2" });
+    expect(agent.strandedChatIds).toEqual(["chat-1"]);
+    await expect(agent.archive()).resolves.toEqual({
+      archived: true,
+      chatId: "chat-2",
+      archivedChatIds: ["chat-1", "chat-2"],
+    });
   });
 
   it("archive()/interrupt() with no chat at all report the no-op instead of silently succeeding", async () => {

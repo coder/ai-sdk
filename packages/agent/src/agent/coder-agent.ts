@@ -151,11 +151,15 @@ export type CoderInterruptResult =
  * Result of {@link CoderAgent.archive}: `archived: false` means there was no
  * chat to archive (neither a live session nor a
  * {@link CoderAgent.lastKnownChatId}) and no server call was made. Failures
- * still throw — see {@link CoderAgent.archive}.
+ * still throw — see {@link CoderAgent.archive}. `chatId` is the primary
+ * target (the session's or last-known chat); `archivedChatIds` additionally
+ * lists every chat archived by the call, oldest first — more than one when
+ * earlier stranded chats ({@link CoderAgent.strandedChatIds}) were retired
+ * alongside it.
  */
 export type CoderArchiveResult =
-  | { archived: true; chatId: string }
-  | { archived: false; chatId?: undefined };
+  | { archived: true; chatId: string; archivedChatIds: string[] }
+  | { archived: false; chatId?: undefined; archivedChatIds?: undefined };
 export interface CoderAgentSettings<TOOLS extends ToolSet = {}> {
   // --- connection (provide a client, or baseUrl + token) ---
   /**
@@ -432,6 +436,17 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
     return this.#model.lastKnownChatId;
   }
 
+  /**
+   * Chat ids stranded by automatic session discards and not yet cleaned up,
+   * oldest first. Each retryable fresh-chat stream failure strands one chat,
+   * so with `maxRetries` > 0 several can accumulate while only the final
+   * attempt's error (and {@link CoderAgent.lastKnownChatId}) names the
+   * newest. {@link CoderAgent.archive} retires all of them.
+   */
+  get strandedChatIds(): string[] {
+    return this.#model.strandedChatIds;
+  }
+
   generate(
     options: Parameters<InnerAgent<TOOLS>["generate"]>[0],
   ): ReturnType<InnerAgent<TOOLS>["generate"]> {
@@ -497,33 +512,45 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
    * Targets the session's chat, or — after the session was dropped (a
    * fresh-chat stream failure, or {@link CoderAgent.resetSession}) — the
    * {@link CoderAgent.lastKnownChatId}, so the stranded chat is still cleaned
-   * up. On success that last-known id is cleared (the chat no longer needs
-   * cleanup); with no id at all, there is nothing to archive and it resolves
-   * `{ archived: false }` without a server call (inspect the result rather
-   * than relying on a silent no-op).
+   * up; chats stranded by EARLIER automatic discards
+   * ({@link CoderAgent.strandedChatIds} — `maxRetries` can accumulate several)
+   * are retired in the same call. On success each archived id is cleared as a
+   * cleanup target; with no id at all, there is nothing to archive and it
+   * resolves `{ archived: false }` without a server call (inspect the result
+   * rather than relying on a silent no-op).
    *
    * A freshly interrupted/settled chat can keep winding down server-side for a
    * few seconds, during which the server rejects archiving with a 409. Those
    * 409s are retried (~1s apart, ~15s overall — see `settleDeadlineMs` /
    * `settleRetryDelayMs`) and the last one is rethrown if the chat never
    * settles; any other failure, including a caller abort, rethrows immediately.
+   * Chats are archived oldest first, each id cleared as its archive succeeds —
+   * a mid-list failure rethrows and leaves the remaining ids targetable by a
+   * later retry.
    */
   async archive(opts?: { signal?: AbortSignal }): Promise<CoderArchiveResult> {
-    const id = this.#model.chatId ?? this.#model.lastKnownChatId;
-    if (!id) return { archived: false };
+    const primary = this.#model.chatId ?? this.#model.lastKnownChatId;
+    if (!primary) return { archived: false };
     // The guaranteed-cleanup path also releases a stream retained by a
     // client-tool pause the caller abandoned (e.g. `stopWhen` ended the tool
     // loop, or a tool had no execute handler) — the socket must not outlive
     // the archived chat. Local and instant; an actively-read stream is left
     // to its segment, which closes it when the run settles.
     await this.#model.closePausedStream();
-    await archiveWhenSettled(this.#client, id, {
-      deadlineMs: this.#settleDeadlineMs,
-      retryDelayMs: this.#settleRetryDelayMs,
-      signal: opts?.signal,
-    });
-    this.#model.clearLastKnownChatId(id);
-    return { archived: true, chatId: id };
+    // Oldest stranded chats first, primary last (deduplicated — after a
+    // single discard the primary IS the newest stranded id): earlier ids'
+    // runs were interrupted attempts ago, so they archive without a settle
+    // wait, and a failure part-way leaves the rest pending, not forgotten.
+    const targets = [...new Set([...this.#model.strandedChatIds, primary])];
+    for (const id of targets) {
+      await archiveWhenSettled(this.#client, id, {
+        deadlineMs: this.#settleDeadlineMs,
+        retryDelayMs: this.#settleRetryDelayMs,
+        signal: opts?.signal,
+      });
+      this.#model.noteChatCleanedUp(id);
+    }
+    return { archived: true, chatId: primary, archivedChatIds: targets };
   }
 
   /**

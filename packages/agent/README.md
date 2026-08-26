@@ -441,14 +441,19 @@ was dropped (`resetSession()`, or the automatic discard after a fresh‑chat
 stream failure — see [Handling errors](#handling-errors)), the **last‑known
 chat id** (`agent.lastKnownChatId`), so a stranded chat is still cleaned up
 instead of leaking. Generation never uses the last‑known id: a turn after a
-drop creates a fresh chat as always. Both methods report what they acted on
-instead of silently no‑oping: `archive()` resolves `{ archived: true, chatId }`
-(and clears the last‑known id — that chat no longer needs cleanup) or
-`{ archived: false }` when no chat exists at all; `interrupt()` resolves
-`{ interrupted: true, chatId }` / `{ interrupted: false }` the same way. A new
-turn's chat supersedes the last‑known id, so clean up a stranded chat before
-starting the next turn — or hold on to the failed turn's
-`CoderStreamError.chatId` and retire it later.
+drop creates a fresh chat as always. Every chat stranded by an _automatic_
+discard is also recorded on a ledger (`agent.strandedChatIds`, oldest first) —
+with `maxRetries` several failed attempts can strand one chat each while only
+the final attempt's error surfaces — and one `archive()` retires them all,
+oldest first, alongside its primary target. Both methods report what they
+acted on instead of silently no‑oping: `archive()` resolves
+`{ archived: true, chatId, archivedChatIds }` (each archived id is cleared as
+a cleanup target) or `{ archived: false }` when no chat exists at all;
+`interrupt()` resolves `{ interrupted: true, chatId }` /
+`{ interrupted: false }` the same way. Deliberate abandonment is different:
+`resetSession()` does **not** add to the ledger (you may want that chat kept),
+so after a manual reset the old chat is targetable only until a new chat
+supersedes `lastKnownChatId`.
 
 To make cleanup ride scope exit instead of a `finally` you have to remember, the
 agent is an **async disposable**:

@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.1](https://github.com/coder/ai-sdk/compare/agent-v0.9.0...agent-v0.9.1) (2026-08-26)
+
+This patch fixes queued-submission attribution and adds support for accepting a resume cursor.
+
+### Highlights
+
+- Queued-submission attribution is now guarded correctly, and the agent can accept a resume cursor. ([#121](https://github.com/coder/ai-sdk/pull/121))
+
+### Bug Fixes
+
+* **agent:** guard queued-submission attribution and accept a resume cursor ([#121](https://github.com/coder/ai-sdk/issues/121)) ([213f925](https://github.com/coder/ai-sdk/commit/213f925f83f70901697daee99ba743a6bcdc2e1b)), refs [#114](https://github.com/coder/ai-sdk/issues/114) [#115](https://github.com/coder/ai-sdk/issues/115)
+
 ## [0.9.0](https://github.com/coder/ai-sdk/compare/agent-v0.8.0...agent-v0.9.0) (2026-08-26)
 
 Agent now retains stranded chat IDs so they can be cleaned up and stamped onto stream errors, and it annotates transport events with replay disposition and operation names for improved observability.

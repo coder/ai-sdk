@@ -144,13 +144,13 @@ export interface CoderAgentSettings<TOOLS extends ToolSet = {}> {
    * A pre-built {@link CoderChatClient}, used instead of constructing one from
    * `baseUrl`/`token`. The preview helpers ({@link CoderAgent.getPreview},
    * {@link CoderAgent.sharePreview}) call non-chat endpoints and therefore
-   * still need credentials — pass `baseUrl` + `token` alongside `client` to
-   * enable them.
+   * still need credentials — pass `baseUrl` + `token` alongside `client` (or
+   * set `CODER_URL` + `CODER_SESSION_TOKEN`) to enable them.
    */
   client?: CoderChatClient;
-  /** Coder deployment base URL, e.g. `https://dev.coder.com`. */
+  /** Coder deployment base URL, e.g. `https://dev.coder.com`. Defaults to `CODER_URL`. */
   baseUrl?: string;
-  /** Coder API/session token (sent as `Coder-Session-Token`). */
+  /** Coder API/session token (sent as `Coder-Session-Token`). Defaults to `CODER_SESSION_TOKEN`. */
   token?: string;
   fetch?: CoderChatClientOptions["fetch"];
   webSocketFactory?: CoderChatClientOptions["webSocketFactory"];
@@ -304,19 +304,27 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
     // Fail fast on an incompatible AI SDK major (see peer dependency `ai@^7`).
     assertSupportedAiVersion();
 
+    // Resolved once, up front, so every consumer of the settings credentials
+    // (the client bootstrap below and the preview helpers' REST connection)
+    // sees the same values. Explicit settings win over the environment,
+    // matching the sandbox transports' convention.
+    const baseUrl = settings.baseUrl ?? process.env.CODER_URL;
+    const token = settings.token ?? process.env.CODER_SESSION_TOKEN;
+
     if (settings.client) {
       this.#client = settings.client;
-    } else if (settings.baseUrl && settings.token) {
+    } else if (baseUrl && token) {
       this.#client = new CoderChatClient({
-        baseUrl: settings.baseUrl,
-        token: settings.token,
+        baseUrl,
+        token,
         fetch: settings.fetch,
         webSocketFactory: settings.webSocketFactory,
         onTransportEvent: settings.onTransportEvent,
       });
     } else {
       throw new CoderAgentError(
-        "CoderAgent requires either `client` or both `baseUrl` and `token`.",
+        "CoderAgent requires either `client` or both `baseUrl` and `token` " +
+          "(or the CODER_URL and CODER_SESSION_TOKEN environment variables).",
       );
     }
 
@@ -325,10 +333,7 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
     this.#workspaceId = settings.workspaceId;
     // The preview helpers call stable v2 endpoints that CoderChatClient (chat
     // scoped) does not expose, so they need the raw credentials when given.
-    this.#workspaceApi =
-      settings.baseUrl && settings.token
-        ? { baseUrl: settings.baseUrl, token: settings.token, fetch: settings.fetch }
-        : undefined;
+    this.#workspaceApi = baseUrl && token ? { baseUrl, token, fetch: settings.fetch } : undefined;
     // Sanitized so `AbortSignal.timeout` (which rejects non-integer, negative,
     // and non-finite delays with a RangeError) can never make disposal throw.
     this.#settleDeadlineMs = sanitizeDelayMs(settings.settleDeadlineMs, SETTLE_DEADLINE_MS);
@@ -568,7 +573,8 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
     if (!this.#workspaceApi) {
       throw new CoderAgentError(
         `${method}() needs the deployment's REST credentials — construct the CoderAgent with ` +
-          `\`baseUrl\` and \`token\` (they can accompany \`client\`).`,
+          `\`baseUrl\` and \`token\` (they can accompany \`client\`), or set the CODER_URL and ` +
+          `CODER_SESSION_TOKEN environment variables.`,
       );
     }
     return { conn: this.#workspaceApi, workspaceId: this.#workspaceId };

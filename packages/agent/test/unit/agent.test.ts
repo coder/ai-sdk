@@ -1,6 +1,6 @@
 import { APICallError } from "@ai-sdk/provider";
 import { tool } from "ai";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
   type ChatFileInput,
@@ -2632,42 +2632,46 @@ describe("CoderAgent bounded cleanup (interrupt/archive/dispose)", () => {
   });
 });
 
+/** A fetch fake serving the v2 endpoints the preview helpers compose. */
+function previewFetch() {
+  const routes: Record<string, () => Response> = {
+    "/api/v2/workspaces/ws-1": () =>
+      new Response(
+        JSON.stringify({
+          id: "ws-1",
+          owner_name: "alice",
+          name: "dev",
+          latest_build: { resources: [{ agents: [{ name: "main" }] }] },
+        }),
+        { status: 200 },
+      ),
+    "/api/v2/applications/host": () =>
+      new Response(JSON.stringify({ host: "*.apps.example.com" }), { status: 200 }),
+    "/api/v2/workspaces/ws-1/port-share": () =>
+      new Response(
+        JSON.stringify({
+          workspace_id: "ws-1",
+          agent_name: "main",
+          port: 3000,
+          share_level: "public",
+          protocol: "http",
+        }),
+        { status: 200 },
+      ),
+  };
+  const calls: { url: string; init: RequestInit }[] = [];
+  const fn = ((url: string, init: RequestInit) => {
+    calls.push({ url, init });
+    const route = routes[new URL(url).pathname];
+    return Promise.resolve(route ? route() : new Response("{}", { status: 599 }));
+  }) as unknown as typeof globalThis.fetch;
+  return { fn, calls };
+}
+
 describe("CoderAgent previews", () => {
-  /** A fetch fake serving the v2 endpoints the preview helpers compose. */
-  function previewFetch() {
-    const routes: Record<string, () => Response> = {
-      "/api/v2/workspaces/ws-1": () =>
-        new Response(
-          JSON.stringify({
-            id: "ws-1",
-            owner_name: "alice",
-            name: "dev",
-            latest_build: { resources: [{ agents: [{ name: "main" }] }] },
-          }),
-          { status: 200 },
-        ),
-      "/api/v2/applications/host": () =>
-        new Response(JSON.stringify({ host: "*.apps.example.com" }), { status: 200 }),
-      "/api/v2/workspaces/ws-1/port-share": () =>
-        new Response(
-          JSON.stringify({
-            workspace_id: "ws-1",
-            agent_name: "main",
-            port: 3000,
-            share_level: "public",
-            protocol: "http",
-          }),
-          { status: 200 },
-        ),
-    };
-    const calls: { url: string; init: RequestInit }[] = [];
-    const fn = ((url: string, init: RequestInit) => {
-      calls.push({ url, init });
-      const route = routes[new URL(url).pathname];
-      return Promise.resolve(route ? route() : new Response("{}", { status: 599 }));
-    }) as unknown as typeof globalThis.fetch;
-    return { fn, calls };
-  }
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
 
   function previewAgent(fetchFn: typeof globalThis.fetch) {
     return new CoderAgent({
@@ -2689,6 +2693,9 @@ describe("CoderAgent previews", () => {
   });
 
   it("getPreview() requires REST credentials when built from a bare client", async () => {
+    // Ambient credentials would satisfy the env fallback and mask the error.
+    vi.stubEnv("CODER_URL", undefined);
+    vi.stubEnv("CODER_SESSION_TOKEN", undefined);
     const agent = new CoderAgent({
       client: new FakeClient([]) as unknown as CoderChatClient,
       organizationId: "org-1",
@@ -2719,5 +2726,103 @@ describe("CoderAgent previews", () => {
       share_level: "public",
       protocol: "http",
     });
+  });
+});
+
+describe("CoderAgent connection env defaults", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  /** Header record `workspaces.ts#request` builds for the v2 preview calls. */
+  function sessionToken(init: RequestInit | undefined): string | undefined {
+    return (init?.headers as Record<string, string> | undefined)?.["Coder-Session-Token"];
+  }
+
+  it("falls back to CODER_URL/CODER_SESSION_TOKEN when baseUrl/token are absent", async () => {
+    vi.stubEnv("CODER_URL", "https://env.coder.example.com");
+    vi.stubEnv("CODER_SESSION_TOKEN", "env-token");
+    const { fn, calls } = previewFetch();
+    const agent = new CoderAgent({ organizationId: "org-1", workspaceId: "ws-1", fetch: fn });
+    // getPreview() surfaces the resolved credentials: the request URL carries
+    // the base URL and the auth header carries the token.
+    await expect(agent.getPreview({ port: 3000 })).resolves.toEqual({
+      url: "https://3000--main--dev--alice.apps.example.com",
+    });
+    expect(calls[0]?.url).toBe("https://env.coder.example.com/api/v2/workspaces/ws-1");
+    expect(sessionToken(calls[0]?.init)).toBe("env-token");
+  });
+
+  it("explicit baseUrl/token win over the environment", async () => {
+    vi.stubEnv("CODER_URL", "https://env.coder.example.com");
+    vi.stubEnv("CODER_SESSION_TOKEN", "env-token");
+    const { fn, calls } = previewFetch();
+    const agent = new CoderAgent({
+      baseUrl: "https://explicit.coder.example.com",
+      token: "explicit-token",
+      organizationId: "org-1",
+      workspaceId: "ws-1",
+      fetch: fn,
+    });
+    await agent.getPreview({ port: 3000 });
+    expect(calls[0]?.url).toBe("https://explicit.coder.example.com/api/v2/workspaces/ws-1");
+    expect(sessionToken(calls[0]?.init)).toBe("explicit-token");
+  });
+
+  it("an explicit baseUrl pairs with an env token", async () => {
+    vi.stubEnv("CODER_URL", undefined);
+    vi.stubEnv("CODER_SESSION_TOKEN", "env-token");
+    const { fn, calls } = previewFetch();
+    const agent = new CoderAgent({
+      baseUrl: "https://explicit.coder.example.com",
+      organizationId: "org-1",
+      workspaceId: "ws-1",
+      fetch: fn,
+    });
+    await agent.getPreview({ port: 3000 });
+    expect(calls[0]?.url).toBe("https://explicit.coder.example.com/api/v2/workspaces/ws-1");
+    expect(sessionToken(calls[0]?.init)).toBe("env-token");
+  });
+
+  it("an env baseUrl pairs with an explicit token", async () => {
+    vi.stubEnv("CODER_URL", "https://env.coder.example.com");
+    vi.stubEnv("CODER_SESSION_TOKEN", undefined);
+    const { fn, calls } = previewFetch();
+    const agent = new CoderAgent({
+      token: "explicit-token",
+      organizationId: "org-1",
+      workspaceId: "ws-1",
+      fetch: fn,
+    });
+    await agent.getPreview({ port: 3000 });
+    expect(calls[0]?.url).toBe("https://env.coder.example.com/api/v2/workspaces/ws-1");
+    expect(sessionToken(calls[0]?.init)).toBe("explicit-token");
+  });
+
+  it("throws without settings or env credentials, naming the env fallback", () => {
+    vi.stubEnv("CODER_URL", undefined);
+    vi.stubEnv("CODER_SESSION_TOKEN", undefined);
+    expect(() => new CoderAgent({ organizationId: "org-1" })).toThrow(
+      /CODER_URL and CODER_SESSION_TOKEN/,
+    );
+    // One env var alone (here: the token) does not satisfy the pair.
+    vi.stubEnv("CODER_SESSION_TOKEN", "env-token");
+    expect(() => new CoderAgent({ organizationId: "org-1" })).toThrow(CoderAgentError);
+  });
+
+  it("client-only construction resolves env credentials for the preview helpers", async () => {
+    vi.stubEnv("CODER_URL", "https://env.coder.example.com");
+    vi.stubEnv("CODER_SESSION_TOKEN", "env-token");
+    const { fn, calls } = previewFetch();
+    const agent = new CoderAgent({
+      client: new FakeClient([]) as unknown as CoderChatClient,
+      organizationId: "org-1",
+      workspaceId: "ws-1",
+      fetch: fn,
+    });
+    await expect(agent.getPreview({ port: 3000 })).resolves.toEqual({
+      url: "https://3000--main--dev--alice.apps.example.com",
+    });
+    expect(sessionToken(calls[0]?.init)).toBe("env-token");
   });
 });

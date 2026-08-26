@@ -50,13 +50,14 @@ import { CoderNativeTransport, ensureCoderWorkspace } from "@coder/ai-sdk-sandbo
 import { CoderAgent } from "@coder/ai-sdk-agent";
 import { createCoder } from "@coder/ai-sdk-provider";
 
-const baseUrl = process.env.CODER_URL!; // e.g. https://coder.example.com
-const token = process.env.CODER_SESSION_TOKEN!;
+// The sandbox transport and the agent both default their connection from the
+// CODER_URL + CODER_SESSION_TOKEN exported above (explicit `url`/`baseUrl` and
+// `token` options remain available).
 
 // 1. Sandbox: get-or-create a workspace and wait until its agent is ready.
 //    The native transport talks straight to your deployment — no `coder` CLI
 //    or `ssh` on the host. Assumes the template checks out your project.
-const transport = new CoderNativeTransport({ url: baseUrl, token });
+const transport = new CoderNativeTransport();
 const ws = await ensureCoderWorkspace({
   workspace: "dep-audit",
   create: { template: "docker" },
@@ -68,8 +69,6 @@ if (ws.id === undefined) throw new Error("transport did not report a workspace i
 //    server runs the multi-step loop and its file/shell tools; your custom
 //    tool executes here, in this process, and its result is sent back.
 const agent = new CoderAgent({
-  baseUrl,
-  token,
   organizationId: process.env.CODER_ORG_ID!,
   model: "claude-sonnet-4-6",
   workspaceId: ws.id, // binds the chat's workspace-scoped tools
@@ -99,8 +98,12 @@ try {
   await agent.archive(); // archives the chat; never deletes the workspace
 }
 
-// 3. Provider: schema-constrained extraction through AI Gateway.
-const coder = createCoder({ baseURL: baseUrl, apiKey: token });
+// 3. Provider: schema-constrained extraction through AI Gateway. The provider
+//    takes explicit credentials (its `apiKey` is dual-purpose in BYOK mode).
+const coder = createCoder({
+  baseURL: process.env.CODER_URL!,
+  apiKey: process.env.CODER_SESSION_TOKEN!,
+});
 const { object: audit } = await generateObject({
   model: coder("claude-sonnet-4-6"),
   schema: z.object({

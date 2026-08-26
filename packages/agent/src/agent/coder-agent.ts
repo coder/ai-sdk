@@ -138,6 +138,28 @@ async function archiveWhenSettled(
   }
 }
 
+/**
+ * Result of {@link CoderAgent.interrupt}: `interrupted: false` means there was
+ * no chat to interrupt (neither a live session nor a
+ * {@link CoderAgent.lastKnownChatId}) and no server call was made.
+ */
+export type CoderInterruptResult =
+  | { interrupted: true; chatId: string }
+  | { interrupted: false; chatId?: undefined };
+
+/**
+ * Result of {@link CoderAgent.archive}: `archived: false` means there was no
+ * chat to archive (neither a live session nor a
+ * {@link CoderAgent.lastKnownChatId}) and no server call was made. Failures
+ * still throw — see {@link CoderAgent.archive}. `chatId` is the primary
+ * target (the session's or last-known chat); `archivedChatIds` additionally
+ * lists every chat archived by the call, oldest first — more than one when
+ * earlier stranded chats ({@link CoderAgent.strandedChatIds}) were retired
+ * alongside it.
+ */
+export type CoderArchiveResult =
+  | { archived: true; chatId: string; archivedChatIds: string[] }
+  | { archived: false; chatId?: undefined; archivedChatIds?: undefined };
 export interface CoderAgentSettings<TOOLS extends ToolSet = {}> {
   // --- connection (provide a client, or baseUrl + token) ---
   /**
@@ -400,6 +422,31 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
     return this.#model.chatId;
   }
 
+  /**
+   * The last chat id this agent created or attached to, retained for CLEANUP
+   * even after the session was dropped — a fresh-chat stream failure discards
+   * the session ({@link CoderAgent.chatId} becomes `undefined`, so a retry
+   * starts fresh), but the failed chat still exists server-side.
+   * {@link CoderAgent.archive} and {@link CoderAgent.interrupt} fall back to
+   * this id; generation never does. Superseded when a later turn creates or
+   * attaches to another chat; cleared once {@link CoderAgent.archive}
+   * succeeds against it.
+   */
+  get lastKnownChatId(): string | undefined {
+    return this.#model.lastKnownChatId;
+  }
+
+  /**
+   * Chat ids stranded by automatic session discards and not yet cleaned up,
+   * oldest first. Each retryable fresh-chat stream failure strands one chat,
+   * so with `maxRetries` > 0 several can accumulate while only the final
+   * attempt's error (and {@link CoderAgent.lastKnownChatId}) names the
+   * newest. {@link CoderAgent.archive} retires all of them.
+   */
+  get strandedChatIds(): string[] {
+    return this.#model.strandedChatIds;
+  }
+
   generate(
     options: Parameters<InnerAgent<TOOLS>["generate"]>[0],
   ): ReturnType<InnerAgent<TOOLS>["generate"]> {
@@ -423,7 +470,12 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
     return this.#client.listModelConfigs(signal);
   }
 
-  /** Start a fresh chatd chat on the next turn. */
+  /**
+   * Start a fresh chatd chat on the next turn. The dropped chat still exists
+   * server-side: {@link CoderAgent.archive} / {@link CoderAgent.interrupt}
+   * keep targeting it (via {@link CoderAgent.lastKnownChatId}) until a new
+   * chat supersedes it or an archive succeeds against it.
+   */
   resetSession(): void {
     this.#model.resetSession();
   }
@@ -432,10 +484,17 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
    * Interrupt the in-flight generation, if any. Resolves as soon as the server
    * acknowledges the interrupt — the run keeps winding down asynchronously for
    * a few seconds afterwards (see {@link CoderAgent.archive}).
+   *
+   * Targets the session's chat, or — after the session was dropped (a
+   * fresh-chat stream failure, or {@link CoderAgent.resetSession}) — the
+   * {@link CoderAgent.lastKnownChatId}, whose run may still be winding down
+   * server-side. With neither, there is nothing to interrupt and it resolves
+   * `{ interrupted: false }` without a server call (inspect the result rather
+   * than relying on a silent no-op).
    */
-  async interrupt(opts?: { signal?: AbortSignal }): Promise<void> {
-    const id = this.#model.chatId;
-    if (!id) return;
+  async interrupt(opts?: { signal?: AbortSignal }): Promise<CoderInterruptResult> {
+    const id = this.#model.chatId ?? this.#model.lastKnownChatId;
+    if (!id) return { interrupted: false };
     // A stream paused for client tools dies with the run it was following:
     // close it FIRST so a later resume dials fresh instead of consuming the
     // interrupt's settle events as the resumed generation's, and so the
@@ -444,38 +503,70 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
     // segment, which observes the settle and closes it.) Local and instant.
     await this.#model.closePausedStream();
     await this.#client.interruptChat(id, opts?.signal);
+    return { interrupted: true, chatId: id };
   }
 
   /**
    * Archive the underlying chat (safe cleanup; hides it from listings).
    *
+   * Targets the session's chat, or — after the session was dropped (a
+   * fresh-chat stream failure, or {@link CoderAgent.resetSession}) — the
+   * {@link CoderAgent.lastKnownChatId}, so the stranded chat is still cleaned
+   * up; chats stranded by EARLIER automatic discards
+   * ({@link CoderAgent.strandedChatIds} — `maxRetries` can accumulate several)
+   * are retired in the same call. On success each archived id is cleared as a
+   * cleanup target; with no id at all, there is nothing to archive and it
+   * resolves `{ archived: false }` without a server call (inspect the result
+   * rather than relying on a silent no-op).
+   *
    * A freshly interrupted/settled chat can keep winding down server-side for a
    * few seconds, during which the server rejects archiving with a 409. Those
-   * 409s are retried (~1s apart, ~15s overall — see `settleDeadlineMs` /
-   * `settleRetryDelayMs`) and the last one is rethrown if the chat never
-   * settles; any other failure, including a caller abort, rethrows immediately.
+   * 409s are retried (~1s apart — see `settleRetryDelayMs`) inside ONE
+   * `settleDeadlineMs` window (~15s) shared by the whole call — however many
+   * chats it archives — and the last 409 is rethrown if the window closes
+   * first; any other failure, including a caller abort, rethrows immediately.
+   * Chats are archived oldest first, each id cleared as its archive succeeds —
+   * a mid-list failure rethrows and leaves the remaining ids targetable by a
+   * later retry.
    */
-  async archive(opts?: { signal?: AbortSignal }): Promise<void> {
-    const id = this.#model.chatId;
-    if (!id) return;
+  async archive(opts?: { signal?: AbortSignal }): Promise<CoderArchiveResult> {
+    const primary = this.#model.chatId ?? this.#model.lastKnownChatId;
+    if (!primary) return { archived: false };
     // The guaranteed-cleanup path also releases a stream retained by a
     // client-tool pause the caller abandoned (e.g. `stopWhen` ended the tool
     // loop, or a tool had no execute handler) — the socket must not outlive
     // the archived chat. Local and instant; an actively-read stream is left
     // to its segment, which closes it when the run settles.
     await this.#model.closePausedStream();
-    await archiveWhenSettled(this.#client, id, {
-      deadlineMs: this.#settleDeadlineMs,
-      retryDelayMs: this.#settleRetryDelayMs,
-      signal: opts?.signal,
-    });
+    // Oldest stranded chats first, primary last (deduplicated — after a
+    // single discard the primary IS the newest stranded id): earlier ids'
+    // runs were interrupted attempts ago, so they archive without a settle
+    // wait, and a failure part-way leaves the rest pending, not forgotten.
+    const targets = [...new Set([...this.#model.strandedChatIds, primary])];
+    // One settle window for the WHOLE batch, not per target, so archive()
+    // keeps its documented ~settleDeadlineMs bound however many chats it
+    // retires: each target gets only the remaining budget (floored at 1ms
+    // for AbortSignal.timeout's sake — with the window already exhausted,
+    // the attempt aborts at once and the id stays targetable later).
+    const deadline = Date.now() + this.#settleDeadlineMs;
+    for (const id of targets) {
+      await archiveWhenSettled(this.#client, id, {
+        deadlineMs: Math.max(deadline - Date.now(), 1),
+        retryDelayMs: this.#settleRetryDelayMs,
+        signal: opts?.signal,
+      });
+      this.#model.noteChatCleanedUp(id);
+    }
+    return { archived: true, chatId: primary, archivedChatIds: targets };
   }
 
   /**
    * Clean up the chat when the agent leaves an `await using` scope, so cleanup
    * rides scope exit instead of a separate call you have to remember in a
    * `finally`. Interrupts any in-flight server run, then archives the chat
-   * (retrying while the interrupted run settles). Best-effort and bounded
+   * (retrying while the interrupted run settles) — including a chat stranded
+   * by a session discard (see {@link CoderAgent.lastKnownChatId}), which a
+   * failed `generate()` would otherwise leak. Best-effort and bounded
    * (~15s overall): disposal errors are swallowed after the bounded attempts
    * so they can't mask the scope's own error — call {@link CoderAgent.archive}
    * directly when you need guaranteed cleanup.

@@ -453,6 +453,25 @@ for a few seconds, during which archiving 409s — `archive()` retries those 409
 `settleRetryDelayMs`) and rethrows the last one if the chat never settles. Any
 other failure, including your own abort, rethrows immediately.
 
+`archive()` and `interrupt()` target the session's chat — or, after the session
+was dropped (`resetSession()`, or the automatic discard after a fresh‑chat
+stream failure — see [Handling errors](#handling-errors)), the **last‑known
+chat id** (`agent.lastKnownChatId`), so a stranded chat is still cleaned up
+instead of leaking. Generation never uses the last‑known id: a turn after a
+drop creates a fresh chat as always. Every chat stranded by an _automatic_
+discard is also recorded on a ledger (`agent.strandedChatIds`, oldest first) —
+with `maxRetries` several failed attempts can strand one chat each while only
+the final attempt's error surfaces — and one `archive()` retires them all,
+oldest first, alongside its primary target. Both methods report what they
+acted on instead of silently no‑oping: `archive()` resolves
+`{ archived: true, chatId, archivedChatIds }` (each archived id is cleared as
+a cleanup target) or `{ archived: false }` when no chat exists at all;
+`interrupt()` resolves `{ interrupted: true, chatId }` /
+`{ interrupted: false }` the same way. Deliberate abandonment is different:
+`resetSession()` does **not** add to the ledger (you may want that chat kept),
+so after a manual reset the old chat is targetable only until a new chat
+supersedes `lastKnownChatId`.
+
 To make cleanup ride scope exit instead of a `finally` you have to remember, the
 agent is an **async disposable**:
 
@@ -486,7 +505,11 @@ carry structured detail you can branch on:
   repeat (workspace/MCP tooling, fresh attachment uploads); otherwise it is
   `false` — a retry would resubmit the prompt as a new user turn and could
   duplicate those effects. A failure mid‑`stream()` surfaces on the stream,
-  outside the retry wrapper. The last transport failure is in `cause`.
+  outside the retry wrapper. The last transport failure is in `cause`, and
+  `chatId` names the chat the failed turn had created or attached to (absent
+  when it failed before a chat existed) — after the fresh‑chat discard the
+  chat still exists server‑side, and `archive()` keeps targeting it via
+  `agent.lastKnownChatId` ([Cleanup](#cleanup)).
 
 ```ts
 import { CoderApiError, CoderChatError } from "@coder/ai-sdk-agent";
@@ -963,7 +986,9 @@ export async function runTurn(workflowId: string, prompt: string): Promise<strin
     // still persist the id, or the retried step orphans a live chat and its
     // partial effects. Exception: after an exhausted stream failure on a
     // chat this very call created, the SDK has already discarded the dead
-    // session (agent.chatId is undefined) and nothing is written — see the
+    // session (agent.chatId is undefined) and nothing is written — the thrown
+    // CoderStreamError's chatId still names the stranded chat, and
+    // agent.archive() retires it via agent.lastKnownChatId — see the
     // CoderStreamError notes below for what retrying means then.
     if (agent.chatId) await checkpoints.set(workflowId, agent.chatId);
   }
@@ -1080,12 +1105,15 @@ try {
   the dead session so a retry — `maxRetries` or a re‑run step — starts clean
   on a fresh chat. The discard happens for _every_ chat the failed turn
   itself created — **including the effectful, `isRetryable: false` case**:
-  the id is gone, the `finally` checkpoint writes nothing, and the
-  interrupted chat — whose workspace/MCP tools may already have acted —
-  becomes an unacknowledged orphan for the reconciliation sweep (below). A
-  retried step then starts a fresh chat that has _not_ seen the orphan's
-  effects: gate that retry on the same idempotency judgment as any
-  re‑submission. **On a resumed chat it is always `isRetryable: false`:**
+  `agent.chatId` is `undefined` and the `finally` checkpoint writes nothing —
+  but the stranded chat is not nameless: the error's **`chatId`** field names
+  it, and `interrupt()`/`archive()` keep targeting it via
+  `agent.lastKnownChatId` ([Cleanup](#cleanup)), so the step's error path can
+  retire the orphan directly — or checkpoint `err.chatId` for the
+  reconciliation sweep (below) when its workspace/MCP effects need
+  reconciling first. A retried step then starts a fresh chat that has _not_
+  seen the orphan's effects: gate that retry on the same idempotency judgment
+  as any re‑submission. **On a resumed chat it is always `isRetryable: false`:**
   re‑running the step resubmits the same prompt as a _new user turn_, with the
   failed attempt's partial output still in history (usually fine — the model
   sees its own aborted attempt), and any workspace/MCP tool effects that ran

@@ -173,6 +173,25 @@ export class CoderLanguageModel implements LanguageModelV4 {
 
   readonly #config: CoderLanguageModelConfig;
   #chatId: string | undefined;
+  /**
+   * The last chat id this model created or attached to, retained as a CLEANUP
+   * target — see {@link lastKnownChatId}. Unlike `#chatId` it survives
+   * {@link resetSession}, and is only replaced when a later turn's chat
+   * supersedes it or cleared by {@link noteChatCleanedUp} once cleanup
+   * actually succeeded against it.
+   */
+  #lastKnownChatId: string | undefined;
+  /**
+   * Every chat id stranded by an AUTOMATIC session discard (a stream failure
+   * on a chat the failed turn itself created) and not yet cleaned up. A
+   * single `#lastKnownChatId` slot is not enough here: each AI-SDK
+   * `maxRetries` attempt strands its own fresh chat and only the final
+   * attempt's error reaches the caller, so without this ledger every attempt
+   * before the last would leak unnamed. Drained by {@link noteChatCleanedUp}.
+   * Deliberate abandonment ({@link resetSession}) does NOT record here — the
+   * caller chose to walk away and may want the chat kept.
+   */
+  readonly #strandedChatIds = new Set<string>();
   #lastSeenMessageId = 0;
   #resolvedModelConfigId: string | undefined;
   #modelResolved = false;
@@ -190,6 +209,7 @@ export class CoderLanguageModel implements LanguageModelV4 {
     this.#config = config;
     this.modelId = config.model ?? "chatd";
     this.#chatId = config.chatId;
+    this.#lastKnownChatId = config.chatId;
     this.#emitTransportEvent = safeTransportEmitter(config.onTransportEvent);
   }
 
@@ -198,9 +218,51 @@ export class CoderLanguageModel implements LanguageModelV4 {
   }
 
   /**
+   * The last chat id this model created or attached to, for CLEANUP targeting
+   * only — generation always targets {@link chatId}. It survives
+   * {@link resetSession} (including the automatic session discard after a
+   * fresh-chat stream failure, which clears {@link chatId} so a retry starts
+   * fresh while the failed chat still exists server-side), is superseded when
+   * a later turn creates or attaches to another chat, and is cleared via
+   * {@link noteChatCleanedUp} once cleanup actually succeeded against it.
+   */
+  get lastKnownChatId(): string | undefined {
+    return this.#lastKnownChatId;
+  }
+
+  /**
+   * Chat ids stranded by automatic session discards and not yet cleaned up,
+   * oldest first. Each retryable fresh-chat stream failure strands one chat;
+   * under AI-SDK `maxRetries` several can accumulate while only the final
+   * attempt's error (and {@link lastKnownChatId}) names the newest —
+   * `CoderAgent.archive()` retires all of them. Ids leave the list only via
+   * {@link noteChatCleanedUp}.
+   */
+  get strandedChatIds(): string[] {
+    return [...this.#strandedChatIds];
+  }
+
+  /**
+   * Forgets `chatId` as a cleanup target — call it only after cleanup
+   * actually succeeded against that chat (e.g. `CoderAgent.archive()`
+   * archived it), so later cleanup calls don't re-target an already-archived
+   * chat: removes it from {@link strandedChatIds} and, when it is the
+   * last-known id, clears {@link lastKnownChatId} (match-guarded: a stale
+   * completion must not erase a newer chat's id). The session field
+   * ({@link chatId}) is deliberately untouched — archiving does not reset the
+   * session.
+   */
+  noteChatCleanedUp(chatId: string): void {
+    this.#strandedChatIds.delete(chatId);
+    if (this.#lastKnownChatId === chatId) this.#lastKnownChatId = undefined;
+  }
+
+  /**
    * Drops the current session so the next turn creates a fresh chat. Also
    * closes the retained event stream, if any (fire-and-forget — a sync reset
    * must not wait on socket teardown, and `close()` never rejects).
+   * {@link lastKnownChatId} deliberately survives the reset: the dropped chat
+   * still exists server-side and cleanup must still be able to target it.
    */
   resetSession(): void {
     this.#chatId = undefined;
@@ -715,6 +777,10 @@ export class CoderLanguageModel implements LanguageModelV4 {
 
       const chatId = this.#chatId as string;
       turnChatId = chatId;
+      // The cleanup target outlives the session: a stream failure below can
+      // discard the session (resetSession), but the chat persists server-side
+      // and archive()/interrupt() must still be able to name it.
+      this.#lastKnownChatId = chatId;
       if (segmentChat) segmentChat.chatId = chatId;
       // Only messages past the turn's starting cursor belong to this turn —
       // resuming a chat replays earlier turns' messages (usage included), and
@@ -930,10 +996,22 @@ export class CoderLanguageModel implements LanguageModelV4 {
         // cases the error is downgraded to non-retryable and the caller owns
         // the retry/resume decision.
         if (err instanceof CoderStreamError) {
+          // The reader stamps the chat id it streamed, but a custom client's
+          // stream source may not — stamp the turn's own id (they name the
+          // same chat) so BOTH rethrow paths below keep the documented
+          // guarantee that the error names the failed turn's chat. The field
+          // is publicly readonly; the model layer owns the error en route.
+          if (err.chatId === undefined && turnChatId !== undefined) {
+            (err as { chatId: string | undefined }).chatId = turnChatId;
+          }
           if (turnCreatedChat) {
             // Nothing worth keeping: the chat's only content is this failed,
             // interrupted turn, and a later manual generate() on this instance
-            // must not attach to it either.
+            // must not attach to it either. Record it as stranded FIRST: an
+            // automatic retry's fresh chat will supersede #lastKnownChatId,
+            // and without the ledger every attempt before the last would leak
+            // unnamed (only the final attempt's error reaches the caller).
+            if (turnChatId) this.#strandedChatIds.add(turnChatId);
             discardSession = true;
           }
           const effectful = chatHasWorkspace || chatHasMcpServers || uploadedAttachment;
@@ -947,6 +1025,7 @@ export class CoderLanguageModel implements LanguageModelV4 {
             url: err.url,
             cause: err,
             isRetryable: false,
+            chatId: err.chatId,
           });
         }
         if (

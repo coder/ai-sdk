@@ -706,10 +706,12 @@ describe("CoderChatClient.streamEvents (redial)", () => {
     const p2 = iter.next();
     await tick();
     sockets[0]?.emit("close", { code: 1006 });
-    // A CoderStreamError so the model layer's retry-safety gates apply.
+    // A CoderStreamError so the model layer's retry-safety gates apply. It
+    // names the chat so the failure stays cleanable (#113).
     await expect(p2).rejects.toMatchObject({
       name: "CoderStreamError",
       message: expect.stringContaining("cannot be resumed"),
+      chatId: "c1",
     });
     expect(sockets).toHaveLength(1);
   });
@@ -781,7 +783,8 @@ describe("CoderChatClient.streamEvents (redial)", () => {
       expect(sockets).toHaveLength(5);
       sockets.at(-1)?.emit("close", { code: 1006 });
       const err = await p;
-      expect(err).toMatchObject({ name: "CoderStreamError", isRetryable: true });
+      // chatId names the stranded chat for cleanup (#113).
+      expect(err).toMatchObject({ name: "CoderStreamError", isRetryable: true, chatId: "c1" });
       // The brand the `ai` package's retry loop actually checks:
       expect(APICallError.isInstance(err)).toBe(true);
       expect(sockets).toHaveLength(5);

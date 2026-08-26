@@ -25,7 +25,13 @@
  * ```
  */
 
-export { type ChatAttachment, CoderAgent, type CoderAgentSettings } from "./agent/coder-agent.js";
+export {
+  type ChatAttachment,
+  CoderAgent,
+  type CoderAgentSettings,
+  type CoderArchiveResult,
+  type CoderInterruptResult,
+} from "./agent/coder-agent.js";
 export { CoderLanguageModel, type CoderLanguageModelConfig } from "./model/language-model.js";
 export {
   type ChatFileInput,

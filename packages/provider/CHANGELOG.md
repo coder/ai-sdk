@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.4.1](https://github.com/coder/ai-sdk/compare/provider-v0.4.0...provider-v0.4.1) (2026-08-26)
+
+A maintenance release with no user-facing changes.
+
 ## [0.4.0](https://github.com/coder/ai-sdk/compare/provider-v0.3.5...provider-v0.4.0) (2026-08-25)
 
 Adds sub-provider accessors so you can access custom-named gateway providers.

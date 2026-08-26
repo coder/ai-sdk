@@ -41,6 +41,7 @@ interface TransportEventBase {
  */
 export type CoderClientOperation =
   | "listModelConfigs"
+  | "resolveModelConfigId"
   | "createChat"
   | "getChat"
   | "createChatMessage"

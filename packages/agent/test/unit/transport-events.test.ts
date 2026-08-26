@@ -256,6 +256,8 @@ describe("transport events: HTTP", () => {
     });
 
     await client.listModelConfigs();
+    // Resolves via the same listing GET but stamps its own op (caller intent).
+    await client.resolveModelConfigId("some-model");
     await client.createChat({} as never);
     await client.getChat("c1");
     await client.createChatMessage("c1", {} as never);
@@ -273,6 +275,7 @@ describe("transport events: HTTP", () => {
     >[];
     expect(requests.map((e) => e.op)).toEqual([
       "listModelConfigs",
+      "resolveModelConfigId",
       "createChat",
       "getChat",
       "createChatMessage",

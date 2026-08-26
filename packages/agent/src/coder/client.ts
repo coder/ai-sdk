@@ -442,7 +442,16 @@ export class CoderChatClient {
     const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     if (UUID_RE.test(hint)) return hint;
 
-    const raw: unknown = await this.listModelConfigs(signal);
+    // Issues listModelConfigs' GET directly so the exchange's `http:*` events
+    // carry this method's own `op` — the stamp names the caller's intent
+    // (model resolution), not the wire shape it borrows.
+    const raw: unknown = await this.#request<ChatModelConfig[]>(
+      "resolveModelConfigId",
+      "GET",
+      `${API_PREFIX}/model-configs`,
+      undefined,
+      signal,
+    );
     const configs = (Array.isArray(raw) ? raw : []).filter(
       (c): c is ChatModelConfig => typeof c === "object" && c !== null,
     );

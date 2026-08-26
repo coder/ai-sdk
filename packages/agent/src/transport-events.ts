@@ -31,12 +31,39 @@ interface TransportEventBase {
 
 // --- HTTP (every REST call made by CoderChatClient) -------------------------
 
+/**
+ * Names the `CoderChatClient` operation performing an HTTP exchange (issue
+ * #112). The public client method names are the stable vocabulary, so
+ * subscribers can classify per-operation timings without reverse-engineering
+ * `path` (whose API prefix is private and may change). New client methods
+ * extend this union; treat unrecognized values as "some other operation"
+ * rather than matching exhaustively.
+ */
+export type CoderClientOperation =
+  | "listModelConfigs"
+  | "createChat"
+  | "getChat"
+  | "createChatMessage"
+  | "getMessages"
+  | "submitToolResults"
+  | "interruptChat"
+  | "updateChat"
+  | "archiveChat"
+  | "uploadChatFile"
+  | "getChatFile";
+
 interface HttpTransportEventBase extends TransportEventBase {
   /**
    * Correlates a request with its response/error. Monotonically increasing
    * per client instance.
    */
   id: number;
+  /**
+   * The client operation performing this exchange — the public
+   * `CoderChatClient` method name. `archiveChat` stamps its own operation
+   * even though it issues the same `PATCH` as `updateChat`.
+   */
+  op: CoderClientOperation;
   /** HTTP method, e.g. `POST`. */
   method: string;
   /**
@@ -111,14 +138,31 @@ export interface StreamOpenTransportEvent extends StreamTransportEventBase {
 
 /**
  * A decoded stream event arrived on the wire. Emitted at arrival time for
- * every event in a frame batch, BEFORE replay dedup — after a redial, chatd's
- * replay of the in-progress episode is visible here even though the reader
- * suppresses the duplicates it forwards. `event` is the decoded object by
- * reference (no copy): do not mutate it.
+ * every event in a frame batch — after a redial, chatd's replay of the
+ * in-progress episode is still visible here, stamped with the reader's own
+ * replay verdict (`forwarded`). `event` is the decoded object by reference
+ * (no copy): do not mutate it.
  */
 export interface StreamEventTransportEvent extends StreamTransportEventBase {
   type: "ws:event";
   event: ChatStreamEvent;
+  /**
+   * The reader's replay disposition for this frame (issue #111): `false`
+   * exactly when the episode filter suppresses it from the consumption path —
+   * a redial's replay of an in-progress delta at or below the last yielded
+   * `seq` of the same episode — and `true` when the reader forwards it to its
+   * consumer. It is a dedup verdict, not a delivery receipt: a consumer
+   * tearing down mid-queue can still discard a forwarded frame.
+   *
+   * Snapshot dedup is deliberately NOT reflected here: repeated or revised
+   * `message` snapshots are always `forwarded: true`, because reconciling
+   * them is the consumer's job past the transport layer — TurnTranslator's
+   * per-message emitted-content ledger decides what a revision re-emits.
+   * That disposition is not stamped on transport frames; subscribers needing
+   * content fidelity must consume model output (or TurnTranslator), not
+   * `ws:event`.
+   */
+  forwarded: boolean;
 }
 
 /**

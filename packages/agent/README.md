@@ -321,7 +321,9 @@ await agent.generate({ prompt: "…" });
 // e.g. attribute where the turn spent its time:
 for (const ev of events) {
   if (ev.type === "http:response")
-    console.log(`${ev.method} ${ev.path} → ${ev.status} in ${ev.durationMs.toFixed(0)}ms`);
+    console.log(
+      `${ev.op}: ${ev.method} ${ev.path} → ${ev.status} in ${ev.durationMs.toFixed(0)}ms`,
+    );
   if (ev.type === "ws:event" && ev.event.type === "action_required")
     console.log(`tool calls arrived at +${ev.timestamp - events[0]!.timestamp}ms`);
   if (ev.type === "segment:settle")
@@ -335,12 +337,12 @@ such as a message's `created_at`, for delivery‑lag measurements):
 
 | event            | when                                                | payload (besides `timestamp`)                                                                                                                                                                                                                                                     |
 | ---------------- | --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `http:request`   | a REST request is sent                              | `id` (correlates the pair), `method`, `path`                                                                                                                                                                                                                                      |
-| `http:response`  | response headers arrive (incl. non‑2xx, `ok:false`) | `id`, `method`, `path`, `status`, `ok`, `durationMs`                                                                                                                                                                                                                              |
-| `http:error`     | the fetch itself rejects (network failure, abort)   | `id`, `method`, `path`, `message`, `durationMs`                                                                                                                                                                                                                                   |
+| `http:request`   | a REST request is sent                              | `id` (correlates the pair), `op` (the client operation, e.g. `"createChatMessage"`), `method`, `path`                                                                                                                                                                             |
+| `http:response`  | response headers arrive (incl. non‑2xx, `ok:false`) | `id`, `op`, `method`, `path`, `status`, `ok`, `durationMs`                                                                                                                                                                                                                        |
+| `http:error`     | the fetch itself rejects (network failure, abort)   | `id`, `op`, `method`, `path`, `message`, `durationMs`                                                                                                                                                                                                                             |
 | `ws:dial`        | a stream connection attempt starts                  | `chatId`, `reader` (identifies the `streamChatEvents` call), `attempt` (1‑based per reader, increments per redial), `url`                                                                                                                                                         |
 | `ws:open`        | the WebSocket handshake completes                   | `chatId`, `reader`, `attempt`                                                                                                                                                                                                                                                     |
-| `ws:event`       | a decoded stream event arrives                      | `chatId`, `reader`, `attempt`, `event` (the decoded `ChatStreamEvent`, by reference — don't mutate)                                                                                                                                                                               |
+| `ws:event`       | a decoded stream event arrives                      | `chatId`, `reader`, `attempt`, `event` (the decoded `ChatStreamEvent`, by reference — don't mutate), `forwarded` (the reader's replay verdict)                                                                                                                                    |
 | `ws:close`       | the connection ends (exactly one per dial)          | `chatId`, `reader`, `attempt`, `code`/`reason` when the server/network closed it; absent when the reader closed it (settle, teardown, redial)                                                                                                                                     |
 | `ws:error`       | a socket error or unparseable frame                 | `chatId`, `reader`, `attempt`, `message`                                                                                                                                                                                                                                          |
 | `ws:redial`      | a dropped connection is about to be redialed        | `chatId`, `reader`, `attempt` (the ended connection), `consecutiveFailures`, `maxConsecutiveFailures`, `backoffMs`                                                                                                                                                                |
@@ -356,9 +358,24 @@ Semantics worth knowing:
 - **No secrets** — events carry no headers and no tokens (auth travels in the
   `Coder-Session-Token` header, which is deliberately excluded); `path`/`url`
   never contain credentials.
-- `ws:event` fires at arrival, **before** replay dedup: after a redial, chatd's
-  replay of the in‑progress episode is visible here (correlate with `reader`/`attempt`)
-  even though the reader suppresses the duplicates it forwards to the turn.
+- `http:*` events name their operation: `op` is the public `CoderChatClient`
+  method performing the exchange (`"createChat"`, `"createChatMessage"`,
+  `"getMessages"`, `"submitToolResults"`, … — the `CoderClientOperation`
+  union), so per‑operation classification never has to reverse‑engineer
+  `path`. `method`/`path` stay for generic consumers; `archiveChat` stamps its
+  own `op` even though it issues the same `PATCH` as `updateChat`.
+- `ws:event` fires at arrival: after a redial, chatd's replay of the
+  in‑progress episode is visible here (correlate with `reader`/`attempt`),
+  stamped with the reader's own replay verdict — `forwarded: false` exactly on
+  the duplicate deltas the reader suppresses from the turn, so subscribers
+  never re‑derive the episode filter.
+- `forwarded` does **not** reflect snapshot dedup: repeated or revised
+  `message` snapshots are always `forwarded: true`, because reconciling them
+  is deliberately the consumer's job past the transport layer —
+  `TurnTranslator`'s per‑message ledger decides what a revision re‑emits, and
+  that disposition is not stamped on transport frames. Use `ws:event` for
+  span pairing and replay accounting; subscribers needing content fidelity
+  must consume model output (or `TurnTranslator`), not transport frames.
 - Every `ws:*` event carries `reader` — a monotonic id for the
   `streamChatEvents` call (reader) behind the connection, allocated from one
   process‑wide counter so it stays unique across model and client instances.

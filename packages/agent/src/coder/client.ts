@@ -16,7 +16,11 @@ import {
   type UploadChatFileResponse,
 } from "./types.js";
 import { streamChatEvents, watchChatEvents, type WebSocketFactory } from "./ws.js";
-import { safeTransportEmitter, type TransportEventHandler } from "../transport-events.js";
+import {
+  type CoderClientOperation,
+  safeTransportEmitter,
+  type TransportEventHandler,
+} from "../transport-events.js";
 
 /** A file to upload as a chat attachment. */
 export interface ChatFileInput {
@@ -86,9 +90,12 @@ export class CoderChatClient {
   /**
    * Issue a request and return the raw `Response` on success (body unread). On a
    * non-2xx status the body is consumed to build a {@link CoderApiError}. Shared
-   * by JSON requests and the raw upload/download endpoints.
+   * by JSON requests and the raw upload/download endpoints. `op` names the
+   * public client method on the exchange's `http:*` events (issue #112) — the
+   * emit site is shared, so each call site threads its own literal.
    */
   async #send(
+    op: CoderClientOperation,
     method: string,
     path: string,
     opts?: { body?: BodyInit; headers?: Record<string, string>; signal?: AbortSignal },
@@ -112,7 +119,7 @@ export class CoderChatClient {
     if (emit) {
       requestId = ++this.#httpSeq;
       startedAt = performance.now();
-      emit({ type: "http:request", id: requestId, method, path, timestamp: Date.now() });
+      emit({ type: "http:request", id: requestId, op, method, path, timestamp: Date.now() });
     }
     let res: Response;
     try {
@@ -121,6 +128,7 @@ export class CoderChatClient {
       emit?.({
         type: "http:error",
         id: requestId,
+        op,
         method,
         path,
         message: err instanceof Error ? err.message : String(err),
@@ -132,6 +140,7 @@ export class CoderChatClient {
     emit?.({
       type: "http:response",
       id: requestId,
+      op,
       method,
       path,
       status: res.status,
@@ -164,12 +173,13 @@ export class CoderChatClient {
   }
 
   async #request<T>(
+    op: CoderClientOperation,
     method: string,
     path: string,
     body?: unknown,
     signal?: AbortSignal,
   ): Promise<T> {
-    const res = await this.#send(method, path, {
+    const res = await this.#send(op, method, path, {
       body: body === undefined ? undefined : JSON.stringify(body),
       headers: body === undefined ? undefined : { "Content-Type": "application/json" },
       signal,
@@ -181,6 +191,7 @@ export class CoderChatClient {
 
   listModelConfigs(signal?: AbortSignal): Promise<ChatModelConfig[]> {
     return this.#request<ChatModelConfig[]>(
+      "listModelConfigs",
       "GET",
       `${API_PREFIX}/model-configs`,
       undefined,
@@ -189,11 +200,11 @@ export class CoderChatClient {
   }
 
   createChat(req: CreateChatRequest, signal?: AbortSignal): Promise<Chat> {
-    return this.#request<Chat>("POST", API_PREFIX, req, signal);
+    return this.#request<Chat>("createChat", "POST", API_PREFIX, req, signal);
   }
 
   getChat(chatId: string, signal?: AbortSignal): Promise<Chat> {
-    return this.#request<Chat>("GET", `${API_PREFIX}/${chatId}`, undefined, signal);
+    return this.#request<Chat>("getChat", "GET", `${API_PREFIX}/${chatId}`, undefined, signal);
   }
 
   createChatMessage(
@@ -202,6 +213,7 @@ export class CoderChatClient {
     signal?: AbortSignal,
   ): Promise<CreateChatMessageResponse> {
     return this.#request<CreateChatMessageResponse>(
+      "createChatMessage",
       "POST",
       `${API_PREFIX}/${chatId}/messages`,
       req,
@@ -220,6 +232,7 @@ export class CoderChatClient {
     if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
     const q = params.toString();
     return this.#request<ChatMessagesResponse>(
+      "getMessages",
       "GET",
       `${API_PREFIX}/${chatId}/messages${q ? `?${q}` : ""}`,
       undefined,
@@ -232,7 +245,13 @@ export class CoderChatClient {
     req: SubmitToolResultsRequest,
     signal?: AbortSignal,
   ): Promise<void> {
-    return this.#request<void>("POST", `${API_PREFIX}/${chatId}/tool-results`, req, signal);
+    return this.#request<void>(
+      "submitToolResults",
+      "POST",
+      `${API_PREFIX}/${chatId}/tool-results`,
+      req,
+      signal,
+    );
   }
 
   /**
@@ -255,6 +274,7 @@ export class CoderChatClient {
     const opts = optsOrSignal instanceof AbortSignal ? { signal: optsOrSignal } : optsOrSignal;
     const query = opts?.wait ? "?wait=true" : "";
     return this.#request<Chat>(
+      "interruptChat",
       "POST",
       `${API_PREFIX}/${chatId}/interrupt${query}`,
       undefined,
@@ -263,12 +283,20 @@ export class CoderChatClient {
   }
 
   updateChat(chatId: string, req: UpdateChatRequest, signal?: AbortSignal): Promise<void> {
-    return this.#request<void>("PATCH", `${API_PREFIX}/${chatId}`, req, signal);
+    return this.#request<void>("updateChat", "PATCH", `${API_PREFIX}/${chatId}`, req, signal);
   }
 
   /** Convenience: archive a chat (soft-hide; safe for cleanup). */
   archiveChat(chatId: string, signal?: AbortSignal): Promise<void> {
-    return this.updateChat(chatId, { archived: true }, signal);
+    // Issues updateChat's PATCH directly so its `http:*` events carry its own
+    // `op` — the point of the stamp is the caller's intent, not the wire shape.
+    return this.#request<void>(
+      "archiveChat",
+      "PATCH",
+      `${API_PREFIX}/${chatId}`,
+      { archived: true } satisfies UpdateChatRequest,
+      signal,
+    );
   }
 
   // --- Files ----------------------------------------------------------------
@@ -322,6 +350,7 @@ export class CoderChatClient {
       headers["Content-Disposition"] = `attachment; filename="${ascii}"; filename*=UTF-8''${utf8}`;
     }
     const res = await this.#send(
+      "uploadChatFile",
       "POST",
       `${API_PREFIX}/files?organization=${encodeURIComponent(organizationId)}`,
       { body: resolved.body, headers, signal },
@@ -343,7 +372,9 @@ export class CoderChatClient {
     fileId: string,
     signal?: AbortSignal,
   ): Promise<{ bytes: Uint8Array; mediaType: string }> {
-    const res = await this.#send("GET", `${API_PREFIX}/files/${fileId}`, { signal });
+    const res = await this.#send("getChatFile", "GET", `${API_PREFIX}/files/${fileId}`, {
+      signal,
+    });
     const buf = await res.arrayBuffer();
     return {
       bytes: new Uint8Array(buf),
@@ -411,7 +442,16 @@ export class CoderChatClient {
     const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     if (UUID_RE.test(hint)) return hint;
 
-    const raw: unknown = await this.listModelConfigs(signal);
+    // Issues listModelConfigs' GET directly so the exchange's `http:*` events
+    // carry this method's own `op` — the stamp names the caller's intent
+    // (model resolution), not the wire shape it borrows.
+    const raw: unknown = await this.#request<ChatModelConfig[]>(
+      "resolveModelConfigId",
+      "GET",
+      `${API_PREFIX}/model-configs`,
+      undefined,
+      signal,
+    );
     const configs = (Array.isArray(raw) ? raw : []).filter(
       (c): c is ChatModelConfig => typeof c === "object" && c !== null,
     );

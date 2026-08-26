@@ -181,10 +181,12 @@ describe("transport events: HTTP", () => {
       Extract<CoderTransportEvent, { type: "http:response" }>,
     ];
     expect(req.method).toBe("GET");
+    expect(req.op).toBe("getChat");
     expect(req.path).toBe("/api/experimental/chats/c1");
     expect(req.timestamp).toBeTypeOf("number");
     expect(res.id).toBe(req.id);
     expect(res.method).toBe("GET");
+    expect(res.op).toBe("getChat");
     expect(res.path).toBe(req.path);
     expect(res.status).toBe(200);
     expect(res.ok).toBe(true);
@@ -220,8 +222,83 @@ describe("transport events: HTTP", () => {
 
     await expect(client.getChat("c1")).rejects.toThrow("fetch failed");
     expect(events.map((e) => e.type)).toEqual(["http:request", "http:error"]);
-    expect(events[1]).toMatchObject({ type: "http:error", message: "fetch failed" });
+    expect(events[1]).toMatchObject({ type: "http:error", message: "fetch failed", op: "getChat" });
     expect((events[1] as { id: number }).id).toBe((events[0] as { id: number }).id);
+  });
+
+  it("stamps op with the public client method name on every operation (#112)", async () => {
+    const events: CoderTransportEvent[] = [];
+    const fetchFn = ((url: string) => {
+      const { pathname } = new URL(url);
+      if (pathname.endsWith("/model-configs")) {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
+      }
+      if (pathname.endsWith("/files")) {
+        return Promise.resolve(new Response(JSON.stringify({ id: "f1" }), { status: 201 }));
+      }
+      if (pathname.endsWith("/files/f1")) {
+        return Promise.resolve(new Response(new Uint8Array([1]), { status: 200 }));
+      }
+      if (pathname.endsWith("/messages")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ messages: [], queued_messages: [], has_more: false }), {
+            status: 200,
+          }),
+        );
+      }
+      return Promise.resolve(new Response(JSON.stringify(chatStub("c1")), { status: 200 }));
+    }) as unknown as typeof globalThis.fetch;
+    const client = new CoderChatClient({
+      baseUrl: "https://x",
+      token: TOKEN,
+      fetch: fetchFn,
+      onTransportEvent: (ev) => void events.push(ev),
+    });
+
+    await client.listModelConfigs();
+    // Resolves via the same listing GET but stamps its own op (caller intent).
+    await client.resolveModelConfigId("some-model");
+    await client.createChat({} as never);
+    await client.getChat("c1");
+    await client.createChatMessage("c1", {} as never);
+    await client.getMessages("c1", { after_id: 1 });
+    await client.submitToolResults("c1", {} as never);
+    await client.interruptChat("c1");
+    await client.updateChat("c1", { archived: false });
+    await client.archiveChat("c1");
+    await client.uploadChatFile("o", { content: new Uint8Array([1]), mediaType: "text/plain" });
+    await client.getChatFile("f1");
+
+    const requests = events.filter((e) => e.type === "http:request") as Extract<
+      CoderTransportEvent,
+      { type: "http:request" }
+    >[];
+    expect(requests.map((e) => e.op)).toEqual([
+      "listModelConfigs",
+      "resolveModelConfigId",
+      "createChat",
+      "getChat",
+      "createChatMessage",
+      "getMessages",
+      "submitToolResults",
+      "interruptChat",
+      "updateChat",
+      "archiveChat",
+      "uploadChatFile",
+      "getChatFile",
+    ]);
+    // Each response carries the same op (and correlation id) as its request.
+    const responses = events.filter((e) => e.type === "http:response") as Extract<
+      CoderTransportEvent,
+      { type: "http:response" }
+    >[];
+    expect(responses.map((e) => e.op)).toEqual(requests.map((e) => e.op));
+    expect(responses.map((e) => e.id)).toEqual(requests.map((e) => e.id));
+    // archiveChat shares updateChat's wire shape but stamps its own op —
+    // method/path stay for generic consumers, op names the caller's intent.
+    const archive = requests.find((e) => e.op === "archiveChat");
+    expect(archive?.method).toBe("PATCH");
+    expect(archive?.path).toBe("/api/experimental/chats/c1");
   });
 
   it("increments the correlation id across requests on the same client", async () => {
@@ -417,6 +494,62 @@ describe("transport events: turn lifecycle (real reader)", () => {
       );
       expect(attempt2Deltas).toHaveLength(1);
       // The turn itself emitted "Hello" exactly once.
+      const text = s.parts
+        .filter((p) => p.type === "text-delta")
+        .map((p) => p.delta)
+        .join("");
+      expect(text).toBe("Hello");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stamps forwarded=false exactly on the replayed deltas the reader suppresses (#111)", async () => {
+    vi.useFakeTimers();
+    try {
+      const { events, model, sockets } = harness();
+      const s = collect((await model.doStream(newTurnOptions())).stream);
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("message", streamFrame(status("running"), delta(1, 1, "Hel")));
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.emit("close", { code: 1006 });
+      await vi.advanceTimersByTimeAsync(1000);
+      // The redial replays the in-progress episode from seq 1, then commits
+      // the message and re-sends the snapshot byte-identically (chatd re-sends
+      // full snapshots on revision bumps even without a reconnect).
+      sockets[1]?.emit(
+        "message",
+        streamFrame(
+          status("running"),
+          delta(1, 1, "Hel"),
+          delta(1, 2, "lo"),
+          msg(2, "assistant", [{ type: "text", text: "Hello" }]),
+          msg(2, "assistant", [{ type: "text", text: "Hello" }]),
+          status("waiting"),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      await s.done;
+
+      const wsEvents = events.filter((e) => e.type === "ws:event") as Extract<
+        CoderTransportEvent,
+        { type: "ws:event" }
+      >[];
+      // Only the replayed already-yielded delta is suppressed. Statuses and
+      // message snapshots — even repeated ones — are always forwarded:
+      // snapshot dedup is the consumer's job (TurnTranslator's ledger), past
+      // the transport layer.
+      expect(wsEvents.map((e) => [e.attempt, e.event.type, e.forwarded])).toEqual([
+        [1, "status", true],
+        [1, "message_part", true],
+        [2, "status", true],
+        [2, "message_part", false],
+        [2, "message_part", true],
+        [2, "message", true],
+        [2, "message", true],
+        [2, "status", true],
+      ]);
+      // The suppressed replay never reached the turn: "Hello" exactly once.
       const text = s.parts
         .filter((p) => p.type === "text-delta")
         .map((p) => p.delta)

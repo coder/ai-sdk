@@ -63,6 +63,7 @@ export {
 } from "./coder/ws.js";
 export { CoderAgentError, CoderApiError, CoderChatError, CoderStreamError } from "./errors.js";
 export type {
+  CoderClientOperation,
   CoderTransportEvent,
   HttpErrorTransportEvent,
   HttpRequestTransportEvent,

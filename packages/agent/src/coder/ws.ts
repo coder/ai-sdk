@@ -128,7 +128,10 @@ const TRANSIENT_UPGRADE_STATUSES: ReadonlySet<number> = new Set([408, 425, 429])
  * in-progress generation attempt's `message_part` deltas from `seq` 1, so
  * parts of an episode
  * (`history_version`, `generation_attempt`) at or below the last yielded `seq`
- * are suppressed here rather than double-yielded. The iteration ends in five
+ * are suppressed here rather than double-yielded. That episode filter runs at
+ * frame arrival (not at consumption), so each frame's `ws:event` can carry
+ * the reader's own verdict as `forwarded` (issue #111) while `timestamp`
+ * keeps meaning arrival time. The iteration ends in five
  * ways: `signal` aborting (clean return), a non-transient 4xx upgrade
  * rejection (terminal {@link CoderApiError} — bad/expired token or a deleted
  * chat cannot succeed on retry, while 408/425/429 consume the redial budget),
@@ -298,6 +301,88 @@ async function* streamChatEventsLoop(
       }
     }
 
+    // Applies the reader's replay dedup to one decoded frame at ARRIVAL: it
+    // updates the episode/progress ledgers, emits the frame's `ws:event`
+    // stamped with the verdict (`forwarded`, issue #111), and enqueues only
+    // forwarded frames for the consumption path below. Running the filter here
+    // instead of at consumption keeps the stamp truthful without splitting the
+    // state machine in two, and is behaviorally equivalent: the queue is
+    // drained in arrival order before any redial decision reads the ledgers,
+    // so they advance through the same frame sequence either way. `timestamp`
+    // keeps meaning arrival time, and the verdict is computed per-frame
+    // subscriber or not, so the no-subscriber path stays allocation-free.
+    const ingest = (next: ChatStreamEvent): void => {
+      // Only forward progress resets the redial budget: a new delta or a
+      // newly committed message. Replays (chatd re-sends a `status` and the
+      // in-progress episode on every reconnect) don't count — otherwise a
+      // half-dead connection that connects, replays, and drops would reset
+      // the budget each round and redial forever.
+      let progress = false;
+      let forwarded = true;
+      if (next.type === "message_part") {
+        const mp = next.message_part;
+        const hv = mp?.history_version;
+        const ga = mp?.generation_attempt;
+        const seq = mp?.seq;
+        if (hv !== undefined && ga !== undefined && seq !== undefined) {
+          if (
+            hv === lastHistoryVersion &&
+            ga === lastGenerationAttempt &&
+            lastSeq !== undefined &&
+            seq <= lastSeq
+          ) {
+            // An already-yielded delta, replayed after a redial: suppressed
+            // from the consumption path (never enqueued below).
+            forwarded = false;
+          } else {
+            lastHistoryVersion = hv;
+            lastGenerationAttempt = ga;
+            lastSeq = seq;
+            progress = true;
+          }
+        } else {
+          // No episode coordinates: cannot be deduped on replay, so it
+          // must not count as progress and disables redial (see below).
+          sawUntrackableDelta = true;
+        }
+      } else if (next.type === "message" && next.message) {
+        // A message not seen in this exact form before — a new commit or
+        // a same-id revision — is forward progress; a byte-identical
+        // replay is not. Either way the snapshot is forwarded: snapshot
+        // dedup is the consumer's job (the wire contract re-sends full
+        // snapshots on revision bumps even without a reconnect).
+        const serialized = JSON.stringify(next.message);
+        if (lastMessageJson.get(next.message.id) !== serialized) {
+          lastMessageJson.set(next.message.id, serialized);
+          progress = true;
+        }
+        if (maxCommittedId === undefined || next.message.id > maxCommittedId) {
+          maxCommittedId = next.message.id;
+          // This commit finalizes the in-progress deltas: their content
+          // now lives in committed snapshots, which consumers dedupe, so
+          // a replay can no longer duplicate coordinate-less deltas.
+          sawUntrackableDelta = false;
+        }
+      }
+      if (progress) {
+        failures = 0;
+        backoffMs = STREAM_BACKOFF_INITIAL_MS;
+      }
+      // Observed at arrival — a redial's replayed episode is visible to
+      // subscribers, with the duplicates the reader suppresses marked
+      // `forwarded: false`.
+      emit?.({
+        type: "ws:event",
+        chatId,
+        reader,
+        attempt,
+        event: next,
+        forwarded,
+        timestamp: Date.now(),
+      });
+      if (forwarded) queue.push(next);
+    };
+
     const onMessage = (ev: { data: unknown }): void => {
       if (finished) return;
       let batch: unknown;
@@ -320,30 +405,9 @@ async function* streamChatEventsLoop(
         return;
       }
       if (Array.isArray(batch)) {
-        for (const e of batch) {
-          queue.push(e as ChatStreamEvent);
-          // Observed at arrival, BEFORE replay dedup — a redial's replayed
-          // episode is visible to subscribers even though the reader
-          // suppresses the duplicates it forwards.
-          emit?.({
-            type: "ws:event",
-            chatId,
-            reader,
-            attempt,
-            event: e as ChatStreamEvent,
-            timestamp: Date.now(),
-          });
-        }
+        for (const e of batch) ingest(e as ChatStreamEvent);
       } else if (batch && typeof batch === "object") {
-        queue.push(batch as ChatStreamEvent);
-        emit?.({
-          type: "ws:event",
-          chatId,
-          reader,
-          attempt,
-          event: batch as ChatStreamEvent,
-          timestamp: Date.now(),
-        });
+        ingest(batch as ChatStreamEvent);
       }
       wake();
     };
@@ -395,58 +459,9 @@ async function* streamChatEventsLoop(
     try {
       while (true) {
         while (queue.length > 0) {
-          const next = queue.shift() as ChatStreamEvent;
-          // Only forward progress resets the redial budget: a new delta or a
-          // newly committed message. Replays (chatd re-sends a `status` and the
-          // in-progress episode on every reconnect) don't count — otherwise a
-          // half-dead connection that connects, replays, and drops would reset
-          // the budget each round and redial forever.
-          let progress = false;
-          if (next.type === "message_part") {
-            const mp = next.message_part;
-            const hv = mp?.history_version;
-            const ga = mp?.generation_attempt;
-            const seq = mp?.seq;
-            if (hv !== undefined && ga !== undefined && seq !== undefined) {
-              if (
-                hv === lastHistoryVersion &&
-                ga === lastGenerationAttempt &&
-                lastSeq !== undefined &&
-                seq <= lastSeq
-              ) {
-                continue; // an already-yielded delta, replayed after a redial
-              }
-              lastHistoryVersion = hv;
-              lastGenerationAttempt = ga;
-              lastSeq = seq;
-              progress = true;
-            } else {
-              // No episode coordinates: cannot be deduped on replay, so it
-              // must not count as progress and disables redial (see below).
-              sawUntrackableDelta = true;
-            }
-          } else if (next.type === "message" && next.message) {
-            // A message not seen in this exact form before — a new commit or
-            // a same-id revision — is forward progress; a byte-identical
-            // replay is not.
-            const serialized = JSON.stringify(next.message);
-            if (lastMessageJson.get(next.message.id) !== serialized) {
-              lastMessageJson.set(next.message.id, serialized);
-              progress = true;
-            }
-            if (maxCommittedId === undefined || next.message.id > maxCommittedId) {
-              maxCommittedId = next.message.id;
-              // This commit finalizes the in-progress deltas: their content
-              // now lives in committed snapshots, which consumers dedupe, so
-              // a replay can no longer duplicate coordinate-less deltas.
-              sawUntrackableDelta = false;
-            }
-          }
-          if (progress) {
-            failures = 0;
-            backoffMs = STREAM_BACKOFF_INITIAL_MS;
-          }
-          yield next;
+          // Frames were replay-filtered and progress-credited at arrival (see
+          // `ingest` above); the consumption path only hands them over.
+          yield queue.shift() as ChatStreamEvent;
         }
         if (finished) break;
         await new Promise<void>((resolve) => {

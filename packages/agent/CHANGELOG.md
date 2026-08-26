@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.8.0](https://github.com/coder/ai-sdk/compare/agent-v0.7.2...agent-v0.8.0) (2026-08-26)
+
+The agent now falls back to the CODER_URL and CODER_SESSION_TOKEN environment variables for its default connection settings, simplifying configuration in environments where those variables are already present.
+
+### Highlights
+
+- Connection settings now default to the CODER_URL and CODER_SESSION_TOKEN environment variables when not explicitly provided. ([#109](https://github.com/coder/ai-sdk/pull/109))
+
+### Features
+
+* **agent:** default connection settings from CODER_URL / CODER_SESSION_TOKEN ([#109](https://github.com/coder/ai-sdk/issues/109)) ([2e4748c](https://github.com/coder/ai-sdk/commit/2e4748c1b0d6cb46acb46ed991e8cf10f805389d))
+
 ## [0.7.2](https://github.com/coder/ai-sdk/compare/agent-v0.7.1...agent-v0.7.2) (2026-08-25)
 
 A maintenance release for the agent package with no user-facing changes.

@@ -196,6 +196,15 @@ Pass a Coder **API token** or **session token** as `token`; it is sent as the
 `Coder-Session-Token` header (REST) and used to authenticate the streaming WebSocket. Create
 a token with `coder tokens create`, or reuse your CLI session.
 
+When `baseUrl`/`token` are not passed, they default from the `CODER_URL` and
+`CODER_SESSION_TOKEN` environment variables (the same convention as
+`@coder/ai-sdk-sandbox`'s transports); explicit settings win over the
+environment. With the variables set, connection config disappears entirely:
+
+```ts
+const agent = new CoderAgent({ organizationId }); // uses CODER_URL + CODER_SESSION_TOKEN
+```
+
 You can also pass a pre‑built client:
 
 ```ts
@@ -675,7 +684,8 @@ Coder servers — no experimental endpoints.
   named "80" and never resolve; serve the preview on a higher port.
 
 The preview helpers call non‑chat endpoints, so they need `baseUrl` + `token`
-credentials — pass them alongside `client` if you construct one yourself.
+credentials — pass them alongside `client` if you construct one yourself (or
+let them default from `CODER_URL`/`CODER_SESSION_TOKEN`).
 
 ## Workspaces & quota
 
@@ -835,7 +845,7 @@ sequence pinpoints _where_ a turn died:
 
 | field                             | description                                                                                      |
 | --------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `client` \| (`baseUrl` + `token`) | connection (one or the other)                                                                    |
+| `client` \| (`baseUrl` + `token`) | connection (one or the other; `baseUrl`/`token` default from `CODER_URL`/`CODER_SESSION_TOKEN`)  |
 | `organizationId`                  | org UUID that owns the chat (required)                                                           |
 | `model`                           | model hint: UUID, `provider:model`, model id, or display‑name substring                          |
 | `instructions`                    | system prompt                                                                                    |

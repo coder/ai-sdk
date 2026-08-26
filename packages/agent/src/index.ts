@@ -46,7 +46,7 @@ export {
   resolveFileContent,
 } from "./files.js";
 export type { WorkspaceFileStore, WorkspacePlacement } from "./workspace-files.js";
-export { TurnTranslator } from "./model/translate.js";
+export { TurnTranslator, type TurnTranslatorOptions } from "./model/translate.js";
 export { chatMessagesToUIMessages, type ChatMessagesToUIMessagesOptions } from "./model/history.js";
 export {
   classifyTurnAction,

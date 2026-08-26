@@ -119,6 +119,94 @@ function joinContent(content: readonly ChatMessagePart[], kind: "text" | "reason
 }
 
 /**
+ * Canonical JSON of a decoded wire value: object keys sorted recursively, so
+ * two decodings of the same server-side content compare equal regardless of
+ * property order. Inputs are parsed JSON (plain objects/arrays/primitives —
+ * never `undefined`, functions, or cycles), which keeps this total.
+ */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value);
+    entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    const body = entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`);
+    return `{${body.join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+/**
+ * The attribution gate for a QUEUED submission (issue #114): the chat was
+ * busy, so `createChatMessage` returned only a queue entry — no committed
+ * message id — and everything on the stream between the pre-turn cursor and
+ * the entry's materialization belongs to the chat's CURRENT (concurrent or
+ * dying) run. While the gate is up, {@link TurnTranslator.ingest} attributes
+ * NOTHING to this turn; it only scans for the turn's own user-message
+ * snapshot, whose id then becomes the effective turn cursor.
+ *
+ * Correlation protocol (chatd has no wire-level queue-entry ↔ message id
+ * link; the queue is strictly FIFO and both the queue entry and the
+ * materialized message expose the same server-side content encoding):
+ * - a `message` snapshot with role `user`, id past the cursor, and content
+ *   structurally equal to the queue entry's becomes the CANDIDATE anchor;
+ * - the `queue_update` that chatd emits after every queue change confirms
+ *   it: our entry gone from the full queue list ⇒ the candidate is our
+ *   materialization (anchor there); our entry still listed ⇒ the candidate
+ *   was an EARLIER identical-content entry's materialization (drop it and
+ *   keep waiting). Message snapshots that arrive between candidate and
+ *   confirmation (a reconnect replays this turn's own commits before the
+ *   connect-time `queue_update`) are buffered and replayed on anchor;
+ * - without a queue-entry id to confirm against (older wire shapes), the
+ *   first matching user message anchors directly.
+ *
+ * Dead ends fail fast instead of hanging until timeout: chatd does NOT
+ * auto-promote the queue after an error settle, so an `error` event while
+ * gated means the entry is stuck behind a dead chat; our entry vanishing from
+ * `queue_update` without a candidate means it was deleted externally (or its
+ * materialized form could not be correlated). Residual ambiguity — identical
+ * concurrent submissions promoted within one replay window — needs a wire
+ * correlation from chatd and is tracked as a follow-up.
+ */
+interface QueuedSubmissionGate {
+  /** The queue-entry id from the submission response, when the wire sent one. */
+  queuedId: number | undefined;
+  /** Canonical content of the queue entry; undefined matches any user message. */
+  expected: string | undefined;
+  /** Latest matching user-message id awaiting `queue_update` confirmation. */
+  candidateId: number | undefined;
+  /** Message snapshots since the candidate, replayed through ingest on anchor. */
+  buffered: ChatMessage[];
+  /** Set when the wait can never complete; the model surfaces it as a throw. */
+  deadEnd: ChatErrorPayload | undefined;
+}
+
+/** Constructor options for {@link TurnTranslator}. */
+export interface TurnTranslatorOptions {
+  dynamicToolNames: ReadonlySet<string>;
+  turnCursor?: number;
+  /**
+   * Tool-call ids whose results the session already submitted. With the
+   * stream retained across segments (and redialed with the turn's original
+   * cursor), a reconnect can replay a previous segment's `action_required`
+   * snapshot; re-emitting an already-answered call would make the AI SDK
+   * execute the tool a second time. A live reference — the set grows as
+   * later segments submit results.
+   */
+  submittedToolCallIds?: ReadonlySet<string>;
+  /**
+   * Present when the submission was QUEUED (`CreateChatMessageResponse`
+   * carried no committed `message`): `turnCursor` is then only the PRE-TURN
+   * cursor, and attribution is withheld until the queue entry materializes as
+   * this turn's own user message — see {@link QueuedSubmissionGate} for the
+   * correlation protocol. `id`/`content` come from the response's
+   * `queued_message`; either may be absent on unexpected wire shapes, which
+   * degrades matching (no confirmation / match-any) but never widens
+   * attribution beyond the first observed user message.
+   */
+  queuedSubmission?: { id?: number; content?: readonly ChatMessagePart[] };
+}
+
+/**
  * Translates one chatd turn's {@link ChatStreamEvent} stream into a sequence of
  * `LanguageModelV4StreamPart`s for the AI SDK.
  *
@@ -138,6 +226,11 @@ function joinContent(content: readonly ChatMessagePart[], kind: "text" | "reason
  * Client (custom) tool calls are emitted from the reliable `action_required`
  * event and left for the AI SDK to execute. chatd's own server-side tools are
  * surfaced best-effort as `providerExecuted` tool calls/results.
+ *
+ * A QUEUED submission additionally starts behind an attribution gate: until
+ * the queue entry materializes as this turn's own user message, every event
+ * belongs to the chat's concurrent run and is withheld (see
+ * {@link QueuedSubmissionGate} and {@link TurnTranslatorOptions.queuedSubmission}).
  */
 export class TurnTranslator {
   readonly #dynamicToolNames: ReadonlySet<string>;
@@ -196,26 +289,32 @@ export class TurnTranslator {
    * to a segment that already streamed) — they arrive only as replays: the
    * initial sync when resuming a chat, or a mid-turn `history_reset` re-send
    * of the full history. Ingest skips them entirely so a replay can neither
-   * re-emit earlier turns' content nor inflate this turn's usage.
+   * re-emit earlier turns' content nor inflate this turn's usage. Mutable for
+   * exactly one transition: a QUEUED submission starts at the pre-turn cursor
+   * and advances to the materialized user message's id when the gate anchors
+   * (see {@link QueuedSubmissionGate}) — replayed pre-anchor tail messages
+   * then stay filtered on every redial, which reuses the turn's ORIGINAL
+   * `after_id` and therefore re-delivers them.
    */
-  readonly #turnCursor: number;
+  #turnCursor: number;
 
-  constructor(opts: {
-    dynamicToolNames: ReadonlySet<string>;
-    turnCursor?: number;
-    /**
-     * Tool-call ids whose results the session already submitted. With the
-     * stream retained across segments (and redialed with the turn's original
-     * cursor), a reconnect can replay a previous segment's `action_required`
-     * snapshot; re-emitting an already-answered call would make the AI SDK
-     * execute the tool a second time. A live reference — the set grows as
-     * later segments submit results.
-     */
-    submittedToolCallIds?: ReadonlySet<string>;
-  }) {
+  /** The queued-submission attribution gate; undefined once anchored (#114). */
+  #queuedGate: QueuedSubmissionGate | undefined;
+
+  constructor(opts: TurnTranslatorOptions) {
     this.#dynamicToolNames = opts.dynamicToolNames;
     this.#turnCursor = opts.turnCursor ?? 0;
     this.#submittedToolCallIds = opts.submittedToolCallIds ?? new Set();
+    const queued = opts.queuedSubmission;
+    if (queued) {
+      this.#queuedGate = {
+        queuedId: queued.id,
+        expected: queued.content !== undefined ? canonicalJson(queued.content) : undefined,
+        candidateId: undefined,
+        buffered: [],
+        deadEnd: undefined,
+      };
+    }
   }
 
   get terminalStatus(): ChatStatus | undefined {
@@ -230,6 +329,32 @@ export class TurnTranslator {
   }
   get error(): ChatErrorPayload | undefined {
     return this.#error;
+  }
+  /**
+   * The turn's EFFECTIVE attribution cursor: the constructor's `turnCursor`
+   * until a queued submission anchors, the materialized user message's id
+   * after. Distinct from the stream's redial cursor, which deliberately stays
+   * the turn's original `after_id` (see `streamChatEvents`).
+   */
+  get turnCursor(): number {
+    return this.#turnCursor;
+  }
+  /**
+   * Whether a queued submission is still awaiting its own user-message
+   * snapshot (#114). While true, nothing is attributed to this turn — no
+   * content, usage, tool calls, or settle statuses — because the stream
+   * window still belongs to the chat's concurrent run.
+   */
+  get awaitingQueuedSubmission(): boolean {
+    return this.#queuedGate !== undefined;
+  }
+  /**
+   * Set when a queued submission's wait can never complete (see
+   * {@link QueuedSubmissionGate}); the model layer throws it so the turn
+   * fails fast instead of hanging until timeout/abort.
+   */
+  get queuedSubmissionDeadEnd(): ChatErrorPayload | undefined {
+    return this.#queuedGate?.deadEnd;
   }
 
   // --- block helpers --------------------------------------------------------
@@ -405,6 +530,8 @@ export class TurnTranslator {
   // --- ingest ---------------------------------------------------------------
 
   ingest(ev: ChatStreamEvent): LanguageModelV4StreamPart[] {
+    const gate = this.#queuedGate;
+    if (gate) return this.#ingestGated(gate, ev);
     const out: LanguageModelV4StreamPart[] = [];
     switch (ev.type) {
       case "message_part":
@@ -472,6 +599,123 @@ export class TurnTranslator {
         break; // retry / queue_update / preview_reset / history_reset
     }
     return out;
+  }
+
+  /**
+   * Ingest while the queued-submission gate is up (#114): the stream window
+   * still belongs to the chat's concurrent run, so nothing is attributed —
+   * this only advances cursor bookkeeping, runs the anchor correlation
+   * protocol (see {@link QueuedSubmissionGate}), and detects dead ends.
+   * Returns parts only at the anchoring transition, when buffered snapshots
+   * of this turn's own already-committed messages are replayed through the
+   * normal path.
+   */
+  #ingestGated(gate: QueuedSubmissionGate, ev: ChatStreamEvent): LanguageModelV4StreamPart[] {
+    switch (ev.type) {
+      case "message": {
+        const message = ev.message;
+        if (!message) break;
+        // Cursor bookkeeping stays live while gated: these are committed
+        // messages the session has observed, and the NEXT turn's boundary
+        // must advance past them whether or not this turn ever anchors.
+        if (message.id > this.#maxMessageId) this.#maxMessageId = message.id;
+        if (message.id <= this.#turnCursor) break; // pre-turn replay
+        if (message.role === "user" && this.#matchesQueuedContent(gate, message)) {
+          // Without a queue-entry id there is nothing to confirm against
+          // (older wire shapes): anchor on the first match directly.
+          if (gate.queuedId === undefined) return this.#anchorQueuedTurn(message.id);
+          // Candidate — the LATEST match before confirmation wins: on a
+          // reconnect replay, an identical-content entry queued AHEAD of
+          // ours materialized first, and its user message replays before
+          // ours does. Messages buffered for a superseded candidate belonged
+          // to that earlier entry's run; drop them with it.
+          gate.candidateId = message.id;
+          gate.buffered = [];
+        } else if (gate.candidateId !== undefined) {
+          // Between candidate and confirmation only message snapshots can
+          // arrive (chatd flushes commits before the queue update): they are
+          // this turn's own already-committed messages when the candidate is
+          // right, and the superseded run's when it is not — buffer them and
+          // let the confirmation decide.
+          gate.buffered.push(message);
+        }
+        break;
+      }
+      case "queue_update": {
+        if (gate.queuedId === undefined) break;
+        // A `queue_update` always carries the FULL queue, but the wire field
+        // is `omitempty`: an EMPTY queue arrives with `queued_messages`
+        // absent — the very shape the common single-entry promotion produces.
+        // Absent therefore means empty, not "no information".
+        const queue = ev.queued_messages ?? [];
+        if (queue.some((entry) => entry.id === gate.queuedId)) {
+          // Our entry is still queued, so any candidate materialized from an
+          // EARLIER identical-content entry — not ours. Keep waiting.
+          gate.candidateId = undefined;
+          gate.buffered = [];
+          break;
+        }
+        if (gate.candidateId !== undefined) {
+          const buffered = gate.buffered;
+          const out = this.#anchorQueuedTurn(gate.candidateId);
+          for (const message of buffered) this.#ingestMessage(out, message);
+          return out;
+        }
+        // Gone from the queue, yet no user message matched: deleted
+        // externally, or the materialized form could not be correlated.
+        // Either way this turn's window will never open — fail fast.
+        gate.deadEnd = {
+          message:
+            "The queued submission left the chat's queue without materializing as this turn's user message (deleted externally, or its materialized form could not be correlated); this turn never started.",
+          kind: "queued_submission_lost",
+          retryable: false,
+        };
+        break;
+      }
+      case "error": {
+        if (!ev.error) break;
+        // The chat's CURRENT run failed while our entry sat in the queue.
+        // chatd does not auto-promote the queue after an error settle — the
+        // entry is stuck until an explicit user action — so waiting on the
+        // stream can never complete. Fail fast, attributing the failure to
+        // the wait rather than absorbing the other run's error as this
+        // turn's own settle. Non-retryable: a resubmission to the errored
+        // chat would promote the stuck entry AND queue a duplicate.
+        gate.deadEnd = {
+          message:
+            "The chat's active run failed while this turn's submission was queued behind it; the queued message never materialized, so this turn never started.",
+          detail: ev.error.detail ? `${ev.error.message}: ${ev.error.detail}` : ev.error.message,
+          kind: "queued_submission_lost",
+          retryable: false,
+        };
+        break;
+      }
+      default:
+        // Deltas, statuses (chatd promotes the queue atomically with the
+        // previous run's finish, so no terminal status separates the runs),
+        // action_required (the PREVIOUS turn's pending calls — attributing
+        // them would make the AI SDK execute another turn's tools), retries:
+        // all the concurrent run's, all withheld.
+        break;
+    }
+    return [];
+  }
+
+  /** Whether a user-message snapshot's content matches the queued entry's. */
+  #matchesQueuedContent(gate: QueuedSubmissionGate, message: ChatMessage): boolean {
+    if (gate.expected === undefined) return true;
+    return canonicalJson(message.content ?? []) === gate.expected;
+  }
+
+  /**
+   * Opens the turn's attribution window at `anchorId` — this turn's own user
+   * message — and drops the gate. Replays of the pre-anchor tail (redials
+   * reuse the turn's ORIGINAL cursor) stay filtered by the advanced cursor.
+   */
+  #anchorQueuedTurn(anchorId: number): LanguageModelV4StreamPart[] {
+    this.#turnCursor = anchorId;
+    this.#queuedGate = undefined;
+    return [];
   }
 
   #ingestMessagePart(out: LanguageModelV4StreamPart[], ev: ChatStreamEvent): void {

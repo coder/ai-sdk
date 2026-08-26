@@ -48,6 +48,7 @@ export type CoderClientOperation =
   | "getMessages"
   | "submitToolResults"
   | "interruptChat"
+  | "deleteQueuedMessage"
   | "updateChat"
   | "archiveChat"
   | "uploadChatFile"

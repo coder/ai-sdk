@@ -61,7 +61,7 @@
   },
   "devDependencies": {
     "@ai-sdk/react": "4.0.82",
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.3.0",
     "@types/ws": "^8.18.1",
     "ai": "^7.0.79",
     "tsup": "^8.5.1",

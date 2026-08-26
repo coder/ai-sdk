@@ -16,11 +16,11 @@
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.42",
     "ai": "^7.0.79",
-    "release-please": "~17.11.1",
+    "release-please": "~17.11.2",
     "zod": "4.4.3"
   },
   "devDependencies": {
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.3.0",
     "tsx": "^4.23.12",
     "typescript": "^6.0.3",
     "vitest": "^4.1.11"

@@ -492,6 +492,7 @@ async function* streamChatEventsLoop(
           "chat stream dropped mid-turn and cannot be resumed: this server does not stamp deltas with history_version/generation_attempt/seq, so a redial would replay them",
         url,
         cause: failure,
+        chatId,
       });
     }
     if (failure) lastFailure = failure;
@@ -504,6 +505,7 @@ async function* streamChatEventsLoop(
         message: `Coder chat stream ${path} could not be (re-)established after ${failures} consecutive connection failures without progress`,
         url,
         cause: lastFailure,
+        chatId,
       });
     }
     emit?.({

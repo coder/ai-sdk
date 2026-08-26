@@ -50,7 +50,22 @@ export class CoderApiError extends CoderAgentError {
  */
 export class CoderStreamError extends APICallError {
   override name = "CoderStreamError";
-  constructor(args: { message: string; url: string; cause?: unknown; isRetryable?: boolean }) {
+  /**
+   * The chatd chat id the failed turn had created or attached to, when known.
+   * A fresh-chat stream failure discards the session so a retry starts on a
+   * fresh chat (`CoderAgent.chatId` becomes `undefined`), but the failed chat
+   * still exists server-side — this field names it so callers can clean it up
+   * (`CoderAgent.archive()` also retains it as the last-known cleanup target).
+   * `undefined` when the failure happened before any chat existed.
+   */
+  readonly chatId: string | undefined;
+  constructor(args: {
+    message: string;
+    url: string;
+    cause?: unknown;
+    isRetryable?: boolean;
+    chatId?: string;
+  }) {
     super({
       message: args.message,
       url: args.url,
@@ -62,6 +77,7 @@ export class CoderStreamError extends APICallError {
       isRetryable: args.isRetryable ?? true,
       cause: args.cause,
     });
+    this.chatId = args.chatId;
   }
 }
 

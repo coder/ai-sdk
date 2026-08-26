@@ -173,6 +173,14 @@ export class CoderLanguageModel implements LanguageModelV4 {
 
   readonly #config: CoderLanguageModelConfig;
   #chatId: string | undefined;
+  /**
+   * The last chat id this model created or attached to, retained as a CLEANUP
+   * target — see {@link lastKnownChatId}. Unlike `#chatId` it survives
+   * {@link resetSession}, and is only replaced when a later turn's chat
+   * supersedes it or cleared by {@link clearLastKnownChatId} once cleanup
+   * actually succeeded against it.
+   */
+  #lastKnownChatId: string | undefined;
   #lastSeenMessageId = 0;
   #resolvedModelConfigId: string | undefined;
   #modelResolved = false;
@@ -190,6 +198,7 @@ export class CoderLanguageModel implements LanguageModelV4 {
     this.#config = config;
     this.modelId = config.model ?? "chatd";
     this.#chatId = config.chatId;
+    this.#lastKnownChatId = config.chatId;
     this.#emitTransportEvent = safeTransportEmitter(config.onTransportEvent);
   }
 
@@ -198,9 +207,36 @@ export class CoderLanguageModel implements LanguageModelV4 {
   }
 
   /**
+   * The last chat id this model created or attached to, for CLEANUP targeting
+   * only — generation always targets {@link chatId}. It survives
+   * {@link resetSession} (including the automatic session discard after a
+   * fresh-chat stream failure, which clears {@link chatId} so a retry starts
+   * fresh while the failed chat still exists server-side), is superseded when
+   * a later turn creates or attaches to another chat, and is cleared via
+   * {@link clearLastKnownChatId} once cleanup actually succeeded against it.
+   */
+  get lastKnownChatId(): string | undefined {
+    return this.#lastKnownChatId;
+  }
+
+  /**
+   * Forgets `chatId` as the last-known cleanup target — call it only after
+   * cleanup actually succeeded against that chat (e.g. `CoderAgent.archive()`
+   * archived it), so later cleanup calls don't re-target an already-archived
+   * chat. Guarded on a match: a stale completion must not erase a newer
+   * chat's id. The session field ({@link chatId}) is deliberately untouched —
+   * archiving does not reset the session.
+   */
+  clearLastKnownChatId(chatId: string): void {
+    if (this.#lastKnownChatId === chatId) this.#lastKnownChatId = undefined;
+  }
+
+  /**
    * Drops the current session so the next turn creates a fresh chat. Also
    * closes the retained event stream, if any (fire-and-forget — a sync reset
    * must not wait on socket teardown, and `close()` never rejects).
+   * {@link lastKnownChatId} deliberately survives the reset: the dropped chat
+   * still exists server-side and cleanup must still be able to target it.
    */
   resetSession(): void {
     this.#chatId = undefined;
@@ -715,6 +751,10 @@ export class CoderLanguageModel implements LanguageModelV4 {
 
       const chatId = this.#chatId as string;
       turnChatId = chatId;
+      // The cleanup target outlives the session: a stream failure below can
+      // discard the session (resetSession), but the chat persists server-side
+      // and archive()/interrupt() must still be able to name it.
+      this.#lastKnownChatId = chatId;
       if (segmentChat) segmentChat.chatId = chatId;
       // Only messages past the turn's starting cursor belong to this turn —
       // resuming a chat replays earlier turns' messages (usage included), and
@@ -947,6 +987,9 @@ export class CoderLanguageModel implements LanguageModelV4 {
             url: err.url,
             cause: err,
             isRetryable: false,
+            // The reader stamps the id it streamed; fall back to the turn's
+            // own id for CoderStreamErrors from custom stream sources.
+            chatId: err.chatId ?? turnChatId,
           });
         }
         if (

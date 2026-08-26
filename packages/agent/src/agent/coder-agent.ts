@@ -307,9 +307,12 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
     // Resolved once, up front, so every consumer of the settings credentials
     // (the client bootstrap below and the preview helpers' REST connection)
     // sees the same values. Explicit settings win over the environment,
-    // matching the sandbox transports' convention.
-    const baseUrl = settings.baseUrl ?? process.env.CODER_URL;
-    const token = settings.token ?? process.env.CODER_SESSION_TOKEN;
+    // matching the sandbox transports' convention. `process` is missing in
+    // browser bundles (the injected-`webSocketFactory` path), so reach it via
+    // `globalThis` — client-only construction must not throw a ReferenceError.
+    const env = globalThis.process?.env;
+    const baseUrl = settings.baseUrl ?? env?.CODER_URL;
+    const token = settings.token ?? env?.CODER_SESSION_TOKEN;
 
     if (settings.client) {
       this.#client = settings.client;

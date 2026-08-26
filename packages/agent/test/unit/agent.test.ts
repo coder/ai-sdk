@@ -2810,6 +2810,21 @@ describe("CoderAgent connection env defaults", () => {
     expect(() => new CoderAgent({ organizationId: "org-1" })).toThrow(CoderAgentError);
   });
 
+  it("client-only construction survives environments without `process`", () => {
+    // Browser bundles have no `process` global; the env lookup must not turn
+    // the documented client-only form into a ReferenceError.
+    vi.stubGlobal("process", undefined);
+    try {
+      const agent = new CoderAgent({
+        client: new FakeClient([]) as unknown as CoderChatClient,
+        organizationId: "org-1",
+      });
+      expect(agent.chatId).toBeUndefined();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("client-only construction resolves env credentials for the preview helpers", async () => {
     vi.stubEnv("CODER_URL", "https://env.coder.example.com");
     vi.stubEnv("CODER_SESSION_TOKEN", "env-token");

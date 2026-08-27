@@ -120,109 +120,229 @@ describe("CoderChatClient.uploadChatFile", () => {
 });
 
 describe("CoderChatClient.resolveModelConfigId", () => {
+  const ORG = "44444444-4444-4444-8444-444444444444";
+  // Provider descriptors: the org-scoped listing carries the provider TYPE
+  // string here, not on the models — models reference these via ai_provider_id.
+  const ANTHROPIC = { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", type: "anthropic" };
+  const OPENAI = { id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", type: "openai" };
   const HAIKU = {
     id: "11111111-1111-4111-8111-111111111111",
-    provider: "anthropic",
+    ai_provider_id: ANTHROPIC.id,
     model: "claude-haiku-4-5",
     display_name: "Claude Haiku 4.5",
     enabled: true,
   };
   const GPT = {
     id: "22222222-2222-4222-8222-222222222222",
-    provider: "openai",
+    ai_provider_id: OPENAI.id,
     model: "gpt-5",
     display_name: "GPT-5",
     enabled: true,
   };
+  const PROVIDERS = [ANTHROPIC, OPENAI];
+  const orgModelsPath = (org: string) => `/api/v2/organizations/${org}/chats/models`;
+  const LEGACY_PATH = "/api/experimental/chats/model-configs";
 
-  /** A client whose `/model-configs` endpoint returns `body` (undefined → empty body). */
-  function resolver(body: unknown) {
-    const { fn, calls } = fakeFetch(
-      () => new Response(body === undefined ? "" : JSON.stringify(body), { status: 200 }),
-    );
+  /**
+   * A client whose org-scoped models endpoint returns `body` (undefined → empty
+   * body); any other path (notably the legacy `/model-configs` route) 404s,
+   * mirroring a current deployment.
+   */
+  function resolver(models: unknown, providers: unknown = PROVIDERS, org: string = ORG) {
+    const calls: string[] = [];
+    const fn = ((url: string) => {
+      calls.push(url);
+      const { pathname } = new URL(url);
+      if (pathname !== orgModelsPath(org)) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ message: "Route not found." }), { status: 404 }),
+        );
+      }
+      const body =
+        models === undefined
+          ? ""
+          : JSON.stringify({ models, providers, unsupported_providers: [] });
+      return Promise.resolve(new Response(body, { status: 200 }));
+    }) as unknown as typeof globalThis.fetch;
     return { client: client(fn), calls };
   }
 
   it("returns a UUID hint as-is without fetching configs", async () => {
     const { client: c, calls } = resolver([]);
     const uuid = "33333333-3333-4333-8333-333333333333";
-    await expect(c.resolveModelConfigId(uuid)).resolves.toBe(uuid);
+    await expect(c.resolveModelConfigId(uuid, ORG)).resolves.toBe(uuid);
     expect(calls).toHaveLength(0);
   });
 
-  it("matches provider:model, bare model, display-name and model substrings", async () => {
+  it("queries the org-scoped route with the organization encoded into the path", async () => {
+    const org = "my org/name";
+    const { client: c, calls } = resolver([HAIKU], PROVIDERS, encodeURIComponent(org));
+    await expect(c.resolveModelConfigId("haiku", org)).resolves.toBe(HAIKU.id);
+    expect(calls).toEqual(["https://x/api/v2/organizations/my%20org%2Fname/chats/models"]);
+  });
+
+  it("matches provider:model, bare model, display-name and model substrings on joined data", async () => {
     const { client: c } = resolver([GPT, HAIKU]);
-    await expect(c.resolveModelConfigId("anthropic:claude-haiku-4-5")).resolves.toBe(HAIKU.id);
-    await expect(c.resolveModelConfigId("claude-haiku-4-5")).resolves.toBe(HAIKU.id);
-    await expect(c.resolveModelConfigId("Haiku")).resolves.toBe(HAIKU.id);
-    await expect(c.resolveModelConfigId("haiku-4")).resolves.toBe(HAIKU.id);
+    await expect(c.resolveModelConfigId("anthropic:claude-haiku-4-5", ORG)).resolves.toBe(HAIKU.id);
+    await expect(c.resolveModelConfigId("claude-haiku-4-5", ORG)).resolves.toBe(HAIKU.id);
+    await expect(c.resolveModelConfigId("Haiku", ORG)).resolves.toBe(HAIKU.id);
+    await expect(c.resolveModelConfigId("haiku-4", ORG)).resolves.toBe(HAIKU.id);
+  });
+
+  it("disambiguates one model id offered by two providers via the ai_provider_id join", async () => {
+    const viaAnthropic = { ...HAIKU, model: "shared-model" };
+    const viaOpenAI = { ...GPT, model: "shared-model" };
+    const { client: c } = resolver([viaOpenAI, viaAnthropic]);
+    await expect(c.resolveModelConfigId("anthropic:shared-model", ORG)).resolves.toBe(HAIKU.id);
+    await expect(c.resolveModelConfigId("openai:shared-model", ORG)).resolves.toBe(GPT.id);
   });
 
   it("prefers enabled configs, falls back to disabled-only listings, and returns undefined on no match", async () => {
     const { client: c } = resolver([{ ...GPT, enabled: false }, HAIKU]);
     // GPT is disabled and an enabled config exists, so it is out of the pool.
-    await expect(c.resolveModelConfigId("gpt-5")).resolves.toBeUndefined();
-    await expect(c.resolveModelConfigId("no-such-model")).resolves.toBeUndefined();
+    await expect(c.resolveModelConfigId("gpt-5", ORG)).resolves.toBeUndefined();
+    await expect(c.resolveModelConfigId("no-such-model", ORG)).resolves.toBeUndefined();
 
     const { client: allDisabled } = resolver([{ ...HAIKU, enabled: false }]);
-    await expect(allDisabled.resolveModelConfigId("claude-haiku-4-5")).resolves.toBe(HAIKU.id);
+    await expect(allDisabled.resolveModelConfigId("claude-haiku-4-5", ORG)).resolves.toBe(HAIKU.id);
   });
 
-  it("resolves an entry missing `provider` by its model id on a provider:model hint", async () => {
+  it("resolves an entry missing `ai_provider_id` by its model id on a provider:model hint", async () => {
     const { client: c } = resolver([
       { id: HAIKU.id, model: "claude-haiku-4-5", display_name: "Haiku (BYOK)" },
     ]);
-    await expect(c.resolveModelConfigId("anthropic:claude-haiku-4-5")).resolves.toBe(HAIKU.id);
+    await expect(c.resolveModelConfigId("anthropic:claude-haiku-4-5", ORG)).resolves.toBe(HAIKU.id);
   });
 
-  it("keeps matching entries with an empty-string provider", async () => {
-    const { client: c } = resolver([{ ...HAIKU, provider: "" }]);
-    await expect(c.resolveModelConfigId("anthropic:claude-haiku-4-5")).resolves.toBe(HAIKU.id);
+  it("resolves an entry whose ai_provider_id has no provider descriptor by its model id", async () => {
+    const { client: c } = resolver([HAIKU], []);
+    await expect(c.resolveModelConfigId("anthropic:claude-haiku-4-5", ORG)).resolves.toBe(HAIKU.id);
   });
 
-  it("tolerates provider: null", async () => {
-    const { client: c } = resolver([{ ...HAIKU, provider: null }]);
-    await expect(c.resolveModelConfigId("anthropic:claude-haiku-4-5")).resolves.toBe(HAIKU.id);
+  it("keeps matching entries whose provider descriptor has an empty-string type", async () => {
+    const { client: c } = resolver([HAIKU], [{ ...ANTHROPIC, type: "" }]);
+    await expect(c.resolveModelConfigId("anthropic:claude-haiku-4-5", ORG)).resolves.toBe(HAIKU.id);
+  });
+
+  it("tolerates a provider descriptor with type: null", async () => {
+    const { client: c } = resolver([HAIKU], [{ ...ANTHROPIC, type: null }]);
+    await expect(c.resolveModelConfigId("anthropic:claude-haiku-4-5", ORG)).resolves.toBe(HAIKU.id);
   });
 
   it("tolerates an entry missing `display_name` when scanning for a display match", async () => {
-    const { client: c } = resolver([{ id: "no-display", provider: "x", model: "m1" }, GPT]);
-    await expect(c.resolveModelConfigId("gpt")).resolves.toBe(GPT.id);
+    const { client: c } = resolver([
+      { id: "no-display", ai_provider_id: ANTHROPIC.id, model: "m1" },
+      GPT,
+    ]);
+    await expect(c.resolveModelConfigId("gpt", ORG)).resolves.toBe(GPT.id);
   });
 
   it("never matches an entry missing `model` by model, but still by display name", async () => {
     const { client: c } = resolver([
-      { id: HAIKU.id, provider: "anthropic", display_name: "Claude Haiku 4.5" },
+      { id: HAIKU.id, ai_provider_id: ANTHROPIC.id, display_name: "Claude Haiku 4.5" },
     ]);
-    await expect(c.resolveModelConfigId("claude-haiku-4-5")).resolves.toBeUndefined();
-    await expect(c.resolveModelConfigId("haiku")).resolves.toBe(HAIKU.id);
+    await expect(c.resolveModelConfigId("claude-haiku-4-5", ORG)).resolves.toBeUndefined();
+    await expect(c.resolveModelConfigId("haiku", ORG)).resolves.toBe(HAIKU.id);
   });
 
-  it("skips null entries in the listing", async () => {
+  it("skips null entries in the models listing", async () => {
     const { client: c } = resolver([null, HAIKU]);
-    await expect(c.resolveModelConfigId("anthropic:claude-haiku-4-5")).resolves.toBe(HAIKU.id);
+    await expect(c.resolveModelConfigId("anthropic:claude-haiku-4-5", ORG)).resolves.toBe(HAIKU.id);
   });
 
   it("returns undefined for an empty response body", async () => {
     const { client: c } = resolver(undefined);
-    await expect(c.resolveModelConfigId("claude-haiku-4-5")).resolves.toBeUndefined();
+    await expect(c.resolveModelConfigId("claude-haiku-4-5", ORG)).resolves.toBeUndefined();
   });
 
-  it("returns undefined for a non-array JSON body", async () => {
+  it("returns undefined when the body carries no models array", async () => {
     const { client: c } = resolver({});
-    await expect(c.resolveModelConfigId("claude-haiku-4-5")).resolves.toBeUndefined();
+    await expect(c.resolveModelConfigId("claude-haiku-4-5", ORG)).resolves.toBeUndefined();
   });
 
   it("resolves a healthy exact match regardless of a malformed neighbor's position", async () => {
     const malformed = { id: "bad" };
     const { client: healthyFirst } = resolver([HAIKU, malformed]);
-    await expect(healthyFirst.resolveModelConfigId("anthropic:claude-haiku-4-5")).resolves.toBe(
-      HAIKU.id,
-    );
+    await expect(
+      healthyFirst.resolveModelConfigId("anthropic:claude-haiku-4-5", ORG),
+    ).resolves.toBe(HAIKU.id);
     const { client: malformedFirst } = resolver([malformed, HAIKU]);
-    await expect(malformedFirst.resolveModelConfigId("anthropic:claude-haiku-4-5")).resolves.toBe(
-      HAIKU.id,
+    await expect(
+      malformedFirst.resolveModelConfigId("anthropic:claude-haiku-4-5", ORG),
+    ).resolves.toBe(HAIKU.id);
+  });
+
+  // --- version skew: legacy `/model-configs` fallback ------------------------
+
+  /** A pre-#28632 deployment: the org-scoped route 404s, the legacy one serves `body`. */
+  function legacyResolver(body: unknown) {
+    const calls: string[] = [];
+    const fn = ((url: string) => {
+      calls.push(url);
+      const { pathname } = new URL(url);
+      if (pathname !== LEGACY_PATH) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ message: "Route not found." }), { status: 404 }),
+        );
+      }
+      return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+    }) as unknown as typeof globalThis.fetch;
+    return { client: client(fn), calls };
+  }
+
+  it("falls back to the legacy listing when the org-scoped route 404s (older deployment)", async () => {
+    const legacyHaiku = { id: HAIKU.id, provider: "anthropic", model: "claude-haiku-4-5" };
+    const { client: c, calls } = legacyResolver([null, { ...legacyHaiku, provider: null }]);
+    // Legacy entries flow through the same tolerance/matching (null entries
+    // skipped, null provider still matches by model id).
+    await expect(c.resolveModelConfigId("anthropic:claude-haiku-4-5", ORG)).resolves.toBe(HAIKU.id);
+    expect(calls).toEqual([`https://x${orgModelsPath(ORG)}`, `https://x${LEGACY_PATH}`]);
+  });
+
+  it("rethrows the org-scoped 404 when the legacy fallback also 404s", async () => {
+    const fn = (() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ message: "Route not found." }), { status: 404 }),
+      )) as unknown as typeof globalThis.fetch;
+    const err = await client(fn)
+      .resolveModelConfigId("haiku", ORG)
+      .then(() => undefined)
+      .catch((e: unknown) => e as CoderApiError);
+    // The org-scoped error names the organization actually queried.
+    expect(err).toBeInstanceOf(CoderApiError);
+    expect(err?.status).toBe(404);
+    expect(err?.path).toBe(orgModelsPath(ORG));
+  });
+
+  it("does not fall back on a non-404 error from the org-scoped route", async () => {
+    const { fn, calls } = fakeFetch(
+      () => new Response(JSON.stringify({ message: "boom" }), { status: 500 }),
     );
+    await expect(client(fn).resolveModelConfigId("haiku", ORG)).rejects.toThrow(CoderApiError);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("deprecated no-organization overload calls the legacy route directly", async () => {
+    const legacyHaiku = { id: HAIKU.id, provider: "anthropic", model: "claude-haiku-4-5" };
+    const { client: c, calls } = legacyResolver([legacyHaiku]);
+    await expect(c.resolveModelConfigId("anthropic:claude-haiku-4-5")).resolves.toBe(HAIKU.id);
+    expect(calls).toEqual([`https://x${LEGACY_PATH}`]);
+  });
+
+  it("listModelConfigs returns configs with `provider` joined from the descriptors", async () => {
+    const { client: c } = resolver([GPT, HAIKU]);
+    const configs = await c.listModelConfigs(ORG);
+    expect(configs).toEqual([
+      { ...GPT, provider: "openai" },
+      { ...HAIKU, provider: "anthropic" },
+    ]);
+  });
+
+  it("deprecated no-argument listModelConfigs calls the legacy route directly", async () => {
+    const legacyHaiku = { id: HAIKU.id, provider: "anthropic", model: "claude-haiku-4-5" };
+    const { client: c, calls } = legacyResolver([legacyHaiku]);
+    await expect(c.listModelConfigs()).resolves.toEqual([legacyHaiku]);
+    expect(calls).toEqual([`https://x${LEGACY_PATH}`]);
   });
 });
 

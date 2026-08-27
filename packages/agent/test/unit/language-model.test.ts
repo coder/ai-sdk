@@ -13,7 +13,14 @@ class FakeClient {
     this.#events = events;
   }
 
-  async resolveModelConfigId(): Promise<string | undefined> {
+  /** `[hint, organizationId]` of every resolveModelConfigId() call (#133). */
+  resolveCalls: [unknown, unknown][] = [];
+
+  async resolveModelConfigId(
+    hint?: unknown,
+    organizationId?: unknown,
+  ): Promise<string | undefined> {
+    this.resolveCalls.push([hint, organizationId]);
     return undefined;
   }
 
@@ -243,5 +250,24 @@ describe("CoderLanguageModel resume cursor validation (#115)", () => {
   it("exposes undefined before any turn on a fresh model", () => {
     const model = new CoderLanguageModel(config({}));
     expect(model.lastSeenMessageId).toBeUndefined();
+  });
+});
+
+describe("CoderLanguageModel model resolution", () => {
+  it("passes the configured organizationId with the hint to resolveModelConfigId (#133)", async () => {
+    const fake = new FakeClient([
+      status("running"),
+      msg(2, "assistant", [{ type: "text", text: "ok" }]),
+      status("waiting"),
+    ]);
+    const model = new CoderLanguageModel({
+      client: fake as unknown as CoderChatClient,
+      organizationId: "org-1",
+      model: "haiku",
+    });
+    await model.doGenerate({
+      prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    } as never);
+    expect(fake.resolveCalls).toEqual([["haiku", "org-1"]]);
   });
 });

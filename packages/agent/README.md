@@ -222,7 +222,7 @@ conversation with server‑side history). `agent.chatId` is the current chat id.
 - `agent.resetSession()` — start a fresh chat on the next turn (reuse one instance for sequential turns; you don't need a new agent per turn).
 - `agent.interrupt({ signal? })` — interrupt an in‑flight generation.
 - `agent.archive({ signal? })` — archive the underlying chat (cleanup; see [Cleanup](#cleanup)).
-- `agent.listModels()` — list the deployment's model configs, so you don't have to guess the `model` hint.
+- `agent.listModels()` — list the organization's model configs, so you don't have to guess the `model` hint.
 - Resume a prior chat: `new CoderAgent({ …, chatId: "…" })` — optionally with
   `lastSeenMessageId` (the persisted resume cursor, read from
   `agent.lastSeenMessageId`) to skip the resumed turn's pre‑prompt history
@@ -905,13 +905,17 @@ sequence pinpoints _where_ a turn died:
 | `chatId`                          | resume an existing chat                                                                                            |
 | `lastSeenMessageId`               | resume cursor for `chatId` (persist `agent.lastSeenMessageId`) — skips the resumed turn's pre‑prompt history probe |
 
-The `model` hint resolves against the deployment's model configs in order: a
-config UUID is used as‑is, then an exact `provider:model` match, an exact model
-id, a display‑name substring (case‑insensitive), and finally a model‑id
-substring. Partial payloads from older/newer servers are tolerated (entries
-match on the fields they carry), and an unresolvable hint falls back to the
-server's default model instead of failing. Use `agent.listModels()` to see
-what's available.
+The `model` hint resolves against the organization's model configs
+(`GET /api/v2/organizations/{organizationId}/chats/models`, with the provider
+type joined from the response's provider descriptors) in order: a config UUID
+is used as‑is, then an exact `provider:model` match, an exact model id, a
+display‑name substring (case‑insensitive), and finally a model‑id substring.
+On older deployments where the organization‑scoped route does not exist yet
+(404), resolution falls back once to the legacy deployment‑wide
+`/model-configs` listing. Partial payloads from older/newer servers are
+tolerated (entries match on the fields they carry), and an unresolvable hint
+falls back to the server's default model instead of failing. Use
+`agent.listModels()` to see what's available.
 
 ## How it works
 

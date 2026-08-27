@@ -11,6 +11,7 @@ import {
   type CreateChatMessageResponse,
   type CreateChatRequest,
   MAX_CHAT_FILE_SIZE_BYTES,
+  type OrganizationChatModelsResponse,
   type SubmitToolResultsRequest,
   type UpdateChatRequest,
   type UploadChatFileResponse,
@@ -189,14 +190,28 @@ export class CoderChatClient {
 
   // --- REST -----------------------------------------------------------------
 
-  listModelConfigs(signal?: AbortSignal): Promise<ChatModelConfig[]> {
-    return this.#request<ChatModelConfig[]>(
-      "listModelConfigs",
-      "GET",
-      `${API_PREFIX}/model-configs`,
-      undefined,
-      signal,
-    );
+  /**
+   * List the organization's model configs, normalized to
+   * {@link ChatModelConfig} (the legacy per-model `provider` string is joined
+   * from the response's provider descriptors). See {@link #fetchModelConfigs}
+   * for the endpoint and version-skew fallback.
+   */
+  listModelConfigs(organizationId: string, signal?: AbortSignal): Promise<ChatModelConfig[]>;
+  /**
+   * @deprecated The deployment-scoped `GET /api/experimental/chats/model-configs`
+   * route this overload calls was removed upstream (coder/coder#28632) and
+   * returns 404 on current deployments — pass an `organizationId`.
+   */
+  listModelConfigs(signal?: AbortSignal): Promise<ChatModelConfig[]>;
+  listModelConfigs(
+    organizationIdOrSignal?: string | AbortSignal,
+    maybeSignal?: AbortSignal,
+  ): Promise<ChatModelConfig[]> {
+    const organizationId =
+      typeof organizationIdOrSignal === "string" ? organizationIdOrSignal : undefined;
+    const signal =
+      typeof organizationIdOrSignal === "string" ? maybeSignal : organizationIdOrSignal;
+    return this.#fetchModelConfigs("listModelConfigs", organizationId, signal);
   }
 
   createChat(req: CreateChatRequest, signal?: AbortSignal): Promise<Chat> {
@@ -447,6 +462,71 @@ export class CoderChatClient {
   // --- Helpers --------------------------------------------------------------
 
   /**
+   * Fetch the model listing for hint resolution / listing, tolerating version
+   * skew in both directions:
+   *
+   * - Primary: `GET /api/v2/organizations/{organizationId}/chats/models` —
+   *   the organization-scoped route that replaced the legacy listing upstream
+   *   (coder/coder#28632); its response is normalized to the legacy
+   *   {@link ChatModelConfig} array by {@link joinOrgModels}.
+   * - Newer SDK, older deployment: the org-scoped route does not exist yet,
+   *   so on a 404 this falls back once to the legacy
+   *   `GET /api/experimental/chats/model-configs`, whose body already is the
+   *   legacy array (parsed tolerantly: a non-array body yields no configs and
+   *   non-object entries are dropped). (Older SDK, newer deployment is the
+   *   reverse skew: the legacy route is a reserved 404 upstream, which is why
+   *   the org-scoped route is primary.)
+   * - The deprecated no-`organizationId` overloads call the legacy route
+   *   directly, preserving their historical behavior.
+   *
+   * When both routes 404, the org-scoped error is rethrown — it names the
+   * organization actually queried (e.g. a mistyped `organizationId`), while
+   * the legacy route's generic "Route not found" would mask it.
+   *
+   * Both requests stamp the calling public method's `op` on the exchange's
+   * `http:*` events — the stamp names the caller's intent, not the wire shape.
+   */
+  async #fetchModelConfigs(
+    op: CoderClientOperation,
+    organizationId: string | undefined,
+    signal?: AbortSignal,
+  ): Promise<ChatModelConfig[]> {
+    const legacy = async (): Promise<ChatModelConfig[]> => {
+      const raw: unknown = await this.#request<unknown>(
+        op,
+        "GET",
+        `${API_PREFIX}/model-configs`,
+        undefined,
+        signal,
+      );
+      return (Array.isArray(raw) ? raw : []).filter(
+        (c): c is ChatModelConfig => typeof c === "object" && c !== null,
+      );
+    };
+    if (organizationId === undefined) return legacy();
+
+    let res: unknown;
+    try {
+      res = await this.#request<unknown>(
+        op,
+        "GET",
+        `/api/v2/organizations/${encodeURIComponent(organizationId)}/chats/models`,
+        undefined,
+        signal,
+      );
+    } catch (err) {
+      if (!(err instanceof CoderApiError) || err.status !== 404) throw err;
+      try {
+        return await legacy();
+      } catch (legacyErr) {
+        if (legacyErr instanceof CoderApiError && legacyErr.status === 404) throw err;
+        throw legacyErr;
+      }
+    }
+    return joinOrgModels(res);
+  }
+
+  /**
    * Resolves a user-friendly model hint to a model-config UUID.
    *
    * Accepts: a config UUID (returned as-is), a `provider:model` id
@@ -460,23 +540,30 @@ export class CoderChatClient {
    * fields they do carry — an entry without `provider` still matches by its
    * model id, one without `model` only by display name.
    */
-  async resolveModelConfigId(hint: string, signal?: AbortSignal): Promise<string | undefined> {
+  resolveModelConfigId(
+    hint: string,
+    organizationId: string,
+    signal?: AbortSignal,
+  ): Promise<string | undefined>;
+  /**
+   * @deprecated The deployment-scoped `GET /api/experimental/chats/model-configs`
+   * route this overload calls was removed upstream (coder/coder#28632) and
+   * returns 404 on current deployments — pass an `organizationId`.
+   */
+  resolveModelConfigId(hint: string, signal?: AbortSignal): Promise<string | undefined>;
+  async resolveModelConfigId(
+    hint: string,
+    organizationIdOrSignal?: string | AbortSignal,
+    maybeSignal?: AbortSignal,
+  ): Promise<string | undefined> {
+    const organizationId =
+      typeof organizationIdOrSignal === "string" ? organizationIdOrSignal : undefined;
+    const signal =
+      typeof organizationIdOrSignal === "string" ? maybeSignal : organizationIdOrSignal;
     const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     if (UUID_RE.test(hint)) return hint;
 
-    // Issues listModelConfigs' GET directly so the exchange's `http:*` events
-    // carry this method's own `op` — the stamp names the caller's intent
-    // (model resolution), not the wire shape it borrows.
-    const raw: unknown = await this.#request<ChatModelConfig[]>(
-      "resolveModelConfigId",
-      "GET",
-      `${API_PREFIX}/model-configs`,
-      undefined,
-      signal,
-    );
-    const configs = (Array.isArray(raw) ? raw : []).filter(
-      (c): c is ChatModelConfig => typeof c === "object" && c !== null,
-    );
+    const configs = await this.#fetchModelConfigs("resolveModelConfigId", organizationId, signal);
     const lower = hint.toLowerCase();
     // `provider:model` form.
     const colon = hint.indexOf(":");
@@ -508,4 +595,37 @@ export class CoderChatClient {
     const byModelSubstring = pool.find((c) => modelOf(c)?.includes(model));
     return byModelSubstring?.id;
   }
+}
+
+/**
+ * Normalize an org-scoped models response to the legacy {@link ChatModelConfig}
+ * array: join each model's `ai_provider_id` to its provider descriptor and
+ * copy the descriptor's `type` onto the model as `provider`. Guarded against
+ * partial payloads — non-object entries are dropped, and a model whose
+ * provider cannot be joined keeps `provider` absent (hint matching then falls
+ * back to its model id / display name).
+ */
+function joinOrgModels(res: unknown): ChatModelConfig[] {
+  const body = (
+    typeof res === "object" && res !== null ? res : {}
+  ) as OrganizationChatModelsResponse;
+  const models = Array.isArray(body.models) ? body.models : [];
+  const providers = Array.isArray(body.providers) ? body.providers : [];
+
+  const providerTypeById = new Map<string, string>();
+  for (const p of providers) {
+    if (typeof p !== "object" || p === null) continue;
+    if (typeof p.id === "string" && typeof p.type === "string") providerTypeById.set(p.id, p.type);
+  }
+
+  const configs: ChatModelConfig[] = [];
+  for (const m of models) {
+    if (typeof m !== "object" || m === null) continue;
+    const config: ChatModelConfig = { ...m };
+    const providerType =
+      typeof m.ai_provider_id === "string" ? providerTypeById.get(m.ai_provider_id) : undefined;
+    if (providerType !== undefined) config.provider = providerType;
+    configs.push(config);
+  }
+  return configs;
 }

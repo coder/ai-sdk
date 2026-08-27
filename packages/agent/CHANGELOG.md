@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.9.4](https://github.com/coder/ai-sdk/compare/agent-v0.9.3...agent-v0.9.4) (2026-08-27)
+
+A maintenance release with no user-facing changes beyond internal housekeeping.
+
 ## [0.9.3](https://github.com/coder/ai-sdk/compare/agent-v0.9.2...agent-v0.9.3) (2026-08-26)
 
 Fixes a turn-settling bug where a finishing turn is now correctly resolved at a queued promotion boundary.

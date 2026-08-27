@@ -25,11 +25,11 @@ jobs:
       fail-fast: false
       matrix:
         # sandbox engines.node >=22 is the binding floor; agent (>=20) runs fine
-        # on these. 26.7.0 matches the version pinned in mise.toml.
-        node: ["22", "24", "26.7.0"]
+        # on these. 26.8.1 matches the version pinned in mise.toml.
+        node: ["22", "24", "26.8.1"]
     env:
       # Override the node version per matrix cell. MISE_LOCKFILE=false disables
-      # mise's locked mode for this job: mise.lock only pins node 26.7.0, so the
+      # mise's locked mode for this job: mise.lock only pins node 26.8.1, so the
       # 22/24 cells aren't in the lock and locked mode would refuse them. Tool
       # versions still come from mise.toml; the lock stays authoritative for local
       # dev and the (un-overridden) lint-workflows job below.

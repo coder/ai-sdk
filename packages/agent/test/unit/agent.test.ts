@@ -2316,16 +2316,26 @@ describe("CoderLanguageModel stream reuse across segments (#44)", () => {
       // Pull until the tool-call part is out — the turn generator is then
       // suspended mid-settle, with retainStream about to be computed. (The
       // pulls also drive the turn to dial the socket in the first place.)
+      // The abort must fire in the SAME microtask that observes the part:
+      // the read fulfillment is queued before the stream's refill pull, so
+      // aborting here deterministically lands while the generator is still
+      // suspended at the tool-call yield. Aborting after `await untilToolCall`
+      // instead races that refill pull — as of Node 26.8 (whatwg-stream pull
+      // path lost a microtask hop, nodejs/node#65138) the refill resumes the
+      // generator past its abort checkpoints first, and the segment settles
+      // as a healthy retained pause before the abort lands.
       const untilToolCall = (async () => {
         for (;;) {
           const { value, done } = await reader.read();
-          if (done || (value as { type: string }).type === "tool-call") return;
+          if (done || (value as { type: string }).type === "tool-call") {
+            abort.abort();
+            return;
+          }
         }
       })();
       await vi.advanceTimersByTimeAsync(0);
       sockets[0]?.emit("message", streamFrame(...segmentOne));
       await untilToolCall;
-      abort.abort();
       const err = await drain(reader).then(
         () => undefined,
         (e: unknown) => e,

@@ -277,10 +277,14 @@ export interface UploadChatFileResponse {
 }
 
 /**
- * A configured model (`GET /api/experimental/chats/model-configs`). Depending
- * on the server version and how a config was created, `provider`, `model`, and
- * `display_name` may be absent on individual entries, so treat them as
- * optional and guard reads.
+ * A configured model, normalized to the shape of the legacy
+ * `GET /api/experimental/chats/model-configs` listing (removed upstream in
+ * coder/coder#28632). The client synthesizes this from the organization-scoped
+ * {@link OrganizationChatModelsResponse} by joining each model's
+ * `ai_provider_id` to its provider descriptor's `type` (→ `provider`).
+ * Depending on the server version and how a config was created, `provider`,
+ * `model`, and `display_name` may be absent on individual entries, so treat
+ * them as optional and guard reads.
  */
 export interface ChatModelConfig {
   id: string;
@@ -292,6 +296,63 @@ export interface ChatModelConfig {
   is_default?: boolean;
   context_limit?: number;
   compression_threshold?: number;
+}
+
+/**
+ * An organization-scoped chat model, as returned by
+ * `GET /api/v2/organizations/{organization}/chats/models` (codersdk
+ * `ChatModel`). The provider type string is not carried here — join
+ * `ai_provider_id` against {@link ChatModelProviderDescriptor.id}. Fields
+ * other than `id` are treated as optional to tolerate partial payloads from
+ * older/newer servers.
+ */
+export interface ChatModel {
+  id: string;
+  organization_id?: string;
+  /** FK into the response's `providers[].id`. */
+  ai_provider_id?: string;
+  model?: string;
+  display_name?: string;
+  enabled?: boolean;
+  is_default?: boolean;
+  context_limit?: number;
+  compression_threshold?: number;
+  reasoning_efforts?: string[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+/**
+ * The redacted view of an AI provider carried on the organization-scoped
+ * model collection (codersdk `ChatModelProviderDescriptor`) — capability
+ * metadata only, no key material or base URLs. `type` is the provider type
+ * string (e.g. `anthropic`) that the legacy listing carried per-model.
+ */
+export interface ChatModelProviderDescriptor {
+  id: string;
+  type?: string;
+  display_name?: string;
+  icon?: string;
+  enabled?: boolean;
+  available?: boolean;
+  unavailable_reason?: string;
+}
+
+/** A configured provider type the server build does not support. */
+export interface ChatUnsupportedProvider {
+  provider?: string;
+  display_name?: string;
+}
+
+/**
+ * Response of `GET /api/v2/organizations/{organization}/chats/models`
+ * (codersdk `OrganizationChatModelsResponse`): the org's model configs plus
+ * the provider descriptors they reference.
+ */
+export interface OrganizationChatModelsResponse {
+  models?: ChatModel[];
+  providers?: ChatModelProviderDescriptor[];
+  unsupported_providers?: ChatUnsupportedProvider[];
 }
 
 // ---------------------------------------------------------------------------

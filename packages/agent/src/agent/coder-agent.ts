@@ -484,12 +484,12 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
   // --- session helpers ------------------------------------------------------
 
   /**
-   * List the model configs available on the deployment. Use this to discover
-   * valid values for the `model` hint instead of guessing ids — match on
-   * `id`, `provider`/`model`, or `display_name`.
+   * List the model configs available to this agent's organization. Use this
+   * to discover valid values for the `model` hint instead of guessing ids —
+   * match on `id`, `provider`/`model`, or `display_name`.
    */
   listModels(signal?: AbortSignal): Promise<ChatModelConfig[]> {
-    return this.#client.listModelConfigs(signal);
+    return this.#client.listModelConfigs(this.#organizationId, signal);
   }
 
   /**

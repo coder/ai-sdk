@@ -389,6 +389,7 @@ export class CoderLanguageModel implements LanguageModelV4 {
     if (this.#config.model) {
       this.#resolvedModelConfigId = await this.#config.client.resolveModelConfigId(
         this.#config.model,
+        this.#config.organizationId,
         signal,
       );
     }

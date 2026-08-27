@@ -230,8 +230,12 @@ describe("transport events: HTTP", () => {
     const events: CoderTransportEvent[] = [];
     const fetchFn = ((url: string) => {
       const { pathname } = new URL(url);
-      if (pathname.endsWith("/model-configs")) {
-        return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
+      if (pathname.endsWith("/chats/models")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ models: [], providers: [], unsupported_providers: [] }), {
+            status: 200,
+          }),
+        );
       }
       if (pathname.endsWith("/files")) {
         return Promise.resolve(new Response(JSON.stringify({ id: "f1" }), { status: 201 }));
@@ -255,9 +259,9 @@ describe("transport events: HTTP", () => {
       onTransportEvent: (ev) => void events.push(ev),
     });
 
-    await client.listModelConfigs();
+    await client.listModelConfigs("org-1");
     // Resolves via the same listing GET but stamps its own op (caller intent).
-    await client.resolveModelConfigId("some-model");
+    await client.resolveModelConfigId("some-model", "org-1");
     await client.createChat({} as never);
     await client.getChat("c1");
     await client.createChatMessage("c1", {} as never);

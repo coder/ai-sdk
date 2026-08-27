@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.5](https://github.com/coder/ai-sdk/compare/agent-v0.9.4...agent-v0.9.5) (2026-08-27)
+
+Fixes model hint resolution so it uses the organization-scoped chats models endpoint.
+
+### Highlights
+
+- Model hints are now resolved through the organization-scoped chats models endpoint. ([#134](https://github.com/coder/ai-sdk/pull/134))
+
+### Bug Fixes
+
+* **agent:** resolve model hints via organization-scoped chats models endpoint ([#134](https://github.com/coder/ai-sdk/issues/134)) ([bf6280e](https://github.com/coder/ai-sdk/commit/bf6280e374a457949992b446cf6049e871d3c858)), refs [#133](https://github.com/coder/ai-sdk/issues/133)
+
 ## [0.9.4](https://github.com/coder/ai-sdk/compare/agent-v0.9.3...agent-v0.9.4) (2026-08-27)
 
 A maintenance release with no user-facing changes beyond internal housekeeping.

@@ -35,8 +35,8 @@ importers:
         specifier: 4.0.86
         version: 4.0.86(react@19.2.8)(zod@4.4.3)
       '@types/node':
-        specifier: ^26.3.0
-        version: 26.3.0
+        specifier: ^26.4.0
+        version: 26.4.0
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
@@ -54,7 +54,7 @@ importers:
         version: 6.0.3
       vitest:
         specifier: ^4.1.11
-        version: 4.1.11(@types/node@26.3.0)(@vitest/coverage-v8@4.1.11)(vite@8.2.1(@types/node@26.3.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0))
+        version: 4.1.11(@types/node@26.4.0)(@vitest/coverage-v8@4.1.11)(vite@8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0))
       zod:
         specifier: 4.4.3
         version: 4.4.3
@@ -75,8 +75,8 @@ importers:
         specifier: ^0.18.5
         version: 0.18.5
       '@types/node':
-        specifier: ^26.3.0
-        version: 26.3.0
+        specifier: ^26.4.0
+        version: 26.4.0
       '@vitest/coverage-v8':
         specifier: ^4.1.11
         version: 4.1.11(vitest@4.1.11)
@@ -97,7 +97,7 @@ importers:
         version: 6.0.3
       vitest:
         specifier: ^4.1.11
-        version: 4.1.11(@types/node@26.3.0)(@vitest/coverage-v8@4.1.11)(vite@8.2.1(@types/node@26.3.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0))
+        version: 4.1.11(@types/node@26.4.0)(@vitest/coverage-v8@4.1.11)(vite@8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0))
       zod:
         specifier: 4.4.3
         version: 4.4.3
@@ -118,8 +118,8 @@ importers:
         version: 4.4.3
     devDependencies:
       '@types/node':
-        specifier: ^26.3.0
-        version: 26.3.0
+        specifier: ^26.4.0
+        version: 26.4.0
       tsx:
         specifier: ^4.23.12
         version: 4.23.12
@@ -128,7 +128,7 @@ importers:
         version: 6.0.3
       vitest:
         specifier: ^4.1.11
-        version: 4.1.11(@types/node@26.3.0)(@vitest/coverage-v8@4.1.11)(vite@8.2.1(@types/node@26.3.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0))
+        version: 4.1.11(@types/node@26.4.0)(@vitest/coverage-v8@4.1.11)(vite@8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0))
 
   packages/sandbox:
     dependencies:
@@ -140,11 +140,11 @@ importers:
         version: 2.9.0
     devDependencies:
       '@ai-sdk/harness':
-        specifier: ^1.0.91
-        version: 1.0.91(ws@8.21.3)(zod@4.4.3)
+        specifier: ^1.0.92
+        version: 1.0.92(ws@8.21.3)(zod@4.4.3)
       '@ai-sdk/harness-claude-code':
-        specifier: ^1.0.94
-        version: 1.0.94(zod@4.4.3)
+        specifier: ^1.0.96
+        version: 1.0.96(zod@4.4.3)
       '@ai-sdk/provider-utils':
         specifier: ^5.0.32
         version: 5.0.32(zod@4.4.3)
@@ -155,8 +155,8 @@ importers:
         specifier: ^0.18.5
         version: 0.18.5
       '@types/node':
-        specifier: ^26.3.0
-        version: 26.3.0
+        specifier: ^26.4.0
+        version: 26.4.0
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
@@ -177,7 +177,7 @@ importers:
         version: 6.0.3
       vitest:
         specifier: ^4.1.11
-        version: 4.1.11(@types/node@26.3.0)(@vitest/coverage-v8@4.1.11)(vite@8.2.1(@types/node@26.3.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0))
+        version: 4.1.11(@types/node@26.4.0)(@vitest/coverage-v8@4.1.11)(vite@8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0))
       zod:
         specifier: 4.4.3
         version: 4.4.3
@@ -196,14 +196,14 @@ packages:
     peerDependencies:
       zod: 4.4.3
 
-  '@ai-sdk/harness-claude-code@1.0.94':
-    resolution: {integrity: sha512-eqo2eUZl3bVNDEfbuD8NjEjXt86m2qNXjPUIwguBuy8Sxtgb9scwImIuYv/dHlnJEkivF7D2aOg2lCmaV6+zQQ==}
+  '@ai-sdk/harness-claude-code@1.0.96':
+    resolution: {integrity: sha512-eSF7O9dmvWQqQgAFWywVHIhzOYV6a3UJ8IpYnNw6LhVK+jO1fAmi/MHMjs1Az87W69AyVJwaaf+xzHPMxr7x+w==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: 4.4.3
 
-  '@ai-sdk/harness@1.0.91':
-    resolution: {integrity: sha512-+FDZ5LvAGanVRUOd5hzWQttP/5CIwTLEgfMpA/EmzXOv1+XhBUh5t8POuMUIjfNM5z4yGv6955s0QCrnBKKR2w==}
+  '@ai-sdk/harness@1.0.92':
+    resolution: {integrity: sha512-wxHui9xFsRbxrBAMS6FcWBVuZQYsqO0Ko3PRIeSVg8A56FT197bZY9mqFNy7rVveumexjPmKJiPQ965DAt17qg==}
     engines: {node: '>=22'}
     peerDependencies:
       ws: ^8.21.0
@@ -1046,8 +1046,8 @@ packages:
   '@types/minimist@1.2.5':
     resolution: {integrity: sha512-hov8bUuiLiyFPGyFPE1lwWhmzYbirOXQNNo40+y3zow8aFVTeyn3VWL0VFFfdNddA8S4Vf0Tc062rzyNr7Paag==}
 
-  '@types/node@26.3.0':
-    resolution: {integrity: sha512-L3fgrnchriRC2ExBflb8j4uZZURHZfQsmQeyVzhjcHW4kkwVyo8/0h1B2MVzMTrYUJYu6G7EWs14hW/L9putqw==}
+  '@types/node@26.4.0':
+    resolution: {integrity: sha512-faiGnoIrLH/V8cibOMEAZ8pMw6oXqSukl29ra4mN8GdaB2ZewzeaLj+INpV5N+Z1eKWzY+IzaIZH2EIR6YZRNQ==}
 
   '@types/normalize-package-data@2.4.4':
     resolution: {integrity: sha512-37i+OaWTh9qeK4LSHPsyRC7NahnGotNuZvjLSgcPzblpHB3rrCJxAOgI5gCdKm7coonsaX1Of0ILiTcnZjbfxA==}
@@ -2322,9 +2322,9 @@ snapshots:
       '@vercel/oidc': 3.2.0
       zod: 4.4.3
 
-  '@ai-sdk/harness-claude-code@1.0.94(zod@4.4.3)':
+  '@ai-sdk/harness-claude-code@1.0.96(zod@4.4.3)':
     dependencies:
-      '@ai-sdk/harness': 1.0.91(ws@8.21.3)(zod@4.4.3)
+      '@ai-sdk/harness': 1.0.92(ws@8.21.3)(zod@4.4.3)
       '@ai-sdk/provider-utils': 5.0.32(zod@4.4.3)
       ws: 8.21.3
       zod: 4.4.3
@@ -2332,7 +2332,7 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  '@ai-sdk/harness@1.0.91(ws@8.21.3)(zod@4.4.3)':
+  '@ai-sdk/harness@1.0.92(ws@8.21.3)(zod@4.4.3)':
     dependencies:
       '@ai-sdk/provider': 4.0.8
       '@ai-sdk/provider-utils': 5.0.32(zod@4.4.3)
@@ -2873,7 +2873,7 @@ snapshots:
 
   '@types/minimist@1.2.5': {}
 
-  '@types/node@26.3.0':
+  '@types/node@26.4.0':
     dependencies:
       undici-types: 8.3.0
 
@@ -2885,7 +2885,7 @@ snapshots:
 
   '@types/ws@8.18.1':
     dependencies:
-      '@types/node': 26.3.0
+      '@types/node': 26.4.0
 
   '@vercel/oidc@3.2.0': {}
 
@@ -2901,7 +2901,7 @@ snapshots:
       obug: 2.1.4
       std-env: 4.2.0
       tinyrainbow: 3.1.1
-      vitest: 4.1.11(@types/node@26.3.0)(@vitest/coverage-v8@4.1.11)(vite@8.2.1(@types/node@26.3.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0))
+      vitest: 4.1.11(@types/node@26.4.0)(@vitest/coverage-v8@4.1.11)(vite@8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0))
 
   '@vitest/expect@4.1.11':
     dependencies:
@@ -2912,13 +2912,13 @@ snapshots:
       chai: 6.2.2
       tinyrainbow: 3.1.1
 
-  '@vitest/mocker@4.1.11(vite@8.2.1(@types/node@26.3.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0))':
+  '@vitest/mocker@4.1.11(vite@8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0))':
     dependencies:
       '@vitest/spy': 4.1.11
       estree-walker: 3.0.3
       magic-string: 0.30.21
     optionalDependencies:
-      vite: 8.2.1(@types/node@26.3.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0)
+      vite: 8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0)
 
   '@vitest/pretty-format@4.1.11':
     dependencies:
@@ -3983,7 +3983,7 @@ snapshots:
 
   validate-npm-package-name@5.0.1: {}
 
-  vite@8.2.1(@types/node@26.3.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0):
+  vite@8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0):
     dependencies:
       lightningcss: 1.33.0
       picomatch: 4.0.5
@@ -3991,16 +3991,16 @@ snapshots:
       rolldown: 1.2.4
       tinyglobby: 0.2.17
     optionalDependencies:
-      '@types/node': 26.3.0
+      '@types/node': 26.4.0
       esbuild: 0.28.2
       fsevents: 2.3.3
       tsx: 4.23.12
       yaml: 2.9.0
 
-  vitest@4.1.11(@types/node@26.3.0)(@vitest/coverage-v8@4.1.11)(vite@8.2.1(@types/node@26.3.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0)):
+  vitest@4.1.11(@types/node@26.4.0)(@vitest/coverage-v8@4.1.11)(vite@8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0)):
     dependencies:
       '@vitest/expect': 4.1.11
-      '@vitest/mocker': 4.1.11(vite@8.2.1(@types/node@26.3.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0))
+      '@vitest/mocker': 4.1.11(vite@8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0))
       '@vitest/pretty-format': 4.1.11
       '@vitest/runner': 4.1.11
       '@vitest/snapshot': 4.1.11
@@ -4017,10 +4017,10 @@ snapshots:
       tinyexec: 1.3.0
       tinyglobby: 0.2.17
       tinyrainbow: 3.1.1
-      vite: 8.2.1(@types/node@26.3.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0)
+      vite: 8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0)
       why-is-node-running: 2.3.0
     optionalDependencies:
-      '@types/node': 26.3.0
+      '@types/node': 26.4.0
       '@vitest/coverage-v8': 4.1.11(vitest@4.1.11)
     transitivePeerDependencies:
       - msw

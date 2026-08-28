@@ -22,17 +22,15 @@ const prompt =
   process.argv[2] ??
   "Run the shell command `uname -sr` and reply with exactly its output, nothing else.";
 
-const auth = process.env.ANTHROPIC_API_KEY
-  ? {
-      anthropic: {
-        apiKey: process.env.ANTHROPIC_API_KEY,
-        ...(process.env.ANTHROPIC_BASE_URL ? { baseUrl: process.env.ANTHROPIC_BASE_URL } : {}),
-      },
-    }
+const auth: Record<string, string> | undefined = process.env.ANTHROPIC_API_KEY
+  ? { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY }
   : undefined;
+if (auth && process.env.ANTHROPIC_BASE_URL) {
+  auth.ANTHROPIC_BASE_URL = process.env.ANTHROPIC_BASE_URL;
+}
 const settings: Parameters<typeof createClaudeCode>[0] = {
   thinking: { type: "disabled" },
-  ...(auth ? { auth } : {}),
+  auth,
 };
 console.log(
   auth

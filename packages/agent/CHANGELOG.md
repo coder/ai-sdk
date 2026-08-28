@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.9.6](https://github.com/coder/ai-sdk/compare/agent-v0.9.5...agent-v0.9.6) (2026-08-28)
+
+A maintenance release for the agent package with no user-facing changes.
+
 ## [0.9.5](https://github.com/coder/ai-sdk/compare/agent-v0.9.4...agent-v0.9.5) (2026-08-27)
 
 Fixes model hint resolution so it uses the organization-scoped chats models endpoint.

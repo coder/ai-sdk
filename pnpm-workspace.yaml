@@ -14,7 +14,7 @@ overrides:
   # 4.4.3), which duplicates @ai-sdk/provider-utils (where Tool/ToolSet are
   # defined) and breaks HarnessAgent type identity. Pin a single zod so the
   # whole monorepo shares one copy.
-  zod: "4.4.3"
+  zod: "4.5.1"
 
 # Excludes for pnpm's `minimumReleaseAge` supply-chain delay (when configured),
 # so the fast-moving Vercel AI SDK packages stay installable immediately.

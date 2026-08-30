@@ -43,8 +43,8 @@ Gotchas:
 - **Conventional Commit PR titles are load-bearing.** PRs are squash-merged,
   the title becomes the commit on `main`, and release-please derives versions
   and changelogs from those commits. `pr-title.yml` validates titles (scope
-  `sandbox` / `agent` / `provider` or none; subject starts lowercase, no
-  trailing period).
+  `sandbox` / `agent` / `provider` / `effect` or none; subject starts
+  lowercase, no trailing period).
 - **Merge only through the merge queue** (squash). Auto-merge is disabled; if
   `gh pr merge` lacks queue support, use GraphQL `enqueuePullRequest`.
 - The single required status check is the aggregate `Required` job in

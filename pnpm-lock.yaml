@@ -62,8 +62,8 @@ importers:
   packages/effect:
     dependencies:
       '@ai-sdk/provider':
-        specifier: 4.0.9
-        version: 4.0.9
+        specifier: 4.0.8
+        version: 4.0.8
       '@coder/ai-sdk-provider':
         specifier: 0.4.4
         version: 0.4.4(ai@7.0.85(zod@4.5.4))(zod@4.5.4)

@@ -42,7 +42,7 @@
     "example:sandbox": "tsx examples/03-sandbox.ts"
   },
   "dependencies": {
-    "@ai-sdk/provider": "4.0.9",
+    "@ai-sdk/provider": "4.0.8",
     "@coder/ai-sdk-provider": "0.4.4",
     "@coder/ai-sdk-sandbox": "0.4.7",
     "@effect/ai": "0.37.0",

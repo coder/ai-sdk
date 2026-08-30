@@ -42,6 +42,7 @@ jobs:
             sandbox
             agent
             provider
+            effect
           requireScope: false
           subjectPattern: ^(?![A-Z])(?!.*\.$).+$
           subjectPatternError: |

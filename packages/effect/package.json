@@ -1,0 +1,72 @@
+{
+  "name": "@coder/ai-sdk-effect",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Experimental Effect bridge for the Coder AI SDK packages (Phase 1 spike, not published).",
+  "homepage": "https://github.com/coder/ai-sdk/tree/main/packages/effect#readme",
+  "bugs": {
+    "url": "https://github.com/coder/ai-sdk/issues"
+  },
+  "license": "Apache-2.0",
+  "author": "Coder Technologies, Inc. (https://coder.com)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coder/ai-sdk.git",
+    "directory": "packages/effect"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "example:generate": "tsx examples/01-generate.ts",
+    "example:structured": "tsx examples/02-structured.ts",
+    "example:sandbox": "tsx examples/03-sandbox.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/provider": "4.0.8",
+    "@coder/ai-sdk-provider": "0.4.4",
+    "@coder/ai-sdk-sandbox": "0.4.7",
+    "@effect/ai": "0.37.0",
+    "effect": "3.22.1"
+  },
+  "devDependencies": {
+    "@ai-sdk/harness": "^1.0.93",
+    "@ai-sdk/provider-utils": "^5.0.33",
+    "@effect/experimental": "0.61.1",
+    "@effect/platform": "0.97.1",
+    "@effect/rpc": "0.76.2",
+    "@types/node": "^26.4.0",
+    "@vitest/coverage-v8": "^4.1.11",
+    "ai": "^7.0.84",
+    "tsup": "^8.5.1",
+    "tsx": "^4.23.12",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.11",
+    "zod": "4.5.1"
+  },
+  "peerDependencies": {
+    "ai": "^7.0.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

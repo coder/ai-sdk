@@ -181,21 +181,34 @@ const buildCallOptions = (
 ): Effect.Effect<LanguageModelV4CallOptions, AiError.AiError> =>
   Effect.try({
     try: () => {
-      const callOptions: LanguageModelV4CallOptions = {
-        prompt: promptToV4(options.prompt),
-      };
+      const prompt = promptToV4(options.prompt);
+      const callOptions: LanguageModelV4CallOptions = { prompt };
       if (options.tools.length > 0) {
         callOptions.tools = options.tools.map((tool) => toolToV4(tool, method));
         callOptions.toolChoice = toolChoiceToV4(options.toolChoice, method);
       }
       if (options.responseFormat.type === "json") {
+        // SAFETY: effect's JsonSchema7 output is structurally a JSON Schema
+        // draft-07 document; only the nominal type differs from `JSONSchema7`.
+        const schema = Tool.getJsonSchemaFromSchemaAst(
+          options.responseFormat.schema.ast,
+        ) as JSONSchema7;
         callOptions.responseFormat = {
           type: "json",
           name: options.responseFormat.objectName,
-          // SAFETY: effect's JsonSchema7 output is structurally a JSON Schema
-          // draft-07 document; only the nominal type differs from `JSONSchema7`.
-          schema: Tool.getJsonSchemaFromSchemaAst(options.responseFormat.schema.ast) as JSONSchema7,
+          schema,
         };
+        // Models without native structured-output support fall back to a
+        // schema-less JSON mode (OpenAI's `json_object`), which requires the
+        // word "JSON" in the messages and gets no schema on the wire. Inject
+        // the schema as a leading system instruction — the same strategy the
+        // AI SDK's own `generateObject` uses.
+        prompt.unshift({
+          role: "system",
+          content:
+            `JSON schema:\n${JSON.stringify(schema)}\n` +
+            `You MUST answer with a JSON object that matches the JSON schema above.`,
+        });
       }
       return callOptions;
     },

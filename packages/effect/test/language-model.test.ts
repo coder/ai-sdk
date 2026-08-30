@@ -331,6 +331,13 @@ describe("generateObject", () => {
         additionalProperties: false,
       },
     });
+    // Schema-less JSON modes (e.g. OpenAI json_object) need the instruction.
+    const first = captured?.prompt[0];
+    expect(first?.role).toBe("system");
+    if (first?.role === "system") {
+      expect(first.content).toContain("JSON schema:");
+      expect(first.content).toContain(`"city"`);
+    }
   });
 });
 

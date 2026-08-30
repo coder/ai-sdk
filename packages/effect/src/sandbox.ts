@@ -116,6 +116,16 @@ export const acquireWorkspace = (
   );
 };
 
+/** Ownership signal for failed-acquisition rollback; see {@link trackCreation}. */
+interface CreationTracker {
+  /** The wrapped transport to pass into the acquisition call. */
+  readonly transport: CoderTransport;
+  /** Whether a `create` call made through {@link transport} succeeded. */
+  readonly createdByThisCall: () => boolean;
+  /** The workspace name that `create` call targeted, when it succeeded. */
+  readonly createdName: () => string | undefined;
+}
+
 /**
  * Wrap a transport so a successful `create` call made *through this wrapper*
  * is observable. This is the ownership signal for failed-acquisition rollback:
@@ -123,13 +133,7 @@ export const acquireWorkspace = (
  * never mistake a concurrently created workspace for ours (in that race our
  * own `create` call fails and ownership stays false).
  */
-const trackCreation = (
-  transport: CoderTransport,
-): {
-  transport: CoderTransport;
-  createdByThisCall: () => boolean;
-  createdName: () => string | undefined;
-} => {
+const trackCreation = (transport: CoderTransport): CreationTracker => {
   let createdName: string | undefined;
   const tracking: CoderTransport = {
     exec: (options) => transport.exec(options),

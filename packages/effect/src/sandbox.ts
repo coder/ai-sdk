@@ -80,17 +80,25 @@ export const acquireWorkspace = (
         try: async () => {
           // The same transport instance must perform acquisition and teardown.
           const transport = settings.transport ?? new CoderCliTransport();
-          const preexisting = (await transport.status(options.workspace)) !== null;
+          const tracked = trackCreation(transport);
           try {
-            const workspace = await ensureCoderWorkspace({ ...settings, transport });
+            const workspace = await ensureCoderWorkspace({
+              ...settings,
+              transport: tracked.transport,
+            });
             return { workspace, transport };
           } catch (cause) {
             // `ensureCoderWorkspace` may have created the workspace and then
             // failed waiting for readiness. The release finalizer is only
             // registered after successful acquisition, so roll the created
             // workspace back here per the teardown policy — otherwise it
-            // would leak.
-            await rollbackFailedAcquisition(transport, options.workspace, preexisting, teardown);
+            // would leak. Ownership comes from observing our own successful
+            // `create` call, never from existence probing: a workspace that a
+            // concurrent caller created under the same name is not ours to
+            // touch.
+            if (tracked.createdByThisCall()) {
+              await rollbackFailedAcquisition(transport, options.workspace, teardown);
+            }
             throw cause;
           }
         },
@@ -109,6 +117,42 @@ export const acquireWorkspace = (
 };
 
 /**
+ * Wrap a transport so a successful `create` call made *through this wrapper*
+ * is observable. This is the ownership signal for failed-acquisition rollback:
+ * it mirrors how the sandbox package itself derives `created`, and it can
+ * never mistake a concurrently created workspace for ours (in that race our
+ * own `create` call fails and ownership stays false).
+ */
+const trackCreation = (
+  transport: CoderTransport,
+): {
+  transport: CoderTransport;
+  createdByThisCall: () => boolean;
+  createdName: () => string | undefined;
+} => {
+  let createdName: string | undefined;
+  const tracking: CoderTransport = {
+    exec: (options) => transport.exec(options),
+    spawn: (options) => transport.spawn(options),
+    forwardPort: (options) => transport.forwardPort(options),
+    start: (workspace, options) => transport.start(workspace, options),
+    stop: (workspace, options) => transport.stop(workspace, options),
+    destroy: (workspace, options) => transport.destroy(workspace, options),
+    status: (workspace, options) => transport.status(workspace, options),
+    listPresets: (options) => transport.listPresets(options),
+    create: async (options) => {
+      await transport.create(options);
+      createdName = options.workspace;
+    },
+  };
+  return {
+    transport: tracking,
+    createdByThisCall: () => createdName !== undefined,
+    createdName: () => createdName,
+  };
+};
+
+/**
  * Best-effort rollback of a workspace that a failed acquisition created. The
  * original acquisition error always wins: rollback failures are swallowed
  * (the workspace may leak, exactly as if no rollback had been attempted).
@@ -116,13 +160,10 @@ export const acquireWorkspace = (
 const rollbackFailedAcquisition = async (
   transport: CoderTransport,
   name: string,
-  preexisting: boolean,
   teardown: WorkspaceTeardown,
 ): Promise<void> => {
-  if (preexisting || teardown === "keep") return;
+  if (teardown === "keep") return;
   try {
-    // Only roll back a workspace that exists now but did not before.
-    if ((await transport.status(name)) === null) return;
     if (teardown === "delete-if-created") {
       await transport.destroy(name);
     } else {
@@ -204,11 +245,32 @@ export const acquireSession = (
   return Effect.acquireRelease(
     Effect.tryPromise({
       try: async () => {
-        const provider = createCoderWorkspace(options.settings);
-        const session = await provider.createSession({ sessionId: options.sessionId });
-        // SAFETY: createCoderWorkspace always constructs CoderWorkspaceSession
-        // instances; the harness provider interface just types them loosely.
-        return session as CoderWorkspaceSession;
+        // Materialize the transport so a failed create-mode acquisition can be
+        // rolled back through the same instance.
+        const transport = options.settings.transport ?? new CoderCliTransport();
+        const tracked = trackCreation(transport);
+        const provider = createCoderWorkspace({
+          ...options.settings,
+          transport: tracked.transport,
+        });
+        try {
+          const session = await provider.createSession({ sessionId: options.sessionId });
+          // SAFETY: createCoderWorkspace always constructs CoderWorkspaceSession
+          // instances; the harness provider interface just types them loosely.
+          return session as CoderWorkspaceSession;
+        } catch (cause) {
+          // In create mode, `createSession` can create the workspace and then
+          // fail waiting for agent readiness — no session exists yet, so the
+          // release finalizer would never run and the workspace would leak.
+          // Destroy it if and only if our own `create` call succeeded and the
+          // provider owns the lifecycle (mirrors the provider's own rule that
+          // a created workspace is owned unless ownsLifecycle is false).
+          const createdName = tracked.createdName();
+          if (createdName !== undefined && (options.settings.ownsLifecycle ?? true)) {
+            await rollbackFailedAcquisition(transport, createdName, "delete-if-created");
+          }
+          throw cause;
+        }
       },
       catch: (cause) =>
         new CoderSandboxError({

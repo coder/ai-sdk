@@ -147,6 +147,24 @@ describe("acquireWorkspace", () => {
     expect(transport.calls).toContain("destroy:spike-ws");
   });
 
+  it("never deletes a workspace it did not itself create (concurrent-creation race)", async () => {
+    // Simulates losing a create race: our status probe says the workspace is
+    // missing, but our own create call then fails (e.g. name conflict with
+    // `ifExists: "error"`). The other caller's workspace must not be touched.
+    const transport = new FakeTransport({ exists: false });
+    transport.create = async (options: CreateWorkspaceOptions) => {
+      transport.calls.push(`create:${options.workspace}`);
+      throw new Error("a workspace with this name already exists");
+    };
+
+    const exit = await Effect.runPromiseExit(scopedAcquire(transport));
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(transport.calls).toContain("create:spike-ws");
+    expect(transport.calls).not.toContain("destroy:spike-ws");
+    expect(transport.calls).not.toContain("stop:spike-ws");
+  });
+
   it("does not roll back a pre-existing workspace when acquisition fails", async () => {
     const transport = new FakeTransport({ exists: true });
     transport.neverReady = true;
@@ -235,6 +253,30 @@ describe("acquireSession", () => {
       Effect.scoped(acquireSession({ settings: settings(transport), teardown: "destroy" })),
     );
 
+    expect(transport.calls).toContain("destroy:spike-ws");
+  });
+
+  it("rolls back a workspace created by a failed create-mode session acquisition", async () => {
+    const transport = new FakeTransport({ exists: false });
+    transport.neverReady = true;
+
+    const exit = await Effect.runPromiseExit(
+      Effect.scoped(
+        acquireSession({
+          settings: {
+            workspace: "spike-ws",
+            create: { template: "docker", validate: false },
+            readyTimeoutMs: 1,
+            defaultWorkingDirectory: "/home/coder",
+            transport,
+          },
+        }),
+      ),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(transport.calls).toContain("create:spike-ws");
+    // The created-but-never-ready workspace must not leak.
     expect(transport.calls).toContain("destroy:spike-ws");
   });
 

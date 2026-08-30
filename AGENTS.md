@@ -10,8 +10,11 @@ this file covers what you need to operate the repo without tripping over it.
   pinned in `mise.toml` and locked in `mise.lock` — use `mise install`.
 - Three independently versioned npm packages, all targeting Vercel AI SDK v7:
   `@coder/ai-sdk-agent`, `@coder/ai-sdk-provider`, `@coder/ai-sdk-sandbox`.
-- One private package: `packages/release-please-ai` — release-please run as a
-  library with AI-generated changelog notes; it drives the release workflow.
+- Two private packages: `packages/release-please-ai` — release-please run as a
+  library with AI-generated changelog notes; it drives the release workflow —
+  and `packages/effect` (`@coder/ai-sdk-effect`) — an experimental Effect
+  bridge spike (issue #144), unpublished and outside release-please until it
+  graduates.
 
 ## Validation gates
 

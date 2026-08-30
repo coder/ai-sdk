@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.9.8](https://github.com/coder/ai-sdk/compare/agent-v0.9.7...agent-v0.9.8) (2026-08-30)
+
+A maintenance release with no user-facing changes.
+
 ## [0.9.7](https://github.com/coder/ai-sdk/compare/agent-v0.9.6...agent-v0.9.7) (2026-08-29)
 
 A maintenance release with no user-facing changes.

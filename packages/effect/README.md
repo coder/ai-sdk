@@ -40,7 +40,10 @@ decision.
 `CoderProviderSettings` or `{ provider }` for an existing `CoderProvider`, so
 both auth modes (centralized and BYOK) work unchanged. `generateText`,
 `generateObject`, and `streamText` are supported; structured outputs derive
-their JSON schema from the Effect Schema you pass.
+their JSON schema from the Effect Schema you pass. Generation controls
+(`maxOutputTokens`, `temperature`, `topP`, `topK`, penalties, `stopSequences`,
+`seed`, `reasoning`) are set at construction time via an optional third
+`GenerationOptions` argument and forwarded on every call.
 
 ```ts
 import * as LanguageModel from "@effect/ai/LanguageModel";
@@ -157,9 +160,14 @@ equivalent are dropped:
 - Response parts of type `custom`, `reasoning-file`, and
   `tool-approval-request`, and file payloads that are not raw data (URL /
   provider-reference / inline-text), are dropped.
-- `Prompt` provider options (per-part metadata) are not forwarded.
+- `Prompt` provider options (per-part metadata) are not forwarded, and
+  generation controls are fixed at model construction — a per-call override
+  channel (an Effect config service, as `@effect/ai`'s own providers use) is
+  Phase 2.
 - Workspace acquisition is uninterruptible (standard `acquireRelease`
   semantics); a slow `ensureCoderWorkspace` cannot be cancelled mid-flight.
+  A workspace created by an acquisition that then fails (e.g. readiness
+  timeout) is rolled back best-effort per the teardown policy.
 - Telemetry: the `ProviderOptions.span` is not wired into request headers.
 
 ## Phase 2 (not in this package yet)

@@ -90,14 +90,15 @@ describe("classifyError / isTransient", () => {
     expect(isTransient(network)).toBe(true);
   });
 
-  it("classifies raw AI SDK errors after mapping through toAiError", () => {
-    const map = (error: unknown) => classifyError(toAiError({ module: "T", method: "m", error }));
-    expect(map(apiCallError(403))).toBe("auth");
-    expect(map(apiCallError(undefined))).toBe("transport");
-    expect(map(new JSONParseError({ text: "x", cause: new Error("y") }))).toBe(
+  it("classifies raw AI SDK errors directly (documented contract)", () => {
+    expect(classifyError(apiCallError(403))).toBe("auth");
+    expect(classifyError(apiCallError(429))).toBe("rate-limit");
+    expect(classifyError(apiCallError(undefined))).toBe("transport");
+    expect(classifyError(new JSONParseError({ text: "x", cause: new Error("y") }))).toBe(
       "malformed-response",
     );
-    expect(map(new Error("boom"))).toBe("unknown");
+    expect(isTransient(apiCallError(503))).toBe(true);
+    expect(isTransient(apiCallError(401))).toBe(false);
   });
 
   it("classifies malformed output as terminal", () => {

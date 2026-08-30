@@ -31,6 +31,8 @@ class FakeTransport implements CoderTransport {
   readonly calls: Array<string> = [];
   exists: boolean;
   failStatus = false;
+  /** When true, created workspaces report a never-ready agent. */
+  neverReady = false;
 
   constructor(options: { exists: boolean }) {
     this.exists = options.exists;
@@ -58,7 +60,14 @@ class FakeTransport implements CoderTransport {
   async status(workspace: string): Promise<WorkspaceStatus | null> {
     this.calls.push(`status:${workspace}`);
     if (this.failStatus) throw new Error("status exploded");
-    return this.exists ? readyStatus(workspace) : null;
+    if (!this.exists) return null;
+    if (this.neverReady) {
+      return {
+        ...readyStatus(workspace),
+        agents: [{ name: "main", status: "connecting", lifecycleState: "starting" }],
+      };
+    }
+    return readyStatus(workspace);
   }
   async create(options: CreateWorkspaceOptions): Promise<void> {
     this.calls.push(`create:${options.workspace}`);
@@ -115,6 +124,40 @@ describe("acquireWorkspace", () => {
     await Effect.runPromise(scopedAcquire(kept, "keep"));
     expect(kept.calls).not.toContain("stop:spike-ws");
     expect(kept.calls).not.toContain("destroy:spike-ws");
+  });
+
+  it("rolls back a created workspace when readiness fails after creation", async () => {
+    const transport = new FakeTransport({ exists: false });
+    transport.neverReady = true;
+
+    const exit = await Effect.runPromiseExit(
+      Effect.scoped(
+        acquireWorkspace({
+          workspace: "spike-ws",
+          create: { template: "docker", validate: false },
+          readyTimeoutMs: 1,
+          transport,
+        }),
+      ),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(transport.calls).toContain("create:spike-ws");
+    // The created-but-never-ready workspace must not leak.
+    expect(transport.calls).toContain("destroy:spike-ws");
+  });
+
+  it("does not roll back a pre-existing workspace when acquisition fails", async () => {
+    const transport = new FakeTransport({ exists: true });
+    transport.neverReady = true;
+
+    const exit = await Effect.runPromiseExit(
+      Effect.scoped(acquireWorkspace({ workspace: "spike-ws", readyTimeoutMs: 1, transport })),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(transport.calls).not.toContain("destroy:spike-ws");
+    expect(transport.calls).not.toContain("stop:spike-ws");
   });
 
   it("wraps acquisition failures in CoderSandboxError", async () => {

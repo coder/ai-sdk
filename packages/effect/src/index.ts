@@ -6,6 +6,7 @@ export {
   toAiError,
 } from "./errors.js";
 export * as CoderLanguageModel from "./language-model.js";
+export type { GenerationOptions, ProviderSource } from "./language-model.js";
 export {
   acquireSession,
   type AcquireSessionOptions,

@@ -52,19 +52,43 @@ const MODULE = "CoderLanguageModel";
 export type ProviderSource = CoderProviderSettings | { readonly provider: CoderProvider };
 
 /**
+ * Generation controls forwarded to the underlying model on every call. These
+ * are fixed at construction time; a per-call override channel (an Effect
+ * config service, as `@effect/ai`'s own providers use) is Phase 2.
+ */
+export type GenerationOptions = Pick<
+  LanguageModelV4CallOptions,
+  | "maxOutputTokens"
+  | "temperature"
+  | "topP"
+  | "topK"
+  | "presencePenalty"
+  | "frequencyPenalty"
+  | "stopSequences"
+  | "seed"
+  | "reasoning"
+>;
+
+/**
  * Build a `LanguageModel` service from any AI SDK `LanguageModelV4`. This is
  * the bridge core; it performs no HTTP itself and is directly testable with a
  * fake model.
  */
-export const fromModel = (model: LanguageModelV4): Effect.Effect<LanguageModel.Service> =>
+export const fromModel = (
+  model: LanguageModelV4,
+  generation: GenerationOptions = {},
+): Effect.Effect<LanguageModel.Service> =>
   LanguageModel.make({
-    generateText: (options) => generateText(model, options),
-    streamText: (options) => streamText(model, options),
+    generateText: (options) => generateText(model, options, generation),
+    streamText: (options) => streamText(model, options, generation),
   });
 
 /** {@link fromModel} as a `Layer`. */
-export const layerFromModel = (model: LanguageModelV4): Layer.Layer<LanguageModel.LanguageModel> =>
-  Layer.effect(LanguageModel.LanguageModel, fromModel(model));
+export const layerFromModel = (
+  model: LanguageModelV4,
+  generation: GenerationOptions = {},
+): Layer.Layer<LanguageModel.LanguageModel> =>
+  Layer.effect(LanguageModel.LanguageModel, fromModel(model, generation));
 
 /**
  * Build a `LanguageModel` service for a Coder AI Gateway model. `source` is
@@ -75,6 +99,7 @@ export const layerFromModel = (model: LanguageModelV4): Layer.Layer<LanguageMode
 export const make = (
   modelId: string,
   source: ProviderSource,
+  generation: GenerationOptions = {},
 ): Effect.Effect<LanguageModel.Service, AiError.AiError> =>
   Effect.flatMap(
     Effect.try({
@@ -90,15 +115,16 @@ export const make = (
           cause: error,
         }),
     }),
-    fromModel,
+    (model) => fromModel(model, generation),
   );
 
 /** {@link make} as a `Layer` providing `LanguageModel`. */
 export const layer = (
   modelId: string,
   source: ProviderSource,
+  generation: GenerationOptions = {},
 ): Layer.Layer<LanguageModel.LanguageModel, AiError.AiError> =>
-  Layer.effect(LanguageModel.LanguageModel, make(modelId, source));
+  Layer.effect(LanguageModel.LanguageModel, make(modelId, source, generation));
 
 // ---------------------------------------------------------------------------
 // generateText / streamText implementations
@@ -107,9 +133,10 @@ export const layer = (
 const generateText = (
   model: LanguageModelV4,
   options: LanguageModel.ProviderOptions,
+  generation: GenerationOptions,
 ): Effect.Effect<Array<Response.PartEncoded>, AiError.AiError> =>
   Effect.gen(function* () {
-    const callOptions = yield* buildCallOptions(options, "generateText");
+    const callOptions = yield* buildCallOptions(options, generation, "generateText");
     const result = yield* Effect.tryPromise({
       try: (signal) => model.doGenerate({ ...callOptions, abortSignal: signal }),
       catch: (error) => toAiError({ module: MODULE, method: "generateText", error }),
@@ -133,10 +160,11 @@ const generateText = (
 const streamText = (
   model: LanguageModelV4,
   options: LanguageModel.ProviderOptions,
+  generation: GenerationOptions,
 ): Stream.Stream<Response.StreamPartEncoded, AiError.AiError> =>
   Stream.unwrapScoped(
     Effect.gen(function* () {
-      const callOptions = yield* buildCallOptions(options, "streamText");
+      const callOptions = yield* buildCallOptions(options, generation, "streamText");
       // Tie request cancellation to the stream scope so that fiber
       // interruption aborts the underlying HTTP request. Aborting after a
       // normal end is a no-op.
@@ -177,12 +205,13 @@ const unsupported = (method: string, description: string): AiError.MalformedInpu
 
 const buildCallOptions = (
   options: LanguageModel.ProviderOptions,
+  generation: GenerationOptions,
   method: string,
 ): Effect.Effect<LanguageModelV4CallOptions, AiError.AiError> =>
   Effect.try({
     try: () => {
       const prompt = promptToV4(options.prompt);
-      const callOptions: LanguageModelV4CallOptions = { prompt };
+      const callOptions: LanguageModelV4CallOptions = { ...generation, prompt };
       if (options.tools.length > 0) {
         callOptions.tools = options.tools.map((tool) => toolToV4(tool, method));
         callOptions.toolChoice = toolChoiceToV4(options.toolChoice, method);

@@ -80,8 +80,19 @@ export const acquireWorkspace = (
         try: async () => {
           // The same transport instance must perform acquisition and teardown.
           const transport = settings.transport ?? new CoderCliTransport();
-          const workspace = await ensureCoderWorkspace({ ...settings, transport });
-          return { workspace, transport };
+          const preexisting = (await transport.status(options.workspace)) !== null;
+          try {
+            const workspace = await ensureCoderWorkspace({ ...settings, transport });
+            return { workspace, transport };
+          } catch (cause) {
+            // `ensureCoderWorkspace` may have created the workspace and then
+            // failed waiting for readiness. The release finalizer is only
+            // registered after successful acquisition, so roll the created
+            // workspace back here per the teardown policy — otherwise it
+            // would leak.
+            await rollbackFailedAcquisition(transport, options.workspace, preexisting, teardown);
+            throw cause;
+          }
         },
         catch: (cause) =>
           new CoderSandboxError({
@@ -95,6 +106,31 @@ export const acquireWorkspace = (
     ),
     ({ workspace }) => workspace,
   );
+};
+
+/**
+ * Best-effort rollback of a workspace that a failed acquisition created. The
+ * original acquisition error always wins: rollback failures are swallowed
+ * (the workspace may leak, exactly as if no rollback had been attempted).
+ */
+const rollbackFailedAcquisition = async (
+  transport: CoderTransport,
+  name: string,
+  preexisting: boolean,
+  teardown: WorkspaceTeardown,
+): Promise<void> => {
+  if (preexisting || teardown === "keep") return;
+  try {
+    // Only roll back a workspace that exists now but did not before.
+    if ((await transport.status(name)) === null) return;
+    if (teardown === "delete-if-created") {
+      await transport.destroy(name);
+    } else {
+      await transport.stop(name);
+    }
+  } catch {
+    // Deliberately ignored; the acquisition failure is re-thrown by the caller.
+  }
 };
 
 const releaseWorkspace = (

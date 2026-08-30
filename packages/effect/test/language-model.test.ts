@@ -215,6 +215,40 @@ describe("generateText", () => {
     expect(response.toolResults[0]?.result).toEqual({ temperature: 21 });
   });
 
+  it("forwards generation controls to the underlying model", async () => {
+    let captured: LanguageModelV4CallOptions | undefined;
+    const model = fakeModel({
+      doGenerate: async (options) => {
+        captured = options;
+        return {
+          content: [{ type: "text", text: "ok" }],
+          finishReason: { unified: "stop", raw: undefined },
+          usage: USAGE,
+          warnings: [],
+        };
+      },
+    });
+
+    await Effect.runPromise(
+      Effect.flatMap(
+        CoderLanguageModel.fromModel(model, {
+          maxOutputTokens: 128,
+          temperature: 0,
+          topP: 0.9,
+          stopSequences: ["END"],
+          seed: 42,
+        }),
+        (m) => m.generateText({ prompt: "hi" }),
+      ),
+    );
+
+    expect(captured?.maxOutputTokens).toBe(128);
+    expect(captured?.temperature).toBe(0);
+    expect(captured?.topP).toBe(0.9);
+    expect(captured?.stopSequences).toEqual(["END"]);
+    expect(captured?.seed).toBe(42);
+  });
+
   it("fails with MalformedInput for the oneOf tool choice mode", async () => {
     const GetWeather = Tool.make("get_weather", {
       parameters: { city: Schema.String },

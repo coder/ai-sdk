@@ -12,6 +12,7 @@
  * response, ...) from either side — useful with `Effect.retry` policies.
  */
 import {
+  AISDKError,
   APICallError,
   EmptyResponseBodyError,
   InvalidArgumentError,
@@ -48,11 +49,7 @@ export const classifyStatus = (status: number): ErrorReason => {
   return "unknown";
 };
 
-/**
- * Classify an `@effect/ai` `AiError` into an {@link ErrorReason}. Raw AI SDK
- * errors are classified by first mapping them with {@link toAiError}.
- */
-export const classifyError = (error: AiError.AiError): ErrorReason => {
+const classifyAiError = (error: AiError.AiError): ErrorReason => {
   switch (error._tag) {
     case "HttpResponseError":
       return error.reason === "StatusCode"
@@ -69,10 +66,20 @@ export const classifyError = (error: AiError.AiError): ErrorReason => {
 };
 
 /**
+ * Classify an error into an {@link ErrorReason}: either an `@effect/ai`
+ * `AiError` produced by this bridge, or a raw AI SDK error (which is first
+ * mapped with {@link toAiError}).
+ */
+export const classifyError = (error: AiError.AiError | AISDKError): ErrorReason => {
+  if (AiError.isAiError(error)) return classifyAiError(error);
+  return classifyAiError(toAiError({ module: "CoderAiError", method: "classifyError", error }));
+};
+
+/**
  * Whether a failure is worth retrying (throttling, upstream outage, or a
  * network error). Auth and malformed-response failures are terminal.
  */
-export const isTransient = (error: AiError.AiError): boolean => {
+export const isTransient = (error: AiError.AiError | AISDKError): boolean => {
   const reason = classifyError(error);
   return reason === "rate-limit" || reason === "provider-unavailable" || reason === "transport";
 };

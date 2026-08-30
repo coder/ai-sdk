@@ -18,6 +18,10 @@ install instructions, usage, and API docs.
 | [`@coder/ai-sdk-agent`](./packages/agent)       | [![npm](https://img.shields.io/npm/v/@coder/ai-sdk-agent.svg)](https://www.npmjs.com/package/@coder/ai-sdk-agent)       | A Vercel AI SDK–compliant **`Agent`** (AI SDK v7) backed by **Coder Agents**, Coder's server-side agent runtime. `new CoderAgent()` returns a real `Agent` — `generate()`, `stream()`, tool calls, the whole interface.                                                                                      |
 | [`@coder/ai-sdk-provider`](./packages/provider) | [![npm](https://img.shields.io/npm/v/@coder/ai-sdk-provider.svg)](https://www.npmjs.com/package/@coder/ai-sdk-provider) | A **Vercel AI SDK provider** that routes `generateText` / `streamText` calls through your Coder deployment's [AI Gateway](https://coder.com/docs/ai-coder/ai-gateway). Point it at your deployment with a Coder API token and use any model it proxies — no raw provider keys, with per-user auth and audit. |
 
+Experimental: [`@coder/ai-sdk-effect`](./packages/effect) bridges these
+packages to [Effect](https://effect.website) (unpublished Phase 1 spike, see
+[#144](https://github.com/coder/ai-sdk/issues/144)).
+
 **Which package?** Need a **model** (text, streaming, or schema‑constrained
 structured output) through your deployment → `@coder/ai-sdk-provider`. Need Coder's
 **server‑side agent** (multi‑step tool loop, MCP, workspace file/shell tools) →

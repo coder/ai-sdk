@@ -10,8 +10,11 @@ this file covers what you need to operate the repo without tripping over it.
   pinned in `mise.toml` and locked in `mise.lock` — use `mise install`.
 - Three independently versioned npm packages, all targeting Vercel AI SDK v7:
   `@coder/ai-sdk-agent`, `@coder/ai-sdk-provider`, `@coder/ai-sdk-sandbox`.
-- One private package: `packages/release-please-ai` — release-please run as a
-  library with AI-generated changelog notes; it drives the release workflow.
+- Two private packages: `packages/release-please-ai` — release-please run as a
+  library with AI-generated changelog notes; it drives the release workflow —
+  and `packages/effect` (`@coder/ai-sdk-effect`) — an experimental Effect
+  bridge spike (issue #144), unpublished and outside release-please until it
+  graduates.
 
 ## Validation gates
 
@@ -40,8 +43,8 @@ Gotchas:
 - **Conventional Commit PR titles are load-bearing.** PRs are squash-merged,
   the title becomes the commit on `main`, and release-please derives versions
   and changelogs from those commits. `pr-title.yml` validates titles (scope
-  `sandbox` / `agent` / `provider` or none; subject starts lowercase, no
-  trailing period).
+  `sandbox` / `agent` / `provider` / `effect` or none; subject starts
+  lowercase, no trailing period).
 - **Merge only through the merge queue** (squash). Auto-merge is disabled; if
   `gh pr merge` lacks queue support, use GraphQL `enqueuePullRequest`.
 - The single required status check is the aggregate `Required` job in

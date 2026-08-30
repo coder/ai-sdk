@@ -5,6 +5,10 @@ packages:
 # uses `allowBuilds` (a name -> bool map) to approve specific packages.
 allowBuilds:
   esbuild: true
+  # Optional native accelerator for msgpackr (via @effect/experimental, a type
+  # peer of @effect/ai). Never loaded by @coder/ai-sdk-effect; deny the build
+  # and rely on msgpackr's pure-JS fallback.
+  msgpackr-extract: false
 
 overrides:
   # Force the patched esbuild across the whole workspace. tsup pins a vulnerable
@@ -30,3 +34,5 @@ minimumReleaseAgeExclude:
   - "@ai-sdk/tui"
   - "ai"
   - "@ai-sdk/mcp@2.0.32 || 2.0.37 || 2.0.39 || 2.0.40"
+  - "@coder/ai-sdk-provider@0.4.4"
+  - "@coder/ai-sdk-sandbox@0.4.7"

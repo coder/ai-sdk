@@ -42,23 +42,23 @@
     "example:sandbox": "tsx examples/03-sandbox.ts"
   },
   "dependencies": {
-    "@ai-sdk/provider": "4.0.8",
-    "@coder/ai-sdk-provider": "0.4.4",
-    "@coder/ai-sdk-sandbox": "0.4.7",
+    "@ai-sdk/provider": "4.0.9",
+    "@coder/ai-sdk-provider": "0.4.5",
+    "@coder/ai-sdk-sandbox": "0.4.8",
     "@effect/ai": "0.37.0",
     "effect": "3.22.1"
   },
   "devDependencies": {
-    "@ai-sdk/harness": "^1.0.94",
+    "@ai-sdk/harness": "^1.0.95",
     "@ai-sdk/provider-utils": "^5.0.34",
     "@effect/experimental": "0.61.1",
     "@effect/platform": "0.97.1",
     "@effect/rpc": "0.76.2",
     "@types/node": "^26.4.0",
     "@vitest/coverage-v8": "^4.1.11",
-    "ai": "^7.0.85",
+    "ai": "^7.0.86",
     "tsup": "^8.5.1",
-    "tsx": "^4.23.12",
+    "tsx": "^4.23.13",
     "typescript": "^6.0.3",
     "vitest": "^4.1.11",
     "zod": "4.5.4"

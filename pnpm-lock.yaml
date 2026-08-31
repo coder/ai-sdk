@@ -32,8 +32,8 @@ importers:
         version: 8.21.3
     devDependencies:
       '@ai-sdk/react':
-        specifier: 4.0.88
-        version: 4.0.88(react@19.2.8)(zod@4.5.4)
+        specifier: 4.0.89
+        version: 4.0.89(react@19.2.8)(zod@4.5.4)
       '@types/node':
         specifier: ^26.4.0
         version: 26.4.0
@@ -41,20 +41,20 @@ importers:
         specifier: ^8.18.1
         version: 8.18.1
       ai:
-        specifier: ^7.0.85
-        version: 7.0.85(zod@4.5.4)
+        specifier: ^7.0.86
+        version: 7.0.86(zod@4.5.4)
       tsup:
         specifier: ^8.5.1
-        version: 8.5.1(postcss@8.5.26)(supports-color@7.2.0)(tsx@4.23.12)(typescript@6.0.3)(yaml@2.9.0)
+        version: 8.5.1(postcss@8.5.26)(supports-color@7.2.0)(tsx@4.23.13)(typescript@6.0.3)(yaml@2.9.0)
       tsx:
-        specifier: ^4.23.12
-        version: 4.23.12
+        specifier: ^4.23.13
+        version: 4.23.13
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
       vitest:
         specifier: ^4.1.11
-        version: 4.1.11(@types/node@26.4.0)(@vitest/coverage-v8@4.1.11)(vite@8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0))
+        version: 4.1.11(@types/node@26.4.0)(@vitest/coverage-v8@4.1.11)(vite@8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.9.0))
       zod:
         specifier: 4.5.4
         version: 4.5.4
@@ -62,14 +62,14 @@ importers:
   packages/effect:
     dependencies:
       '@ai-sdk/provider':
-        specifier: 4.0.8
-        version: 4.0.8
+        specifier: 4.0.9
+        version: 4.0.9
       '@coder/ai-sdk-provider':
-        specifier: 0.4.4
-        version: 0.4.4(ai@7.0.85(zod@4.5.4))(zod@4.5.4)
+        specifier: 0.4.5
+        version: 0.4.5(ai@7.0.86(zod@4.5.4))(zod@4.5.4)
       '@coder/ai-sdk-sandbox':
-        specifier: 0.4.7
-        version: 0.4.7(@ai-sdk/harness@1.0.94(ws@8.21.3)(zod@4.5.4))(@ai-sdk/provider-utils@5.0.34(zod@4.5.4))
+        specifier: 0.4.8
+        version: 0.4.8(@ai-sdk/harness@1.0.95(ws@8.21.3)(zod@4.5.4))(@ai-sdk/provider-utils@5.0.34(zod@4.5.4))
       '@effect/ai':
         specifier: 0.37.0
         version: 0.37.0(@effect/experimental@0.61.1(@effect/platform@0.97.1(effect@3.22.1))(effect@3.22.1))(@effect/platform@0.97.1(effect@3.22.1))(@effect/rpc@0.76.2(@effect/platform@0.97.1(effect@3.22.1))(effect@3.22.1))(effect@3.22.1)
@@ -78,8 +78,8 @@ importers:
         version: 3.22.1
     devDependencies:
       '@ai-sdk/harness':
-        specifier: ^1.0.94
-        version: 1.0.94(ws@8.21.3)(zod@4.5.4)
+        specifier: ^1.0.95
+        version: 1.0.95(ws@8.21.3)(zod@4.5.4)
       '@ai-sdk/provider-utils':
         specifier: ^5.0.34
         version: 5.0.34(zod@4.5.4)
@@ -99,20 +99,20 @@ importers:
         specifier: ^4.1.11
         version: 4.1.11(vitest@4.1.11)
       ai:
-        specifier: ^7.0.85
-        version: 7.0.85(zod@4.5.4)
+        specifier: ^7.0.86
+        version: 7.0.86(zod@4.5.4)
       tsup:
         specifier: ^8.5.1
-        version: 8.5.1(postcss@8.5.26)(supports-color@7.2.0)(tsx@4.23.12)(typescript@6.0.3)(yaml@2.9.0)
+        version: 8.5.1(postcss@8.5.26)(supports-color@7.2.0)(tsx@4.23.13)(typescript@6.0.3)(yaml@2.9.0)
       tsx:
-        specifier: ^4.23.12
-        version: 4.23.12
+        specifier: ^4.23.13
+        version: 4.23.13
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
       vitest:
         specifier: ^4.1.11
-        version: 4.1.11(@types/node@26.4.0)(@vitest/coverage-v8@4.1.11)(vite@8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0))
+        version: 4.1.11(@types/node@26.4.0)(@vitest/coverage-v8@4.1.11)(vite@8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.9.0))
       zod:
         specifier: 4.5.4
         version: 4.5.4
@@ -139,23 +139,23 @@ importers:
         specifier: ^4.1.11
         version: 4.1.11(vitest@4.1.11)
       ai:
-        specifier: ^7.0.85
-        version: 7.0.85(zod@4.5.4)
+        specifier: ^7.0.86
+        version: 7.0.86(zod@4.5.4)
       publint:
         specifier: ^0.3.24
         version: 0.3.24
       tsup:
         specifier: ^8.5.1
-        version: 8.5.1(postcss@8.5.26)(supports-color@7.2.0)(tsx@4.23.12)(typescript@6.0.3)(yaml@2.9.0)
+        version: 8.5.1(postcss@8.5.26)(supports-color@7.2.0)(tsx@4.23.13)(typescript@6.0.3)(yaml@2.9.0)
       tsx:
-        specifier: ^4.23.12
-        version: 4.23.12
+        specifier: ^4.23.13
+        version: 4.23.13
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
       vitest:
         specifier: ^4.1.11
-        version: 4.1.11(@types/node@26.4.0)(@vitest/coverage-v8@4.1.11)(vite@8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0))
+        version: 4.1.11(@types/node@26.4.0)(@vitest/coverage-v8@4.1.11)(vite@8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.9.0))
       zod:
         specifier: 4.5.4
         version: 4.5.4
@@ -166,8 +166,8 @@ importers:
         specifier: ^4.0.46
         version: 4.0.46(zod@4.5.4)
       ai:
-        specifier: ^7.0.85
-        version: 7.0.85(zod@4.5.4)
+        specifier: ^7.0.86
+        version: 7.0.86(zod@4.5.4)
       release-please:
         specifier: ~17.11.2
         version: 17.11.2(supports-color@7.2.0)
@@ -179,14 +179,14 @@ importers:
         specifier: ^26.4.0
         version: 26.4.0
       tsx:
-        specifier: ^4.23.12
-        version: 4.23.12
+        specifier: ^4.23.13
+        version: 4.23.13
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
       vitest:
         specifier: ^4.1.11
-        version: 4.1.11(@types/node@26.4.0)(@vitest/coverage-v8@4.1.11)(vite@8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0))
+        version: 4.1.11(@types/node@26.4.0)(@vitest/coverage-v8@4.1.11)(vite@8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.9.0))
 
   packages/sandbox:
     dependencies:
@@ -198,17 +198,17 @@ importers:
         version: 2.9.0
     devDependencies:
       '@ai-sdk/harness':
-        specifier: ^1.0.94
-        version: 1.0.94(ws@8.21.3)(zod@4.5.4)
+        specifier: ^1.0.95
+        version: 1.0.95(ws@8.21.3)(zod@4.5.4)
       '@ai-sdk/harness-claude-code':
-        specifier: ^1.0.98
-        version: 1.0.98(zod@4.5.4)
+        specifier: ^1.0.99
+        version: 1.0.99(zod@4.5.4)
       '@ai-sdk/provider-utils':
         specifier: ^5.0.34
         version: 5.0.34(zod@4.5.4)
       '@ai-sdk/tui':
-        specifier: ^1.0.86
-        version: 1.0.86(zod@4.5.4)
+        specifier: ^1.0.87
+        version: 1.0.87(zod@4.5.4)
       '@arethetypeswrong/cli':
         specifier: ^0.18.5
         version: 0.18.5
@@ -226,27 +226,21 @@ importers:
         version: 0.3.24
       tsup:
         specifier: ^8.5.1
-        version: 8.5.1(postcss@8.5.26)(supports-color@7.2.0)(tsx@4.23.12)(typescript@6.0.3)(yaml@2.9.0)
+        version: 8.5.1(postcss@8.5.26)(supports-color@7.2.0)(tsx@4.23.13)(typescript@6.0.3)(yaml@2.9.0)
       tsx:
-        specifier: ^4.23.12
-        version: 4.23.12
+        specifier: ^4.23.13
+        version: 4.23.13
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
       vitest:
         specifier: ^4.1.11
-        version: 4.1.11(@types/node@26.4.0)(@vitest/coverage-v8@4.1.11)(vite@8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0))
+        version: 4.1.11(@types/node@26.4.0)(@vitest/coverage-v8@4.1.11)(vite@8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.9.0))
       zod:
         specifier: 4.5.4
         version: 4.5.4
 
 packages:
-
-  '@ai-sdk/anthropic@4.0.45':
-    resolution: {integrity: sha512-2h1WYU1VdfkI6CU3mLes7Vh4Ua3jq5LDE1ciMgUymLNS7ZbtqhgVzBBPhnOdg83lnkYTAOeApCgkGOdwJHxdkA==}
-    engines: {node: '>=22'}
-    peerDependencies:
-      zod: 4.5.4
 
   '@ai-sdk/anthropic@4.0.46':
     resolution: {integrity: sha512-/q/wWLArkavQHeOYdv8kZyJRTuasTRwrzoAnvUaY0sHx/BGDYDWW9ENn7lu/H5iUeYId6NhtYAVv+TlqHpp9Cg==}
@@ -254,20 +248,20 @@ packages:
     peerDependencies:
       zod: 4.5.4
 
-  '@ai-sdk/gateway@4.0.69':
-    resolution: {integrity: sha512-W5MMdyqsaziQy/A4kxlK74iEQ+NuO6OaszH32cEQpUgBW0o15S2fAdP0aYSH2/5lrVZSMXLQLCzuMkRGHBua3A==}
+  '@ai-sdk/gateway@4.0.70':
+    resolution: {integrity: sha512-0tzAH2vwXOs/kVktAZRS04dATEQJk1hf1QR+VuVfvo9QmW3UPgcjhhJD9QFgP8HZLxkrEGDImwLIQ7sUfQTIsA==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: 4.5.4
 
-  '@ai-sdk/harness-claude-code@1.0.98':
-    resolution: {integrity: sha512-3HtEwPN8vfvE0RkpOvK/9uic11PZK18d1C/SSCWXtkliQRUUHCoby+fCIVZMzE/AbRxuBZAm30XgxgpJ9CkYHw==}
+  '@ai-sdk/harness-claude-code@1.0.99':
+    resolution: {integrity: sha512-JZVX6DZHq9CDvbQL5nZwXvQDIzvX6eS0lyvrXrNn1xuDyXMbitOyTkGP6rnQ6nU5fSKFQCkBOzKJ0o84HyEb5g==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: 4.5.4
 
-  '@ai-sdk/harness@1.0.94':
-    resolution: {integrity: sha512-tExIejKe008+3SbHYbqvuyhCtS/vwR7gruwlp/012gQ2pDInMkbcEmnGgM37/xKFGe89xpQrS1/2+06iojHIhA==}
+  '@ai-sdk/harness@1.0.95':
+    resolution: {integrity: sha512-JUy8xklODxmO5EItaIgApDHBTrqraPAudbd+bpV8suqVuLJWPNbjK17w+HFz3NWzmCU4Ae+D6swaBhrhr+8VUg==}
     engines: {node: '>=22'}
     peerDependencies:
       ws: ^8.21.0
@@ -282,20 +276,8 @@ packages:
     peerDependencies:
       zod: 4.5.4
 
-  '@ai-sdk/openai-compatible@3.0.40':
-    resolution: {integrity: sha512-4YvVykS7XfZEJMCe4gjxsT3CbCWXCONIK2QSVjEr+Xc4wbJcAxAM5xIWpx4x8ysFLlImhZc4OP4iTzeeGv76dA==}
-    engines: {node: '>=22'}
-    peerDependencies:
-      zod: 4.5.4
-
   '@ai-sdk/openai-compatible@3.0.41':
     resolution: {integrity: sha512-djOLRg4WOq5EINvWLfw2dniO14vBrf0iMRs/aXAQqsp4a67Wi49aMpZuvC7C7L3VpL43rnFzS1fWw7T6vpzgUQ==}
-    engines: {node: '>=22'}
-    peerDependencies:
-      zod: 4.5.4
-
-  '@ai-sdk/provider-utils@5.0.33':
-    resolution: {integrity: sha512-TfjJqJmRsQyxAlb+3hGmP1o1xLUIT79yhOgtJuTF4hqsB37IC3CufGsuFhU04EeTOg7R9iptQ6Bzm0MW0n/c3g==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: 4.5.4
@@ -306,22 +288,18 @@ packages:
     peerDependencies:
       zod: 4.5.4
 
-  '@ai-sdk/provider@4.0.8':
-    resolution: {integrity: sha512-aWO7iwhFUGf347tCwNGggggfmZigaSu7TF739IZSrWWABUp7zkb4Cr3fMqvBe5EIS7ABJJu3Cadn0g/zs1G0QQ==}
-    engines: {node: '>=22'}
-
   '@ai-sdk/provider@4.0.9':
     resolution: {integrity: sha512-XnGXPWiBIfqjsVEud5pOaVneRByJQOu2sYNwlSVJTPCvakdCDkVuYKKfNuStkIpMUYl7JIkBZGBx+B5YfNeVjA==}
     engines: {node: '>=22'}
 
-  '@ai-sdk/react@4.0.88':
-    resolution: {integrity: sha512-lDE1hHAVWiOSLsZRzyMicKR2DziET0dQJfROS/By39w5yQXU9EPYN7+HIbx24gaDTPSFzkw8ax3O4/cVIc++cA==}
+  '@ai-sdk/react@4.0.89':
+    resolution: {integrity: sha512-sQ8cAicm2/EHeS5lisNDRG4N5ycHJzheDY+ic5JAIGFuF6QVx4T5EgiAdqGZptk3vy0Mec9HkwE3sSAaFINk1A==}
     engines: {node: '>=22'}
     peerDependencies:
       react: ^18 || ~19.0.1 || ~19.1.2 || ^19.2.1
 
-  '@ai-sdk/tui@1.0.86':
-    resolution: {integrity: sha512-ScQiSl5PfrhdJeD2eTosK2mbsDWAPtVMv0eUPdL5Zxrmy5UpQ2L/C//nKdInoxiLC9o+jMLa/kjue3V5B6fitw==}
+  '@ai-sdk/tui@1.0.87':
+    resolution: {integrity: sha512-IE2PuMx+dQZ8LKy4krpWVXMbH12LhA0qgKoOt8D9Ja9tlaw+PhMsloC/K7GOmL7cu4O84e524KGVWU+H3nURDw==}
     engines: {node: '>=22'}
 
   '@andrewbranch/untar.js@1.0.4':
@@ -364,8 +342,8 @@ packages:
   '@braidai/lang@1.1.2':
     resolution: {integrity: sha512-qBcknbBufNHlui137Hft8xauQMTZDKdophmLFv05r2eNmdIv/MlPuP4TdUknHG68UdWLgVZwgxVe735HzJNIwA==}
 
-  '@coder/ai-sdk-provider@0.4.4':
-    resolution: {integrity: sha512-vT4ZiX+17+to5cp0CnQYw4+593NmzKJmS6IF8icyuHFIM0wL2O5oaspOOVxcfc30utxDWOI58fBT9gDabxLSUQ==}
+  '@coder/ai-sdk-provider@0.4.5':
+    resolution: {integrity: sha512-3qK/fb1L98fuz/VRHj5rBuK2f4QaX8WsMle1X+bZCDHxeIaLPSeDgUX3Rgqqqzl0kGSaqLsUYLemtvRQvv/9YA==}
     engines: {node: '>=22'}
     peerDependencies:
       ai: ^7.0.0
@@ -374,8 +352,8 @@ packages:
       zod:
         optional: true
 
-  '@coder/ai-sdk-sandbox@0.4.7':
-    resolution: {integrity: sha512-Z0+FRPrGUU2d2DltAjHqdXzyrW1qDgAS/fQvzZpCkJk0a2z0QteRfhDoPE10yPY4sXV+aXVvYw1Shs4ewoaOYA==}
+  '@coder/ai-sdk-sandbox@0.4.8':
+    resolution: {integrity: sha512-+nmZEHOyfMlCmJcuEKnDJaDtQrbrH3VZCcZhll6rDxyvONKilZa2zUlKW4mNbIjiXyM0hC0bgEfKwfvX2AJjzA==}
     engines: {node: '>=22'}
     peerDependencies:
       '@ai-sdk/harness': ^1.0.0
@@ -1279,8 +1257,8 @@ packages:
     resolution: {integrity: sha512-MnA+YT8fwfJPgBx3m60MNqakm30XOkyIoH1y6huTQvC0PwZG7ki8NacLBcrPbNoo8vEZy7Jpuk7+jMO+CUovTQ==}
     engines: {node: '>= 14'}
 
-  ai@7.0.85:
-    resolution: {integrity: sha512-HVtPz0qLbTUad+QBnWWReIUmwk+U4PcRENMx+9PsHGVoinoc5CLDiVjNR+VBXTKOSaNgce8kSU/Rtbb4kjZsSw==}
+  ai@7.0.86:
+    resolution: {integrity: sha512-11Hovs3BI98tPJiOuA85Be+ktxbZ2QUIqqLJqfHJ55zz4106pjRkEP9OQ95glyjBXPEtTdr6/z4ISsk6G13rvw==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: 4.5.4
@@ -2263,8 +2241,8 @@ packages:
       typescript:
         optional: true
 
-  tsx@4.23.12:
-    resolution: {integrity: sha512-FDf4L4sYzKtzWYhU/Xm0AQFdTjdIxNo9ElTf2mxXM6k8YMHXzYUe4yODVaXP4V9uMFbVg8c0qyBccK2OOxb45Q==}
+  tsx@4.23.13:
+    resolution: {integrity: sha512-BL5MGkRln6aDYhb0xbQlEAGw743BaZYWdbWtdJOBriYJboKgUUYCadFp2/FpBBZquBC/ezNBn7wMMPx7FDZUDw==}
     engines: {node: '>=18.0.0'}
     hasBin: true
 
@@ -2499,28 +2477,22 @@ packages:
 
 snapshots:
 
-  '@ai-sdk/anthropic@4.0.45(zod@4.5.4)':
-    dependencies:
-      '@ai-sdk/provider': 4.0.8
-      '@ai-sdk/provider-utils': 5.0.33(zod@4.5.4)
-      zod: 4.5.4
-
   '@ai-sdk/anthropic@4.0.46(zod@4.5.4)':
     dependencies:
       '@ai-sdk/provider': 4.0.9
       '@ai-sdk/provider-utils': 5.0.34(zod@4.5.4)
       zod: 4.5.4
 
-  '@ai-sdk/gateway@4.0.69(zod@4.5.4)':
+  '@ai-sdk/gateway@4.0.70(zod@4.5.4)':
     dependencies:
       '@ai-sdk/provider': 4.0.9
       '@ai-sdk/provider-utils': 5.0.34(zod@4.5.4)
       '@vercel/oidc': 3.2.0
       zod: 4.5.4
 
-  '@ai-sdk/harness-claude-code@1.0.98(zod@4.5.4)':
+  '@ai-sdk/harness-claude-code@1.0.99(zod@4.5.4)':
     dependencies:
-      '@ai-sdk/harness': 1.0.94(ws@8.21.3)(zod@4.5.4)
+      '@ai-sdk/harness': 1.0.95(ws@8.21.3)(zod@4.5.4)
       '@ai-sdk/provider-utils': 5.0.34(zod@4.5.4)
       ws: 8.21.3
       zod: 4.5.4
@@ -2528,11 +2500,11 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  '@ai-sdk/harness@1.0.94(ws@8.21.3)(zod@4.5.4)':
+  '@ai-sdk/harness@1.0.95(ws@8.21.3)(zod@4.5.4)':
     dependencies:
       '@ai-sdk/provider': 4.0.9
       '@ai-sdk/provider-utils': 5.0.34(zod@4.5.4)
-      ai: 7.0.85(zod@4.5.4)
+      ai: 7.0.86(zod@4.5.4)
       zod: 4.5.4
     optionalDependencies:
       ws: 8.21.3
@@ -2545,25 +2517,10 @@ snapshots:
       pkce-challenge: 5.0.1
       zod: 4.5.4
 
-  '@ai-sdk/openai-compatible@3.0.40(zod@4.5.4)':
-    dependencies:
-      '@ai-sdk/provider': 4.0.8
-      '@ai-sdk/provider-utils': 5.0.33(zod@4.5.4)
-      zod: 4.5.4
-
   '@ai-sdk/openai-compatible@3.0.41(zod@4.5.4)':
     dependencies:
       '@ai-sdk/provider': 4.0.9
       '@ai-sdk/provider-utils': 5.0.34(zod@4.5.4)
-      zod: 4.5.4
-
-  '@ai-sdk/provider-utils@5.0.33(zod@4.5.4)':
-    dependencies:
-      '@ai-sdk/provider': 4.0.8
-      '@standard-schema/spec': 1.1.0
-      '@workflow/serde': 4.1.0
-      eventsource-parser: 3.1.1
-      undici: 7.29.0
       zod: 4.5.4
 
   '@ai-sdk/provider-utils@5.0.34(zod@4.5.4)':
@@ -2575,29 +2532,25 @@ snapshots:
       undici: 7.29.0
       zod: 4.5.4
 
-  '@ai-sdk/provider@4.0.8':
-    dependencies:
-      json-schema: 0.4.0
-
   '@ai-sdk/provider@4.0.9':
     dependencies:
       json-schema: 0.4.0
 
-  '@ai-sdk/react@4.0.88(react@19.2.8)(zod@4.5.4)':
+  '@ai-sdk/react@4.0.89(react@19.2.8)(zod@4.5.4)':
     dependencies:
       '@ai-sdk/mcp': 2.0.41(zod@4.5.4)
       '@ai-sdk/provider': 4.0.9
       '@ai-sdk/provider-utils': 5.0.34(zod@4.5.4)
-      ai: 7.0.85(zod@4.5.4)
+      ai: 7.0.86(zod@4.5.4)
       react: 19.2.8
       swr: 2.5.1(react@19.2.8)
       throttleit: 2.1.0
     transitivePeerDependencies:
       - zod
 
-  '@ai-sdk/tui@1.0.86(zod@4.5.4)':
+  '@ai-sdk/tui@1.0.87(zod@4.5.4)':
     dependencies:
-      ai: 7.0.85(zod@4.5.4)
+      ai: 7.0.86(zod@4.5.4)
     transitivePeerDependencies:
       - zod
 
@@ -2647,18 +2600,18 @@ snapshots:
 
   '@braidai/lang@1.1.2': {}
 
-  '@coder/ai-sdk-provider@0.4.4(ai@7.0.85(zod@4.5.4))(zod@4.5.4)':
+  '@coder/ai-sdk-provider@0.4.5(ai@7.0.86(zod@4.5.4))(zod@4.5.4)':
     dependencies:
-      '@ai-sdk/anthropic': 4.0.45(zod@4.5.4)
-      '@ai-sdk/openai-compatible': 3.0.40(zod@4.5.4)
-      '@ai-sdk/provider': 4.0.8
-      ai: 7.0.85(zod@4.5.4)
+      '@ai-sdk/anthropic': 4.0.46(zod@4.5.4)
+      '@ai-sdk/openai-compatible': 3.0.41(zod@4.5.4)
+      '@ai-sdk/provider': 4.0.9
+      ai: 7.0.86(zod@4.5.4)
     optionalDependencies:
       zod: 4.5.4
 
-  '@coder/ai-sdk-sandbox@0.4.7(@ai-sdk/harness@1.0.94(ws@8.21.3)(zod@4.5.4))(@ai-sdk/provider-utils@5.0.34(zod@4.5.4))':
+  '@coder/ai-sdk-sandbox@0.4.8(@ai-sdk/harness@1.0.95(ws@8.21.3)(zod@4.5.4))(@ai-sdk/provider-utils@5.0.34(zod@4.5.4))':
     dependencies:
-      '@ai-sdk/harness': 1.0.94(ws@8.21.3)(zod@4.5.4)
+      '@ai-sdk/harness': 1.0.95(ws@8.21.3)(zod@4.5.4)
       '@ai-sdk/provider-utils': 5.0.34(zod@4.5.4)
       ws: 8.21.3
       yaml: 2.9.0
@@ -3180,7 +3133,7 @@ snapshots:
       obug: 2.1.4
       std-env: 4.2.0
       tinyrainbow: 3.1.1
-      vitest: 4.1.11(@types/node@26.4.0)(@vitest/coverage-v8@4.1.11)(vite@8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0))
+      vitest: 4.1.11(@types/node@26.4.0)(@vitest/coverage-v8@4.1.11)(vite@8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.9.0))
 
   '@vitest/expect@4.1.11':
     dependencies:
@@ -3191,13 +3144,13 @@ snapshots:
       chai: 6.2.2
       tinyrainbow: 3.1.1
 
-  '@vitest/mocker@4.1.11(vite@8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0))':
+  '@vitest/mocker@4.1.11(vite@8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.9.0))':
     dependencies:
       '@vitest/spy': 4.1.11
       estree-walker: 3.0.3
       magic-string: 0.30.21
     optionalDependencies:
-      vite: 8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0)
+      vite: 8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.9.0)
 
   '@vitest/pretty-format@4.1.11':
     dependencies:
@@ -3231,9 +3184,9 @@ snapshots:
 
   agent-base@7.1.4: {}
 
-  ai@7.0.85(zod@4.5.4):
+  ai@7.0.86(zod@4.5.4):
     dependencies:
-      '@ai-sdk/gateway': 4.0.69(zod@4.5.4)
+      '@ai-sdk/gateway': 4.0.70(zod@4.5.4)
       '@ai-sdk/provider': 4.0.9
       '@ai-sdk/provider-utils': 5.0.34(zod@4.5.4)
       zod: 4.5.4
@@ -3943,12 +3896,12 @@ snapshots:
       mlly: 1.8.2
       pathe: 2.0.3
 
-  postcss-load-config@6.0.1(postcss@8.5.26)(tsx@4.23.12)(yaml@2.9.0):
+  postcss-load-config@6.0.1(postcss@8.5.26)(tsx@4.23.13)(yaml@2.9.0):
     dependencies:
       lilconfig: 3.1.3
     optionalDependencies:
       postcss: 8.5.26
-      tsx: 4.23.12
+      tsx: 4.23.13
       yaml: 2.9.0
 
   postcss@8.5.26:
@@ -4213,7 +4166,7 @@ snapshots:
 
   ts-interface-checker@0.1.13: {}
 
-  tsup@8.5.1(postcss@8.5.26)(supports-color@7.2.0)(tsx@4.23.12)(typescript@6.0.3)(yaml@2.9.0):
+  tsup@8.5.1(postcss@8.5.26)(supports-color@7.2.0)(tsx@4.23.13)(typescript@6.0.3)(yaml@2.9.0):
     dependencies:
       bundle-require: 5.1.0(esbuild@0.28.2)
       cac: 6.7.14
@@ -4224,7 +4177,7 @@ snapshots:
       fix-dts-default-cjs-exports: 1.0.1
       joycon: 3.1.1
       picocolors: 1.1.1
-      postcss-load-config: 6.0.1(postcss@8.5.26)(tsx@4.23.12)(yaml@2.9.0)
+      postcss-load-config: 6.0.1(postcss@8.5.26)(tsx@4.23.13)(yaml@2.9.0)
       resolve-from: 5.0.0
       rollup: 4.62.4
       source-map: 0.7.6
@@ -4241,7 +4194,7 @@ snapshots:
       - tsx
       - yaml
 
-  tsx@4.23.12:
+  tsx@4.23.13:
     dependencies:
       esbuild: 0.28.2
     optionalDependencies:
@@ -4300,7 +4253,7 @@ snapshots:
 
   validate-npm-package-name@5.0.1: {}
 
-  vite@8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0):
+  vite@8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.9.0):
     dependencies:
       lightningcss: 1.33.0
       picomatch: 4.0.5
@@ -4311,13 +4264,13 @@ snapshots:
       '@types/node': 26.4.0
       esbuild: 0.28.2
       fsevents: 2.3.3
-      tsx: 4.23.12
+      tsx: 4.23.13
       yaml: 2.9.0
 
-  vitest@4.1.11(@types/node@26.4.0)(@vitest/coverage-v8@4.1.11)(vite@8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0)):
+  vitest@4.1.11(@types/node@26.4.0)(@vitest/coverage-v8@4.1.11)(vite@8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.9.0)):
     dependencies:
       '@vitest/expect': 4.1.11
-      '@vitest/mocker': 4.1.11(vite@8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0))
+      '@vitest/mocker': 4.1.11(vite@8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.9.0))
       '@vitest/pretty-format': 4.1.11
       '@vitest/runner': 4.1.11
       '@vitest/snapshot': 4.1.11
@@ -4334,7 +4287,7 @@ snapshots:
       tinyexec: 1.3.0
       tinyglobby: 0.2.17
       tinyrainbow: 3.1.1
-      vite: 8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.12)(yaml@2.9.0)
+      vite: 8.2.1(@types/node@26.4.0)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.9.0)
       why-is-node-running: 2.3.0
     optionalDependencies:
       '@types/node': 26.4.0

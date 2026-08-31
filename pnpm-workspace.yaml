@@ -34,5 +34,5 @@ minimumReleaseAgeExclude:
   - "@ai-sdk/tui"
   - "ai"
   - "@ai-sdk/mcp@2.0.32 || 2.0.37 || 2.0.39 || 2.0.40 || 2.0.41"
-  - "@coder/ai-sdk-provider@0.4.4"
-  - "@coder/ai-sdk-sandbox@0.4.7"
+  - "@coder/ai-sdk-provider@0.4.5"
+  - "@coder/ai-sdk-sandbox@0.4.8"

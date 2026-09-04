@@ -15,7 +15,7 @@
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.49",
-    "ai": "^7.0.91",
+    "ai": "^7.0.92",
     "release-please": "~17.11.2",
     "zod": "4.5.4"
   },

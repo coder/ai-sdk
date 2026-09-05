@@ -32,8 +32,8 @@ importers:
         version: 8.21.3
     devDependencies:
       '@ai-sdk/react':
-        specifier: 4.0.95
-        version: 4.0.95(react@19.2.8)(zod@4.5.4)
+        specifier: 4.0.96
+        version: 4.0.96(react@19.2.8)(zod@4.5.4)
       '@types/node':
         specifier: ^26.4.1
         version: 26.4.1
@@ -41,8 +41,8 @@ importers:
         specifier: ^8.18.1
         version: 8.18.1
       ai:
-        specifier: ^7.0.92
-        version: 7.0.92(zod@4.5.4)
+        specifier: ^7.0.93
+        version: 7.0.93(zod@4.5.4)
       tsup:
         specifier: ^8.5.1
         version: 8.5.1(postcss@8.5.26)(supports-color@7.2.0)(tsx@4.23.13)(typescript@6.0.3)(yaml@2.9.0)
@@ -65,11 +65,11 @@ importers:
         specifier: 4.0.10
         version: 4.0.10
       '@coder/ai-sdk-provider':
-        specifier: 0.4.8
-        version: 0.4.8(ai@7.0.92(zod@4.5.4))(zod@4.5.4)
+        specifier: 0.4.9
+        version: 0.4.9(ai@7.0.93(zod@4.5.4))(zod@4.5.4)
       '@coder/ai-sdk-sandbox':
-        specifier: 0.4.11
-        version: 0.4.11(@ai-sdk/harness@1.0.101(ws@8.21.3)(zod@4.5.4))(@ai-sdk/provider-utils@5.0.36(zod@4.5.4))
+        specifier: 0.4.12
+        version: 0.4.12(@ai-sdk/harness@1.0.102(ws@8.21.3)(zod@4.5.4))(@ai-sdk/provider-utils@5.0.36(zod@4.5.4))
       '@effect/ai':
         specifier: 0.37.0
         version: 0.37.0(@effect/experimental@0.61.1(@effect/platform@0.97.1(effect@3.22.1))(effect@3.22.1))(@effect/platform@0.97.1(effect@3.22.1))(@effect/rpc@0.76.2(@effect/platform@0.97.1(effect@3.22.1))(effect@3.22.1))(effect@3.22.1)
@@ -78,8 +78,8 @@ importers:
         version: 3.22.1
     devDependencies:
       '@ai-sdk/harness':
-        specifier: ^1.0.101
-        version: 1.0.101(ws@8.21.3)(zod@4.5.4)
+        specifier: ^1.0.102
+        version: 1.0.102(ws@8.21.3)(zod@4.5.4)
       '@ai-sdk/provider-utils':
         specifier: ^5.0.36
         version: 5.0.36(zod@4.5.4)
@@ -99,8 +99,8 @@ importers:
         specifier: ^4.1.11
         version: 4.1.11(vitest@4.1.11)
       ai:
-        specifier: ^7.0.92
-        version: 7.0.92(zod@4.5.4)
+        specifier: ^7.0.93
+        version: 7.0.93(zod@4.5.4)
       tsup:
         specifier: ^8.5.1
         version: 8.5.1(postcss@8.5.26)(supports-color@7.2.0)(tsx@4.23.13)(typescript@6.0.3)(yaml@2.9.0)
@@ -123,8 +123,8 @@ importers:
         specifier: ^4.0.49
         version: 4.0.49(zod@4.5.4)
       '@ai-sdk/openai-compatible':
-        specifier: ^3.0.43
-        version: 3.0.43(zod@4.5.4)
+        specifier: ^3.0.44
+        version: 3.0.44(zod@4.5.4)
       '@ai-sdk/provider':
         specifier: 4.0.10
         version: 4.0.10
@@ -139,8 +139,8 @@ importers:
         specifier: ^4.1.11
         version: 4.1.11(vitest@4.1.11)
       ai:
-        specifier: ^7.0.92
-        version: 7.0.92(zod@4.5.4)
+        specifier: ^7.0.93
+        version: 7.0.93(zod@4.5.4)
       publint:
         specifier: ^0.3.24
         version: 0.3.24
@@ -166,8 +166,8 @@ importers:
         specifier: ^4.0.49
         version: 4.0.49(zod@4.5.4)
       ai:
-        specifier: ^7.0.92
-        version: 7.0.92(zod@4.5.4)
+        specifier: ^7.0.93
+        version: 7.0.93(zod@4.5.4)
       release-please:
         specifier: ~17.11.2
         version: 17.11.2(supports-color@7.2.0)
@@ -198,17 +198,17 @@ importers:
         version: 2.9.0
     devDependencies:
       '@ai-sdk/harness':
-        specifier: ^1.0.101
-        version: 1.0.101(ws@8.21.3)(zod@4.5.4)
+        specifier: ^1.0.102
+        version: 1.0.102(ws@8.21.3)(zod@4.5.4)
       '@ai-sdk/harness-claude-code':
-        specifier: ^1.0.105
-        version: 1.0.105(zod@4.5.4)
+        specifier: ^1.0.106
+        version: 1.0.106(zod@4.5.4)
       '@ai-sdk/provider-utils':
         specifier: ^5.0.36
         version: 5.0.36(zod@4.5.4)
       '@ai-sdk/tui':
-        specifier: ^1.0.93
-        version: 1.0.93(zod@4.5.4)
+        specifier: ^1.0.94
+        version: 1.0.94(zod@4.5.4)
       '@arethetypeswrong/cli':
         specifier: ^0.18.5
         version: 0.18.5
@@ -248,20 +248,20 @@ packages:
     peerDependencies:
       zod: 4.5.4
 
-  '@ai-sdk/gateway@4.0.74':
-    resolution: {integrity: sha512-6hpLUtAD162KLyyj9LN2OuEyze7lzq4wwj7PyQPYdMmA8PBYwyMbmvmu1C7OzfexLSPltZK29pX8R6hrJsqBqA==}
+  '@ai-sdk/gateway@4.0.75':
+    resolution: {integrity: sha512-HOnhw3oXtBnboBF7kAKipjToCN6+5w6EuukiUKiULcxBitS+vbHRRv9IUBcq+Z1wkXcJjfywKrt5r++I6OYyXg==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: 4.5.4
 
-  '@ai-sdk/harness-claude-code@1.0.105':
-    resolution: {integrity: sha512-bhYJ2nvhoEisOryMxfnGYYpScvppGzniCyoFgts1AKdvhcIuxvuy8A7O++AWMQXO5gQdK7o4F26+yBCHoq0/hQ==}
+  '@ai-sdk/harness-claude-code@1.0.106':
+    resolution: {integrity: sha512-iWEq3XzxkRmPB252Jg2OzL/vxOB3uinleJwiXELup0OPnCWNY+XoC+RN5O1rUhBXaMUCOcjjYij/gL+euLTaXQ==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: 4.5.4
 
-  '@ai-sdk/harness@1.0.101':
-    resolution: {integrity: sha512-Q9TzwOKJhvaBe8otExrbH0q4tYfdufHSiMu0TqFYkWOMiDNB+9UmM20Q+DX9oXWMuHApn3eNCL70/5zEkPSkJg==}
+  '@ai-sdk/harness@1.0.102':
+    resolution: {integrity: sha512-DV+TwVPmuiq4V9xuhazlM9rzOftcO1qx1OF46q9bmetknz86fuUcipGbr6esgMIgAA5vJJgf8+2B8/83TIQxjA==}
     engines: {node: '>=22'}
     peerDependencies:
       ws: ^8.21.0
@@ -270,14 +270,14 @@ packages:
       ws:
         optional: true
 
-  '@ai-sdk/mcp@2.0.44':
-    resolution: {integrity: sha512-uYEnqkMvLSztOLgEDZ5hRyz8jgWsTjseS8e2iMBe6ddb4w1ubj5i2aSYytErqtatTjIvSq750g3UHPEiCao8QA==}
+  '@ai-sdk/mcp@2.0.45':
+    resolution: {integrity: sha512-ROukI/LfoPHf5F4gi1GKQebK5658fR1EG3kt0P0vzrfSy1FAGQ5FyKr9j2lbkXAV9X3kfpf9LJdif7w67XDtgw==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: 4.5.4
 
-  '@ai-sdk/openai-compatible@3.0.43':
-    resolution: {integrity: sha512-QurboftQF0jGshbNM5KHNNpttp7huKSV7rN+C7ylcT5XsLZPud1eCMqyX0zlYFxm6pE4MEc/1PgFX12tm85yqg==}
+  '@ai-sdk/openai-compatible@3.0.44':
+    resolution: {integrity: sha512-pK7mERd/aIJVtyQCe/nV3G3iEJCY1no8GHDOGbgpNC+petjSfsxj+ni0Q8WVVehTUiY9B04F3Xvir+icBgORCg==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: 4.5.4
@@ -292,14 +292,14 @@ packages:
     resolution: {integrity: sha512-fX2ENAc7iDpZ+Wp4+Rk06Usn/Ys7dI9uAkGv0jlF6XVrW13NkRWx5Ou+U6lIM2E1fTLkCs16GGrUAaVvroag7A==}
     engines: {node: '>=22'}
 
-  '@ai-sdk/react@4.0.95':
-    resolution: {integrity: sha512-voKf++WBzJhyNlawdPUW/GckFjFtXyzXwTX6kvIow3ZrFlUdQX8JxbWOPyAXdlAadjU7BvealIJbF/1P1bO2+w==}
+  '@ai-sdk/react@4.0.96':
+    resolution: {integrity: sha512-m4823/q+obDgJot9+UOtVFij3DJIEYdv7x/AC4rc6KCMfRP4GR030DJyKjhtzC9xfDmTGttv3tMpqbknh6uUXA==}
     engines: {node: '>=22'}
     peerDependencies:
       react: ^18 || ~19.0.1 || ~19.1.2 || ^19.2.1
 
-  '@ai-sdk/tui@1.0.93':
-    resolution: {integrity: sha512-IwxoIn0Ym2ltv18dItjOdbyogdKDGyiBpLLBW2mmbzzRO831pVuRWgYm1K6HRGN9GLD0VEiKsVKOtlZvTeo+yQ==}
+  '@ai-sdk/tui@1.0.94':
+    resolution: {integrity: sha512-6/vDJABBtrVUErmlAGeXvltNRCwvu3M0v6MWxM//6Of1reA+tr5ae0lK4/bl4nFO1zrGB3eHlj2SVX6ao3r99A==}
     engines: {node: '>=22'}
 
   '@andrewbranch/untar.js@1.0.4':
@@ -342,8 +342,8 @@ packages:
   '@braidai/lang@1.1.2':
     resolution: {integrity: sha512-qBcknbBufNHlui137Hft8xauQMTZDKdophmLFv05r2eNmdIv/MlPuP4TdUknHG68UdWLgVZwgxVe735HzJNIwA==}
 
-  '@coder/ai-sdk-provider@0.4.8':
-    resolution: {integrity: sha512-WeXJXm95inVjDdD/PcUtSg2cQjDiGHnSxrhPjuzOPVSAPfGRLMCqrpBG5KGkqn/HBo37KTH8TvD8YJpPSQljDg==}
+  '@coder/ai-sdk-provider@0.4.9':
+    resolution: {integrity: sha512-eoiBa9TKbsHC4IOUihR2hWXZWwSpn2Yd0e3v02xfjrAkFMHoqa17pCuOauBJrE9R39088BMpEEvZCVhs1VoIiQ==}
     engines: {node: '>=22'}
     peerDependencies:
       ai: ^7.0.0
@@ -352,8 +352,8 @@ packages:
       zod:
         optional: true
 
-  '@coder/ai-sdk-sandbox@0.4.11':
-    resolution: {integrity: sha512-4T5pmCysKhOGnr7dR9EdsykvEcQkfEWzaglFx4zcxgCUFXEGILQrPYbDSsXF1GjdLMr5xiz+dmbAWdkU8BQtjQ==}
+  '@coder/ai-sdk-sandbox@0.4.12':
+    resolution: {integrity: sha512-+XBWaLLWjLrYVEwav4uB/qMh9/kdZqb+Tf5WYOck1pDF94mLp12BiTi6prkrx1QUVbzTQl/vij1oufgki+IXLA==}
     engines: {node: '>=22'}
     peerDependencies:
       '@ai-sdk/harness': ^1.0.0
@@ -1256,8 +1256,8 @@ packages:
     resolution: {integrity: sha512-MnA+YT8fwfJPgBx3m60MNqakm30XOkyIoH1y6huTQvC0PwZG7ki8NacLBcrPbNoo8vEZy7Jpuk7+jMO+CUovTQ==}
     engines: {node: '>= 14'}
 
-  ai@7.0.92:
-    resolution: {integrity: sha512-9xb8Xo6aw7YMxuROznR02q4Hpne1DJ7JbKurpcOsabSSY3sd3xGoTANSqEs4gYLRpIz27MmT3IMfH8X3+oK1CQ==}
+  ai@7.0.93:
+    resolution: {integrity: sha512-CJss6zb9mlltk/mCr8qom20NBnqEQxVawkqwtT62tCwsxilZpXfHNRMRwcS3XRpzdP1kEluVuDBUayYWEEd95g==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: 4.5.4
@@ -2482,16 +2482,16 @@ snapshots:
       '@ai-sdk/provider-utils': 5.0.36(zod@4.5.4)
       zod: 4.5.4
 
-  '@ai-sdk/gateway@4.0.74(zod@4.5.4)':
+  '@ai-sdk/gateway@4.0.75(zod@4.5.4)':
     dependencies:
       '@ai-sdk/provider': 4.0.10
       '@ai-sdk/provider-utils': 5.0.36(zod@4.5.4)
       '@vercel/oidc': 3.2.0
       zod: 4.5.4
 
-  '@ai-sdk/harness-claude-code@1.0.105(zod@4.5.4)':
+  '@ai-sdk/harness-claude-code@1.0.106(zod@4.5.4)':
     dependencies:
-      '@ai-sdk/harness': 1.0.101(ws@8.21.3)(zod@4.5.4)
+      '@ai-sdk/harness': 1.0.102(ws@8.21.3)(zod@4.5.4)
       '@ai-sdk/provider-utils': 5.0.36(zod@4.5.4)
       ws: 8.21.3
       zod: 4.5.4
@@ -2499,16 +2499,16 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  '@ai-sdk/harness@1.0.101(ws@8.21.3)(zod@4.5.4)':
+  '@ai-sdk/harness@1.0.102(ws@8.21.3)(zod@4.5.4)':
     dependencies:
       '@ai-sdk/provider': 4.0.10
       '@ai-sdk/provider-utils': 5.0.36(zod@4.5.4)
-      ai: 7.0.92(zod@4.5.4)
+      ai: 7.0.93(zod@4.5.4)
       zod: 4.5.4
     optionalDependencies:
       ws: 8.21.3
 
-  '@ai-sdk/mcp@2.0.44(zod@4.5.4)':
+  '@ai-sdk/mcp@2.0.45(zod@4.5.4)':
     dependencies:
       '@ai-sdk/provider': 4.0.10
       '@ai-sdk/provider-utils': 5.0.36(zod@4.5.4)
@@ -2516,7 +2516,7 @@ snapshots:
       pkce-challenge: 5.0.1
       zod: 4.5.4
 
-  '@ai-sdk/openai-compatible@3.0.43(zod@4.5.4)':
+  '@ai-sdk/openai-compatible@3.0.44(zod@4.5.4)':
     dependencies:
       '@ai-sdk/provider': 4.0.10
       '@ai-sdk/provider-utils': 5.0.36(zod@4.5.4)
@@ -2535,21 +2535,21 @@ snapshots:
     dependencies:
       json-schema: 0.4.0
 
-  '@ai-sdk/react@4.0.95(react@19.2.8)(zod@4.5.4)':
+  '@ai-sdk/react@4.0.96(react@19.2.8)(zod@4.5.4)':
     dependencies:
-      '@ai-sdk/mcp': 2.0.44(zod@4.5.4)
+      '@ai-sdk/mcp': 2.0.45(zod@4.5.4)
       '@ai-sdk/provider': 4.0.10
       '@ai-sdk/provider-utils': 5.0.36(zod@4.5.4)
-      ai: 7.0.92(zod@4.5.4)
+      ai: 7.0.93(zod@4.5.4)
       react: 19.2.8
       swr: 2.5.1(react@19.2.8)
       throttleit: 2.1.0
     transitivePeerDependencies:
       - zod
 
-  '@ai-sdk/tui@1.0.93(zod@4.5.4)':
+  '@ai-sdk/tui@1.0.94(zod@4.5.4)':
     dependencies:
-      ai: 7.0.92(zod@4.5.4)
+      ai: 7.0.93(zod@4.5.4)
     transitivePeerDependencies:
       - zod
 
@@ -2599,18 +2599,18 @@ snapshots:
 
   '@braidai/lang@1.1.2': {}
 
-  '@coder/ai-sdk-provider@0.4.8(ai@7.0.92(zod@4.5.4))(zod@4.5.4)':
+  '@coder/ai-sdk-provider@0.4.9(ai@7.0.93(zod@4.5.4))(zod@4.5.4)':
     dependencies:
       '@ai-sdk/anthropic': 4.0.49(zod@4.5.4)
-      '@ai-sdk/openai-compatible': 3.0.43(zod@4.5.4)
+      '@ai-sdk/openai-compatible': 3.0.44(zod@4.5.4)
       '@ai-sdk/provider': 4.0.10
-      ai: 7.0.92(zod@4.5.4)
+      ai: 7.0.93(zod@4.5.4)
     optionalDependencies:
       zod: 4.5.4
 
-  '@coder/ai-sdk-sandbox@0.4.11(@ai-sdk/harness@1.0.101(ws@8.21.3)(zod@4.5.4))(@ai-sdk/provider-utils@5.0.36(zod@4.5.4))':
+  '@coder/ai-sdk-sandbox@0.4.12(@ai-sdk/harness@1.0.102(ws@8.21.3)(zod@4.5.4))(@ai-sdk/provider-utils@5.0.36(zod@4.5.4))':
     dependencies:
-      '@ai-sdk/harness': 1.0.101(ws@8.21.3)(zod@4.5.4)
+      '@ai-sdk/harness': 1.0.102(ws@8.21.3)(zod@4.5.4)
       '@ai-sdk/provider-utils': 5.0.36(zod@4.5.4)
       ws: 8.21.3
       yaml: 2.9.0
@@ -3183,9 +3183,9 @@ snapshots:
 
   agent-base@7.1.4: {}
 
-  ai@7.0.92(zod@4.5.4):
+  ai@7.0.93(zod@4.5.4):
     dependencies:
-      '@ai-sdk/gateway': 4.0.74(zod@4.5.4)
+      '@ai-sdk/gateway': 4.0.75(zod@4.5.4)
       '@ai-sdk/provider': 4.0.10
       '@ai-sdk/provider-utils': 5.0.36(zod@4.5.4)
       zod: 4.5.4

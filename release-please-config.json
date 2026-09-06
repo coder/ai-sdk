@@ -24,15 +24,18 @@
   "packages": {
     "packages/sandbox": {
       "package-name": "@coder/ai-sdk-sandbox",
-      "component": "sandbox"
+      "component": "sandbox",
+      "exclude-paths": ["packages/sandbox/examples"]
     },
     "packages/agent": {
       "package-name": "@coder/ai-sdk-agent",
-      "component": "agent"
+      "component": "agent",
+      "exclude-paths": ["packages/agent/examples"]
     },
     "packages/provider": {
       "package-name": "@coder/ai-sdk-provider",
-      "component": "provider"
+      "component": "provider",
+      "exclude-paths": ["packages/provider/examples"]
     }
   }
 }

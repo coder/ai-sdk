@@ -82,6 +82,9 @@ Merging a release-please PR (`chore(<component>): release X.Y.Z`) tags
 (`.github/workflows/release-please.yml`). No manual publishing; release-please
 owns `CHANGELOG.md` (excluded from oxfmt) — never hand-edit it.
 
+- Release-please ignores `packages/*/examples` because examples are unpublished,
+  so commits that only touch a package's examples do not cut a release for it.
+
 Known quirks when several release PRs are open:
 
 - Merging one release PR makes release-please force-refresh the sibling

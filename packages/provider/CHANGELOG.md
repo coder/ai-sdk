@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/coder/ai-sdk/compare/provider-v0.4.11...provider-v0.5.0) (2026-09-06)
+
+Chat requests now target the stable /api/v2 routes, with an automatic fallback to the experimental endpoints for compatibility.
+
+### Highlights
+
+- Agent chat now uses the stable /api/v2 routes and falls back to the experimental endpoints when needed. ([#177](https://github.com/coder/ai-sdk/pull/177))
+
+### Features
+
+* **agent:** use stable /api/v2 chat routes with experimental fallback ([#177](https://github.com/coder/ai-sdk/issues/177)) ([11a827c](https://github.com/coder/ai-sdk/commit/11a827cfae643193fe4b6dda756bdd3ac48a9712))
+
 ## [0.4.11](https://github.com/coder/ai-sdk/compare/provider-v0.4.10...provider-v0.4.11) (2026-09-05)
 
 A maintenance release with internal changes and no documented user-facing updates.

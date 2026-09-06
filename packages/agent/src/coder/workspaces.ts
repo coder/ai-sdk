@@ -12,7 +12,7 @@ import { CoderAgentError, CoderApiError } from "../errors.js";
 
 /** Connection details for the stable v2 API (same credentials as the chat client). */
 export interface WorkspaceApiConnection {
-  /** Base URL of the Coder deployment, e.g. `https://dev.coder.com`. */
+  /** Base URL of the Coder deployment, e.g. `https://dogfood.cdr.dev`. */
   baseUrl: string;
   /** Coder API/session token (sent as `Coder-Session-Token`). */
   token: string;

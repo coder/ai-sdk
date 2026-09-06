@@ -51,6 +51,8 @@ export interface StreamChatEventsOptions {
   afterId?: number;
   signal?: AbortSignal;
   webSocketFactory?: WebSocketFactory;
+  /** Resolve the client's route prefix before dialing, using the reader's cancellation signal. */
+  resolveApiPrefix?: (signal: AbortSignal) => Promise<string>;
   /**
    * Observability hook: receives the reader's `ws:*` transport events (dial,
    * open, decoded events, close, error, redial). Exceptions it throws are
@@ -206,7 +208,7 @@ export function streamChatEvents(
 }
 
 async function* streamChatEventsLoop(
-  options: StreamChatEventsOptions & { reader: number },
+  options: StreamChatEventsOptions & { reader: number; signal: AbortSignal },
 ): AsyncGenerator<ChatStreamEvent, void, void> {
   const { baseUrl, token, chatId, signal, reader } = options;
   const factory = options.webSocketFactory ?? defaultFactory;
@@ -218,7 +220,15 @@ async function* streamChatEventsLoop(
   let attempt = 0;
 
   const wsBase = httpToWs(baseUrl);
-  const path = `/api/experimental/chats/${chatId}/stream`;
+  if (signal.aborted) return;
+  let prefix = "/api/v2/chats";
+  try {
+    if (options.resolveApiPrefix) prefix = await options.resolveApiPrefix(signal);
+  } catch (err) {
+    if (signal.aborted) return;
+    throw err;
+  }
+  const path = `${prefix}/${chatId}/stream`;
   // The turn's original cursor, reused verbatim on every redial — see the doc
   // comment above for why it must not advance past yielded messages.
   const query = options.afterId !== undefined ? `?after_id=${options.afterId}` : "";
@@ -539,7 +549,6 @@ async function* streamChatEventsLoop(
   }
 }
 
-const WATCH_PATH = "/api/experimental/chats/watch";
 const WATCH_BACKOFF_INITIAL_MS = 1_000;
 const WATCH_BACKOFF_CAP_MS = 30_000;
 
@@ -580,6 +589,8 @@ export interface WatchChatEventsOptions {
   token: string;
   signal?: AbortSignal;
   webSocketFactory?: WebSocketFactory;
+  /** Resolve the client's route prefix before dialing, using the reader's cancellation signal. */
+  resolveApiPrefix?: (signal: AbortSignal) => Promise<string>;
 }
 
 /**
@@ -657,11 +668,20 @@ export function watchChatEvents(
 }
 
 async function* watchChatEventsLoop(
-  options: WatchChatEventsOptions,
+  options: WatchChatEventsOptions & { signal: AbortSignal },
 ): AsyncGenerator<ChatWatchEvent, void, void> {
   const { baseUrl, token, signal } = options;
   const factory = options.webSocketFactory ?? defaultFactory;
-  const url = `${httpToWs(baseUrl)}${WATCH_PATH}`;
+  if (signal.aborted) return;
+  let prefix = "/api/v2/chats";
+  try {
+    if (options.resolveApiPrefix) prefix = await options.resolveApiPrefix(signal);
+  } catch (err) {
+    if (signal.aborted) return;
+    throw err;
+  }
+  const path = `${prefix}/watch`;
+  const url = `${httpToWs(baseUrl)}${path}`;
 
   let backoffMs = WATCH_BACKOFF_INITIAL_MS;
   while (!signal?.aborted) {
@@ -727,7 +747,7 @@ async function* watchChatEventsLoop(
       const status = upgradeStatus(message);
       failure =
         status !== undefined && status >= 400 && status < 500
-          ? new CoderApiError({ status, method: "GET", path: WATCH_PATH, message })
+          ? new CoderApiError({ status, method: "GET", path, message })
           : new CoderAgentError(message);
       finished = true;
       wake();

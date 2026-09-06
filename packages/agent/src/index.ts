@@ -8,7 +8,7 @@
  * import { z } from "zod";
  *
  * const agent = new CoderAgent({
- *   baseUrl: "https://dev.coder.com",
+ *   baseUrl: "https://dogfood.cdr.dev",
  *   token: process.env.CODER_SESSION_TOKEN!,
  *   organizationId: "…",
  *   instructions: "You are a helpful assistant.",

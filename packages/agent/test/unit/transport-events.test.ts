@@ -182,7 +182,7 @@ describe("transport events: HTTP", () => {
     ];
     expect(req.method).toBe("GET");
     expect(req.op).toBe("getChat");
-    expect(req.path).toBe("/api/experimental/chats/c1");
+    expect(req.path).toBe("/api/v2/chats/c1");
     expect(req.timestamp).toBeTypeOf("number");
     expect(res.id).toBe(req.id);
     expect(res.method).toBe("GET");
@@ -206,8 +206,24 @@ describe("transport events: HTTP", () => {
     });
 
     await expect(client.getChat("c1")).rejects.toMatchObject({ status: 404 });
-    expect(events.map((e) => e.type)).toEqual(["http:request", "http:response"]);
-    expect(events[1]).toMatchObject({ type: "http:response", status: 404, ok: false });
+    expect(events.map((e) => e.type)).toEqual([
+      "http:request",
+      "http:response",
+      "http:request",
+      "http:response",
+    ]);
+    expect(events[1]).toMatchObject({
+      type: "http:response",
+      status: 404,
+      ok: false,
+      path: "/api/v2/chats/c1",
+    });
+    expect(events[3]).toMatchObject({
+      type: "http:response",
+      status: 404,
+      ok: false,
+      path: "/api/experimental/chats/c1",
+    });
   });
 
   it("emits http:error when the fetch itself rejects", async () => {
@@ -302,7 +318,7 @@ describe("transport events: HTTP", () => {
     // method/path stay for generic consumers, op names the caller's intent.
     const archive = requests.find((e) => e.op === "archiveChat");
     expect(archive?.method).toBe("PATCH");
-    expect(archive?.path).toBe("/api/experimental/chats/c1");
+    expect(archive?.path).toBe("/api/v2/chats/c1");
   });
 
   it("increments the correlation id across requests on the same client", async () => {
@@ -366,7 +382,7 @@ describe("transport events: turn lifecycle (real reader)", () => {
         CoderTransportEvent,
         { type: "ws:dial" }
       >;
-      expect(dial.url).toBe("wss://x/api/experimental/chats/chat-1/stream");
+      expect(dial.url).toBe("wss://x/api/v2/chats/chat-1/stream");
       expect(dial.chatId).toBe("chat-1");
       expect(dial.attempt).toBe(1);
 
@@ -1377,6 +1393,7 @@ describe("transport events: reader ids (#94)", () => {
         baseUrl: "https://x",
         token: TOKEN,
         webSocketFactory: factory,
+        fetch: async () => new Response("[]"),
         onTransportEvent: (ev) => events.push(ev),
       });
     // Two clients sharing one subscriber: a per-instance counter would hand
@@ -1384,7 +1401,7 @@ describe("transport events: reader ids (#94)", () => {
     const genA = mkClient().streamEvents("chat-1");
     const genB = mkClient().streamEvents("chat-1");
     const reads = [genA.next(), genB.next()];
-    await Promise.resolve();
+    await vi.waitFor(() => expect(sockets).toHaveLength(2));
     await genA.return(undefined);
     await genB.return(undefined);
     await Promise.allSettled(reads);

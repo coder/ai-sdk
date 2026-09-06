@@ -1,10 +1,8 @@
 /**
- * Wire types for Coder's experimental `chatd` chat API
- * (`/api/experimental/chats`). These mirror the Go types in
+ * Wire types for Coder's stable `chatd` chat API
+ * (`/api/v2/chats`, promoted in Coder 2.37.0). These mirror the Go types in
  * `coder/coder`'s `codersdk/chats.go` (JSON shapes), restricted to the subset
  * this client uses. Field names use snake_case to match the wire format.
- *
- * NOTE: The chatd API is experimental and may change between Coder releases.
  */
 
 // ---------------------------------------------------------------------------
@@ -25,7 +23,7 @@ export interface ChatInputPart {
 
 /**
  * Media types accepted by the chat-file upload endpoint
- * (`POST /api/experimental/chats/files`). The server allowlist is intentionally
+ * (`POST /api/v2/chats/files`). The server allowlist is intentionally
  * narrow — anything else (zip, tarball, binaries, …) is not a chat attachment
  * and belongs on the workspace filesystem instead. Mirrors
  * `codersdk.AllChatAttachmentMediaTypes`.
@@ -271,7 +269,7 @@ export interface ChatMessagesResponse {
   has_more: boolean;
 }
 
-/** Response from `POST /api/experimental/chats/files`: the uploaded file's id. */
+/** Response from `POST /api/v2/chats/files`: the uploaded file's id. */
 export interface UploadChatFileResponse {
   id: string;
 }
@@ -439,7 +437,7 @@ export type ChatWatchEventKind =
   | "context_dirty";
 
 /**
- * An event from `GET /api/experimental/chats/watch`, which covers every chat
+ * An event from `GET /api/v2/chats/watch`, which covers every chat
  * visible to the authenticated user (not a single chat). Mirrors
  * `codersdk.ChatWatchEvent`.
  */

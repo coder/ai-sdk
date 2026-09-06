@@ -10,8 +10,9 @@ AI SDK's [`Agent`](https://ai-sdk.dev/docs/reference/ai-sdk-core/agent) interfac
 (`generate()` / `stream()`). Script it, stream from it, and attach your own tools —
 exactly like the SDK's own `ToolLoopAgent`.
 
-> Status: works end‑to‑end against Coder's experimental chat API (`/api/experimental/chats`).
-> Both the Coder API and this package are pre‑1.0; expect change.
+> Status: targets Coder's stable chat API (`/api/v2/chats`), available since
+> Coder 2.37.0 (September 1, 2026). This package remains pre‑1.0.
+> See [API compatibility](#api-compatibility) for older deployments.
 
 ## Why
 
@@ -58,7 +59,7 @@ import { tool } from "ai";
 import { z } from "zod";
 
 const agent = new CoderAgent({
-  baseUrl: "https://dev.coder.com",
+  baseUrl: "https://dogfood.cdr.dev",
   token: process.env.CODER_SESSION_TOKEN!, // Coder API/session token
   organizationId: "703f72a1-…", // your org UUID
   model: "claude-sonnet-4-6", // hint: UUID, provider:model, model id, or display-name substring
@@ -90,7 +91,7 @@ of the AI SDK.
 Runnable scripts live in [`examples/`](./examples) (run against a real deployment via `tsx`):
 
 ```bash
-export CODER_URL=https://dev.coder.com
+export CODER_URL=https://dogfood.cdr.dev
 export CODER_SESSION_TOKEN=$(coder tokens create --name coderagent-example)
 
 pnpm example:generate     # non-streaming generate()
@@ -213,6 +214,30 @@ const client = new CoderChatClient({ baseUrl, token });
 const agent = new CoderAgent({ client, organizationId });
 ```
 
+## API compatibility
+
+Coder 2.37.0 promoted chat routes to `/api/v2/chats`
+([server routes](https://github.com/coder/coder/pull/28496),
+[Go SDK](https://github.com/coder/coder/pull/28497)). The promoted routes also
+remain under `/api/experimental/chats` during the compatibility window
+(CODAGT-921); legacy removal is tracked in CODAGT-922. Coder 2.36.4 has no stable
+chat mount.
+
+Each `CoderChatClient` selects its chat prefix from HTTP responses, not version
+strings. Until selected, an actual REST request (including JSON requests and
+`Blob` uploads) tries v2 first and retries once under the experimental prefix
+only on 404. The first non-404 HTTP response
+(including an error) locks that prefix for the client's lifetime; concurrent
+unresolved calls may probe independently, with the first conclusive response
+winning. Two 404s preserve the original v2 error without locking; non-HTTP
+failures do not lock either. A locked prefix is never renegotiated, even on 404.
+Before opening a per-chat `/stream` or global `/watch` WebSocket, an unresolved
+client preflights with `GET /api/v2/chats` using the same selection rules and
+cancellation signal.
+`ReadableStream` uploads also preflight so their consumed bodies are never
+replayed. Legacy model-config lookup remains independent of chat-prefix
+selection (see [Configuration](#configuration)).
+
 ## Sessions
 
 One `CoderAgent` instance maps to one chat ("session") on the Coder server. The chat is
@@ -282,7 +307,7 @@ chatMessagesToUIMessages(messages, {
 
 `client.watchChats({ signal })` yields lifecycle events (status/title changes,
 creation, deletion, …) for **every chat visible to the authenticated user** as an
-async iterable, backed by the `/api/experimental/chats/watch` WebSocket:
+async iterable, backed by the `/api/v2/chats/watch` WebSocket:
 
 ```ts
 for await (const event of client.watchChats({ signal })) {
@@ -290,14 +315,16 @@ for await (const event of client.watchChats({ signal })) {
 }
 ```
 
-Unlike the per‑chat event stream, this is a long‑lived subscription: dropped
-connections are redialed automatically with exponential backoff (1s doubling to
-a 30s cap, reset once an event arrives). Iteration ends only when the signal
-aborts, or with a terminal `CoderApiError` when the server rejects the upgrade
-with a 4xx — bad/expired token, or an older Coder server without the endpoint
-(404). For custom plumbing (own client, browser sockets), the standalone
-`watchChatEvents({ baseUrl, token, signal, webSocketFactory })` export provides
-the same stream without a `CoderChatClient`.
+After [prefix selection](#api-compatibility) (whose preflight errors propagate),
+this is a long‑lived subscription: dropped connections are redialed automatically
+with exponential backoff (1s doubling to a 30s cap, reset once an event arrives).
+Aborting the signal or ending iteration tears down the reader. A 4xx upgrade
+rejection throws a terminal `CoderApiError` — bad/expired token, or an older
+Coder server without the endpoint (404). For custom plumbing (own client,
+browser sockets), the standalone
+`watchChatEvents({ baseUrl, token, signal, webSocketFactory })` export defaults
+to the stable prefix without preflighting; use `CoderChatClient` for automatic
+prefix selection.
 
 ## Observability
 
@@ -365,7 +392,9 @@ Semantics worth knowing:
   `"getMessages"`, `"submitToolResults"`, … — the `CoderClientOperation`
   union), so per‑operation classification never has to reverse‑engineer
   `path`. `method`/`path` stay for generic consumers; `archiveChat` stamps its
-  own `op` even though it issues the same `PATCH` as `updateChat`.
+  own `op` even though it issues the same `PATCH` as `updateChat`. WebSocket
+  prefix-selection preflights emit the existing `http:*` event kinds with
+  `op: "streamEvents"` or `op: "watchChats"` — no new event kinds.
 - `ws:event` fires at arrival: after a redial, chatd's replay of the
   in‑progress episode is visible here (correlate with `reader`/`attempt`),
   stamped with the reader's own replay verdict — `forwarded: false` exactly on
@@ -559,7 +588,7 @@ are mirrored the same way under each step's `providerMetadata.coder`
 `result.steps[*].providerMetadata.coder` for whole‑turn cost when client tools
 ran). Both are **absence‑tolerant mirrors**: on servers that don't send them
 (cost is otherwise only on the aggregate cost endpoints,
-`/api/experimental/chats/cost/*`), nothing is emitted.
+`/api/v2/chats/cost/*`), nothing is emitted.
 
 Forward usage to a UI via message metadata:
 
@@ -865,7 +894,7 @@ status indefinitely. Defend in this order:
    cursor or replay), so a chat already stuck before the watcher started — or
    one that transitioned during a gap — never emits an event to start your
    timer from. Seed and periodically reconcile against a chat listing
-   (`GET /api/experimental/chats`) instead of trusting the event stream alone.
+   (`GET /api/v2/chats`) instead of trusting the event stream alone.
 
 ### Troubleshooting: unschedulable & stuck chats
 
@@ -912,9 +941,10 @@ is used as‑is, then an exact `provider:model` match, an exact model id, a
 display‑name substring (case‑insensitive), and finally a model‑id substring.
 On older deployments where the organization‑scoped route does not exist yet
 (404), resolution falls back once to the legacy deployment‑wide
-`/model-configs` listing. Partial payloads from older/newer servers are
-tolerated (entries match on the fields they carry), and an unresolvable hint
-falls back to the server's default model instead of failing. Use
+`/api/experimental/chats/model-configs` listing, independently of chat-prefix
+selection. Partial payloads from older/newer servers are tolerated (entries
+match on the fields they carry), and an unresolvable hint falls back to the
+server's default model instead of failing. Use
 `agent.listModels()` to see what's available.
 
 ## How it works
@@ -923,7 +953,7 @@ falls back to the server's default model instead of failing. Use
 CoderAgent  (implements ai.Agent)
   └─ ToolLoopAgent (ai)            ← inherits generate()/stream(), loop control
        └─ CoderLanguageModel       ← implements @ai-sdk/provider LanguageModelV4
-            └─ CoderChatClient      ← REST + WebSocket to /api/experimental/chats
+            └─ CoderChatClient      ← REST + WebSocket to /api/v2/chats
                  └─ Coder Agents     ← runs the agent loop SERVER-side
 ```
 
@@ -1734,13 +1764,13 @@ live chats.
 
 ```ts
 export async function archiveWorkflowChat(workflowId: string): Promise<void> {
-  const chatId = await checkpoints.get(workflowId);
-  if (!chatId) return; // the workflow died before its first turn created a chat
+  const checkpoint = await checkpoints.get(workflowId);
+  if (!checkpoint) return; // the workflow died before its first turn created a chat
   const agent = new CoderAgent({
     baseUrl: process.env.CODER_URL!,
     token: process.env.CODER_SESSION_TOKEN!,
     organizationId: process.env.CODER_ORG_ID!,
-    chatId,
+    chatId: checkpoint.chatId,
   });
   // A crashed step may have left a run live — stop it first, bounded. On an
   // already-settled chat the interrupt rejects with a 409; ignore it.
@@ -1782,7 +1812,7 @@ pnpm build
 End‑to‑end tests run against a live Coder deployment and are opt‑in via env:
 
 ```bash
-CODER_URL=https://dev.coder.com \
+CODER_URL=https://dogfood.cdr.dev \
 CODER_SESSION_TOKEN=$(coder tokens create --name e2e) \
 pnpm test:e2e
 ```
@@ -1791,7 +1821,8 @@ The e2e suite creates **new chats only** (no workspaces) and archives them after
 
 ## Limitations
 
-- The Coder chat API is experimental (`/api/experimental/chats`); wire types may change.
+- Older deployments use a temporary experimental-route fallback; it is not a
+  guarantee that every chat feature is available (see [API compatibility](#api-compatibility)).
 - Designed for Node (WebSocket via `ws`); a browser build can inject a `webSocketFactory`.
 - A v7 `@ai-sdk/harness` adapter (the conceptually exact fit) is a future direction once that
   experimental API stabilizes.

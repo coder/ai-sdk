@@ -44,7 +44,7 @@ export interface UploadedChatFile {
 }
 
 export interface CoderChatClientOptions {
-  /** Base URL of the Coder deployment, e.g. `https://dev.coder.com`. */
+  /** Base URL of the Coder deployment, e.g. `https://dogfood.cdr.dev`. */
   baseUrl: string;
   /** Coder API token or session token (sent as `Coder-Session-Token`). */
   token: string;
@@ -61,11 +61,12 @@ export interface CoderChatClientOptions {
   onTransportEvent?: TransportEventHandler;
 }
 
-const API_PREFIX = "/api/experimental/chats";
+const API_PREFIX = "/api/v2/chats";
+const LEGACY_API_PREFIX = "/api/experimental/chats";
 
 /**
- * A thin, typed client for Coder's experimental `chatd` API. This is a
- * TypeScript port of the chat surface of `codersdk.ExperimentalClient`.
+ * A thin, typed client for Coder's chat API, using stable routes with a
+ * per-instance experimental-prefix fallback for deployments before v2.37.0.
  */
 export class CoderChatClient {
   readonly baseUrl: string;
@@ -77,6 +78,7 @@ export class CoderChatClient {
   /** Exception-isolated emitter for this client's own HTTP events. */
   readonly #emitTransportEvent: TransportEventHandler | undefined;
   #httpSeq = 0;
+  #apiPrefix: typeof API_PREFIX | typeof LEGACY_API_PREFIX | undefined;
 
   constructor(options: CoderChatClientOptions) {
     // Normalize: strip a single trailing slash.
@@ -95,7 +97,7 @@ export class CoderChatClient {
    * public client method on the exchange's `http:*` events (issue #112) — the
    * emit site is shared, so each call site threads its own literal.
    */
-  async #send(
+  async #sendOnce(
     op: CoderClientOperation,
     method: string,
     path: string,
@@ -160,6 +162,73 @@ export class CoderChatClient {
       });
     }
     return res;
+  }
+
+  /**
+   * Negotiate promoted chat routes from responses, not buildinfo versions:
+   * v2.37.0 introduced /api/v2/chats (coder/coder#28496), while patched older
+   * releases still only mount /api/experimental/chats. Retry a v2 404 once on
+   * experimental; the first non-404 HTTP response locks the prefix for this
+   * client. Network/abort failures cannot establish route support. Two 404s
+   * preserve the original v2 error (possibly a missing resource) and leave
+   * negotiation open for the next call. A locked client never falls back.
+   *
+   * Concurrent initial calls may probe in parallel; a late response cannot
+   * overwrite the first lock. Model listings use separate routes/fallbacks
+   * and must neither consult nor establish this chat-prefix lock.
+   */
+  async #send(
+    op: CoderClientOperation,
+    method: string,
+    path: string,
+    opts?: { body?: BodyInit; headers?: Record<string, string>; signal?: AbortSignal },
+  ): Promise<Response> {
+    if (path !== API_PREFIX && !path.startsWith(`${API_PREFIX}/`)) {
+      return this.#sendOnce(op, method, path, opts);
+    }
+    const suffix = path.slice(API_PREFIX.length);
+    if (this.#apiPrefix) {
+      return this.#sendOnce(op, method, `${this.#apiPrefix}${suffix}`, opts);
+    }
+    try {
+      const res = await this.#sendOnce(op, method, path, opts);
+      this.#apiPrefix ??= API_PREFIX;
+      return res;
+    } catch (err) {
+      if (!(err instanceof CoderApiError)) throw err;
+      if (err.status !== 404) {
+        this.#apiPrefix ??= API_PREFIX;
+        throw err;
+      }
+      // Another initial request may have established v2 while this one ran.
+      if (this.#apiPrefix === API_PREFIX) throw err;
+      try {
+        const res = await this.#sendOnce(op, method, `${LEGACY_API_PREFIX}${suffix}`, opts);
+        this.#apiPrefix ??= LEGACY_API_PREFIX;
+        return res;
+      } catch (legacyErr) {
+        if (legacyErr instanceof CoderApiError) {
+          if (legacyErr.status === 404) throw err;
+          this.#apiPrefix ??= LEGACY_API_PREFIX;
+        }
+        throw legacyErr;
+      }
+    }
+  }
+
+  /**
+   * Resolve before a WebSocket dial or a non-replayable streaming upload. A
+   * read-only listing avoids consuming the upload body and works even without
+   * a chat id (/watch). The WS reader supplies its internal cancellation signal
+   * so return()/throw()/async disposal can also cancel an in-flight probe.
+   */
+  async #resolveApiPrefix(op: CoderClientOperation, signal?: AbortSignal): Promise<string> {
+    if (!this.#apiPrefix) {
+      const res = await this.#send(op, "GET", API_PREFIX, { signal });
+      await res.body?.cancel();
+    }
+    if (!this.#apiPrefix) throw new CoderAgentError("Chat route probe succeeded without a prefix");
+    return this.#apiPrefix;
   }
 
   /** Read a response body as JSON, tolerating an unreadable/empty/malformed body (→ undefined). */
@@ -386,6 +455,9 @@ export class CoderChatClient {
       );
       headers["Content-Disposition"] = `attachment; filename="${ascii}"; filename*=UTF-8''${utf8}`;
     }
+    if (resolved.body instanceof ReadableStream) {
+      await this.#resolveApiPrefix("uploadChatFile", signal);
+    }
     const res = await this.#send(
       "uploadChatFile",
       "POST",
@@ -397,7 +469,7 @@ export class CoderChatClient {
       throw new CoderApiError({
         status: res.status,
         method: "POST",
-        path: `${API_PREFIX}/files`,
+        path: `${this.#apiPrefix}/files`,
         message: "upload succeeded but the response contained no file id",
       });
     }
@@ -434,6 +506,7 @@ export class CoderChatClient {
       baseUrl: this.baseUrl,
       token: this.#token,
       chatId,
+      resolveApiPrefix: (signal) => this.#resolveApiPrefix("streamEvents", signal),
       afterId: opts?.afterId,
       signal: opts?.signal,
       reader: opts?.reader,
@@ -445,15 +518,18 @@ export class CoderChatClient {
   /**
    * Watch lifecycle events (status/title changes, creation, deletion, …) for
    * every chat visible to the authenticated user via the `/chats/watch`
-   * WebSocket. Dropped connections are redialed with exponential backoff; the
-   * iteration ends only when `opts.signal` aborts, or with a terminal
-   * {@link CoderApiError} when the server rejects the upgrade with a 4xx
-   * (bad/expired token, or an older Coder server without the endpoint → 404).
+   * WebSocket. An unresolved client first probes the REST chat listing;
+   * probe failures propagate unless the reader was cancelled. Once connected,
+   * dropped connections are redialed with exponential backoff. Aborting the
+   * signal or ending iteration tears down the reader; a 4xx upgrade rejection
+   * is a terminal {@link CoderApiError} (bad/expired token, or an older Coder
+   * server without the endpoint → 404).
    */
   watchChats(opts?: { signal?: AbortSignal }): AsyncGenerator<ChatWatchEvent, void, void> {
     return watchChatEvents({
       baseUrl: this.baseUrl,
       token: this.#token,
+      resolveApiPrefix: (signal) => this.#resolveApiPrefix("watchChats", signal),
       signal: opts?.signal,
       webSocketFactory: this.#webSocketFactory,
     });
@@ -495,7 +571,7 @@ export class CoderChatClient {
       const raw: unknown = await this.#request<unknown>(
         op,
         "GET",
-        `${API_PREFIX}/model-configs`,
+        `${LEGACY_API_PREFIX}/model-configs`,
         undefined,
         signal,
       );

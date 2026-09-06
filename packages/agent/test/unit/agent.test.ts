@@ -1490,7 +1490,7 @@ describe("CoderLanguageModel requires_action REST fallback (real reader)", () =>
   // The exact recovery request: cursor-less (newest-first — an `after_id`
   // cursor would page oldest-first and could truncate away the pending call)
   // at the endpoint's maximum page size.
-  const GET_MESSAGES = "GET /api/experimental/chats/chat-1/messages?limit=200";
+  const GET_MESSAGES = "GET /api/v2/chats/chat-1/messages?limit=200";
   const pendingCall: ChatMessagePart = {
     type: "tool-call",
     tool_call_id: "c1",
@@ -2478,7 +2478,7 @@ function err409(): CoderApiError {
   return new CoderApiError({
     status: 409,
     method: "PATCH",
-    path: "/api/experimental/chats/chat-1",
+    path: "/api/v2/chats/chat-1",
     message: "Chat is not in an archivable state.",
   });
 }

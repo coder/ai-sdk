@@ -12,7 +12,7 @@ export interface ExampleEnv {
 }
 
 export function loadEnv(): ExampleEnv {
-  const baseURL = (process.env.CODER_URL ?? "https://dev.coder.com").replace(/\/$/, "");
+  const baseURL = (process.env.CODER_URL ?? "https://dogfood.cdr.dev").replace(/\/$/, "");
   const apiKey = process.env.CODER_API_TOKEN ?? process.env.CODER_SESSION_TOKEN ?? "";
 
   if (!apiKey) {

@@ -33,7 +33,7 @@ describe("CoderChatClient.uploadChatFile", () => {
     });
 
     expect(r).toEqual({ id: "file-1", mediaType: "application/pdf", name: "report.pdf" });
-    expect(calls[0]?.url).toBe("https://x/api/experimental/chats/files?organization=org-1");
+    expect(calls[0]?.url).toBe("https://x/api/v2/chats/files?organization=org-1");
     expect(calls[0]?.init.headers["Content-Type"]).toBe("application/pdf");
     expect(calls[0]?.init.headers["Content-Disposition"]).toBe(
       "attachment; filename=\"report.pdf\"; filename*=UTF-8''report.pdf",
@@ -352,27 +352,27 @@ describe("CoderChatClient.interruptChat", () => {
   it("POSTs without a query by default", async () => {
     const { fn, calls } = fakeFetch(() => new Response(chatJson(), { status: 200 }));
     await client(fn).interruptChat("c1");
-    expect(calls[0]?.url).toBe("https://x/api/experimental/chats/c1/interrupt");
+    expect(calls[0]?.url).toBe("https://x/api/v2/chats/c1/interrupt");
     expect(calls[0]?.init.method).toBe("POST");
   });
 
   it("adds ?wait=true when wait is requested", async () => {
     const { fn, calls } = fakeFetch(() => new Response(chatJson(), { status: 200 }));
     await client(fn).interruptChat("c1", { wait: true });
-    expect(calls[0]?.url).toBe("https://x/api/experimental/chats/c1/interrupt?wait=true");
+    expect(calls[0]?.url).toBe("https://x/api/v2/chats/c1/interrupt?wait=true");
   });
 
   it("omits the query for wait: false", async () => {
     const { fn, calls } = fakeFetch(() => new Response(chatJson(), { status: 200 }));
     await client(fn).interruptChat("c1", { wait: false });
-    expect(calls[0]?.url).toBe("https://x/api/experimental/chats/c1/interrupt");
+    expect(calls[0]?.url).toBe("https://x/api/v2/chats/c1/interrupt");
   });
 
   it("still accepts a positional AbortSignal (back-compat)", async () => {
     const ac = new AbortController();
     const { fn, calls } = fakeFetch(() => new Response(chatJson(), { status: 200 }));
     await client(fn).interruptChat("c1", ac.signal);
-    expect(calls[0]?.url).toBe("https://x/api/experimental/chats/c1/interrupt");
+    expect(calls[0]?.url).toBe("https://x/api/v2/chats/c1/interrupt");
     expect(calls[0]?.init.signal).toBe(ac.signal);
   });
 
@@ -418,6 +418,233 @@ class FakeWatchSocket {
   }
 }
 
+describe("CoderChatClient chat route negotiation", () => {
+  const stable = "/api/v2/chats";
+  const legacy = "/api/experimental/chats";
+  const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  function routed(statuses: number[]) {
+    const events: import("../../src/transport-events.js").CoderTransportEvent[] = [];
+    const sockets: FakeWatchSocket[] = [];
+    const { fn, calls } = fakeFetch(() => {
+      const status = statuses.shift();
+      expect(status).toBeDefined();
+      return new Response(JSON.stringify({ message: `response ${calls.length}` }), { status });
+    });
+    const c = new CoderChatClient({
+      baseUrl: "https://x",
+      token: "t",
+      fetch: fn,
+      webSocketFactory: (url, { headers }) => {
+        const socket = new FakeWatchSocket(url, headers);
+        sockets.push(socket);
+        return socket as WebSocketLike;
+      },
+      onTransportEvent: (event) => events.push(event),
+    });
+    return { c, calls, events, sockets };
+  }
+
+  it.each([200, 401, 403, 500])(
+    "a v2 %s locks v2, including later resource 404s",
+    async (status) => {
+      const { c, calls } = routed([status, 404]);
+      if (status === 200) await expect(c.getChat("c1")).resolves.toBeDefined();
+      else await expect(c.getChat("c1")).rejects.toMatchObject({ status, path: `${stable}/c1` });
+      await expect(c.getChat("missing")).rejects.toMatchObject({ status: 404 });
+      expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
+        `${stable}/c1`,
+        `${stable}/missing`,
+      ]);
+    },
+  );
+
+  it.each([200, 401, 403, 500])(
+    "v2 404 then experimental %s locks experimental",
+    async (status) => {
+      const { c, calls, events } = routed([404, status, 200]);
+      if (status === 200) await expect(c.getChat("c1")).resolves.toBeDefined();
+      else await expect(c.getChat("c1")).rejects.toMatchObject({ status, path: `${legacy}/c1` });
+      await c.getMessages("c1", { after_id: 7 });
+      expect(calls.map((call) => call.url)).toEqual([
+        `https://x${stable}/c1`,
+        `https://x${legacy}/c1`,
+        `https://x${legacy}/c1/messages?after_id=7`,
+      ]);
+      expect(
+        events.filter((event) => event.type === "http:request").map((event) => event.path),
+      ).toEqual([`${stable}/c1`, `${legacy}/c1`, `${legacy}/c1/messages?after_id=7`]);
+    },
+  );
+
+  it("both 404s preserve the original v2 error and leave the next call unresolved", async () => {
+    const { c, calls } = routed([404, 404, 200]);
+    await expect(c.getChat("missing")).rejects.toMatchObject({
+      status: 404,
+      path: `${stable}/missing`,
+      message: expect.stringContaining("response 1"),
+    });
+    await c.getChat("c1");
+    expect(calls.map((call) => call.url)).toEqual([
+      `https://x${stable}/missing`,
+      `https://x${legacy}/missing`,
+      `https://x${stable}/c1`,
+    ]);
+  });
+
+  it("preserves request method, JSON body, headers and signal on fallback", async () => {
+    const { c, calls } = routed([404, 200]);
+    const signal = new AbortController().signal;
+    await c.updateChat("c1", { archived: true }, signal);
+    expect(calls[1]?.init).toEqual(calls[0]?.init);
+    expect(calls[1]?.init).toMatchObject({
+      method: "PATCH",
+      body: '{"archived":true}',
+      signal,
+      headers: { "Coder-Session-Token": "t", "Content-Type": "application/json" },
+    });
+  });
+
+  it.each([false, true])(
+    "network failures do not lock or trigger further retries (legacy=%s)",
+    async (onLegacy) => {
+      const failure = new TypeError("network down");
+      const fetchFn = vi.fn<typeof fetch>();
+      if (onLegacy) fetchFn.mockResolvedValueOnce(new Response("", { status: 404 }));
+      fetchFn.mockRejectedValueOnce(failure).mockResolvedValueOnce(new Response("{}"));
+      const c = client(fetchFn);
+      await expect(c.getChat("c1")).rejects.toBe(failure);
+      await c.getChat("c2");
+      expect(fetchFn).toHaveBeenLastCalledWith(`https://x${stable}/c2`, expect.anything());
+      expect(fetchFn).toHaveBeenCalledTimes(onLegacy ? 3 : 2);
+    },
+  );
+
+  it("model listing fallback is independent of the chat route lock", async () => {
+    const { c, calls } = routed([404, 200, 200, 200]);
+    await c.listModelConfigs("org");
+    await c.getChat("c1");
+    await c.listModelConfigs();
+    expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
+      "/api/v2/organizations/org/chats/models",
+      `${legacy}/model-configs`,
+      `${stable}/c1`,
+      `${legacy}/model-configs`,
+    ]);
+  });
+
+  it("a late initial 404 does not overturn a concurrently established v2 lock", async () => {
+    let respond!: (res: Response) => void;
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            respond = resolve;
+          }),
+      )
+      .mockResolvedValueOnce(new Response("{}"));
+    const c = client(fetchFn);
+    const missing = c.getChat("missing");
+    await c.getChat("c1");
+    respond(new Response("", { status: 404 }));
+    await expect(missing).rejects.toMatchObject({ status: 404, path: `${stable}/missing` });
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it("probes before consuming a streaming upload and never replays the body", async () => {
+    const bytes = new TextEncoder().encode("hello");
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes);
+        controller.close();
+      },
+    });
+    const fetchFn = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("", { status: 404 }))
+      .mockResolvedValueOnce(new Response("[]"))
+      .mockImplementationOnce(async (_url, init) => {
+        expect(init?.body).toBe(body);
+        expect(await new Response(init?.body).text()).toBe("hello");
+        return new Response('{"id":"f1"}');
+      });
+    await expect(
+      client(fetchFn).uploadChatFile("org", { content: body, mediaType: "text/plain" }),
+    ).resolves.toMatchObject({ id: "f1" });
+    expect(fetchFn.mock.calls.map(([url, init]) => [url, init?.method])).toEqual([
+      [`https://x${stable}`, "GET"],
+      [`https://x${legacy}`, "GET"],
+      [`https://x${legacy}/files?organization=org`, "POST"],
+    ]);
+  });
+
+  for (const kind of ["stream", "watch"] as const) {
+    for (const prefix of [stable, legacy]) {
+      it(`${kind} uses the locked ${prefix} without another REST probe`, async () => {
+        const { c, calls, sockets } = routed(prefix === stable ? [200] : [404, 200]);
+        await c.getChat("c1");
+        const iter = kind === "stream" ? c.streamEvents("c1", { afterId: 9 }) : c.watchChats();
+        const pending = iter.next();
+        await tick();
+        expect(sockets[0]?.url).toBe(
+          `wss://x${prefix}${kind === "stream" ? "/c1/stream?after_id=9" : "/watch"}`,
+        );
+        expect(calls).toHaveLength(prefix === stable ? 1 : 2);
+        await iter.return(undefined);
+        expect((await pending).done).toBe(true);
+      });
+    }
+
+    it(`${kind} resolves an older deployment before opening its first socket`, async () => {
+      const { c, calls, sockets } = routed([404, 200, 200]);
+      const iter = kind === "stream" ? c.streamEvents("c1") : c.watchChats();
+      const pending = iter.next();
+      await tick();
+      expect(calls.map((call) => call.url)).toEqual([`https://x${stable}`, `https://x${legacy}`]);
+      expect(sockets[0]?.url).toBe(
+        `wss://x${legacy}${kind === "stream" ? "/c1/stream" : "/watch"}`,
+      );
+      await iter.return(undefined);
+      expect((await pending).done).toBe(true);
+      await c.getChat("c1");
+      expect(calls[2]?.url).toBe(`https://x${legacy}/c1`);
+    });
+
+    it(`${kind} surfaces the original preflight 404 without opening a socket`, async () => {
+      const { c, sockets } = routed([404, 404]);
+      const iter = kind === "stream" ? c.streamEvents("c1") : c.watchChats();
+      await expect(iter.next()).rejects.toMatchObject({ status: 404, path: stable });
+      expect(sockets).toHaveLength(0);
+    });
+
+    it(`${kind} return() cancels a pending REST preflight`, async () => {
+      let probeSignal: AbortSignal | null | undefined;
+      const factory = vi.fn<WebSocketFactory>();
+      const c = new CoderChatClient({
+        baseUrl: "https://x",
+        token: "t",
+        webSocketFactory: factory,
+        fetch: (_url, init) =>
+          new Promise((_resolve, reject) => {
+            probeSignal = init?.signal;
+            probeSignal?.addEventListener("abort", () => reject(probeSignal?.reason), {
+              once: true,
+            });
+          }),
+      });
+      const iter = kind === "stream" ? c.streamEvents("c1") : c.watchChats();
+      const pending = iter.next();
+      await tick();
+      expect(probeSignal?.aborted).toBe(false);
+      await iter.return(undefined);
+      expect((await pending).done).toBe(true);
+      expect(probeSignal?.aborted).toBe(true);
+      expect(factory).not.toHaveBeenCalled();
+    });
+  }
+});
+
 describe("CoderChatClient.watchChats", () => {
   function watchClient() {
     const sockets: FakeWatchSocket[] = [];
@@ -426,7 +653,12 @@ describe("CoderChatClient.watchChats", () => {
       sockets.push(s);
       return s as WebSocketLike;
     };
-    const c = new CoderChatClient({ baseUrl: "https://x", token: "t", webSocketFactory: factory });
+    const c = new CoderChatClient({
+      baseUrl: "https://x",
+      token: "t",
+      webSocketFactory: factory,
+      fetch: fakeFetch(() => new Response("[]")).fn,
+    });
     return { c, sockets };
   }
 
@@ -454,7 +686,7 @@ describe("CoderChatClient.watchChats", () => {
     await tick();
 
     expect(sockets).toHaveLength(1);
-    expect(sockets[0]?.url).toBe("wss://x/api/experimental/chats/watch");
+    expect(sockets[0]?.url).toBe("wss://x/api/v2/chats/watch");
     expect(sockets[0]?.headers["Coder-Session-Token"]).toBe("t");
 
     sockets[0]?.emit("message", frame("created", "c1"));
@@ -596,7 +828,7 @@ describe("CoderChatClient.watchChats", () => {
     await expect(p).rejects.toMatchObject({
       name: "CoderApiError",
       status: 401,
-      path: "/api/experimental/chats/watch",
+      path: "/api/v2/chats/watch",
     });
     expect(sockets).toHaveLength(1); // no reconnect after a terminal failure
   });
@@ -657,7 +889,12 @@ describe("CoderChatClient.streamEvents (redial)", () => {
       sockets.push(s);
       return s as WebSocketLike;
     };
-    const c = new CoderChatClient({ baseUrl: "https://x", token: "t", webSocketFactory: factory });
+    const c = new CoderChatClient({
+      baseUrl: "https://x",
+      token: "t",
+      webSocketFactory: factory,
+      fetch: fakeFetch(() => new Response("[]")).fn,
+    });
     return { c, sockets };
   }
 
@@ -700,7 +937,7 @@ describe("CoderChatClient.streamEvents (redial)", () => {
       const iter = c.streamEvents("c1", { afterId: 3 });
       const p1 = iter.next();
       await vi.advanceTimersByTimeAsync(0);
-      expect(sockets[0]?.url).toBe("wss://x/api/experimental/chats/c1/stream?after_id=3");
+      expect(sockets[0]?.url).toBe("wss://x/api/v2/chats/c1/stream?after_id=3");
       sockets[0]?.emit("message", frame(statusEv("running"), message(5, "step one")));
       expect((await p1).value).toMatchObject({ type: "status" });
       expect((await iter.next()).value).toMatchObject({ type: "message", message: { id: 5 } });
@@ -716,7 +953,7 @@ describe("CoderChatClient.streamEvents (redial)", () => {
       // …keeping the ORIGINAL cursor, so a revision of id 5 committed during
       // the gap still replays (an advanced cursor would exclude it). The
       // replayed snapshot is yielded again — consumers dedupe by id.
-      expect(sockets[1]?.url).toBe("wss://x/api/experimental/chats/c1/stream?after_id=3");
+      expect(sockets[1]?.url).toBe("wss://x/api/v2/chats/c1/stream?after_id=3");
 
       sockets[1]?.emit(
         "message",
@@ -741,7 +978,7 @@ describe("CoderChatClient.streamEvents (redial)", () => {
       const iter = c.streamEvents("c1", { afterId: 3 });
       const p1 = iter.next();
       await vi.advanceTimersByTimeAsync(0);
-      expect(sockets[0]?.url).toBe("wss://x/api/experimental/chats/c1/stream?after_id=3");
+      expect(sockets[0]?.url).toBe("wss://x/api/v2/chats/c1/stream?after_id=3");
       sockets[0]?.emit("message", frame(delta(1, "Hel"), delta(2, "lo")));
       expect((await p1).value).toMatchObject({ message_part: { seq: 1 } });
       expect((await iter.next()).value).toMatchObject({ message_part: { seq: 2 } });
@@ -753,7 +990,7 @@ describe("CoderChatClient.streamEvents (redial)", () => {
       // Deltas carry no message id (the message is uncommitted), so the redial
       // keeps the original cursor and chatd replays the attempt from seq 1;
       // only parts beyond the last yielded seq may surface again.
-      expect(sockets[1]?.url).toBe("wss://x/api/experimental/chats/c1/stream?after_id=3");
+      expect(sockets[1]?.url).toBe("wss://x/api/v2/chats/c1/stream?after_id=3");
       sockets[1]?.emit("message", frame(delta(1, "Hel"), delta(2, "lo"), delta(3, "!")));
       expect((await p3).value).toMatchObject({
         message_part: { seq: 3, part: { text: "!" } },
@@ -779,7 +1016,7 @@ describe("CoderChatClient.streamEvents (redial)", () => {
     await expect(p).rejects.toMatchObject({
       name: "CoderApiError",
       status: 401,
-      path: "/api/experimental/chats/c1/stream",
+      path: "/api/v2/chats/c1/stream",
     });
     expect(sockets).toHaveLength(1);
   });

@@ -170,7 +170,7 @@ export interface CoderAgentSettings<TOOLS extends ToolSet = {}> {
    * set `CODER_URL` + `CODER_SESSION_TOKEN`) to enable them.
    */
   client?: CoderChatClient;
-  /** Coder deployment base URL, e.g. `https://dev.coder.com`. Defaults to `CODER_URL`. */
+  /** Coder deployment base URL, e.g. `https://dogfood.cdr.dev`. Defaults to `CODER_URL`. */
   baseUrl?: string;
   /** Coder API/session token (sent as `Coder-Session-Token`). Defaults to `CODER_SESSION_TOKEN`. */
   token?: string;

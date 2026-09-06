@@ -9,7 +9,7 @@ import from `../src/index.js` so they run against the local source.
 ## Setup
 
 ```bash
-export CODER_URL=https://dev.coder.com
+export CODER_URL=https://dogfood.cdr.dev
 export CODER_SESSION_TOKEN=$(coder tokens create --name coderagent-example)
 # optional:
 #   export CODER_ORG_ID=<org-uuid>      # otherwise auto-detected from your user

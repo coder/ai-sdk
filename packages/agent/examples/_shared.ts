@@ -15,7 +15,7 @@ export interface ExampleEnv {
 }
 
 export async function loadEnv(): Promise<ExampleEnv> {
-  const baseUrl = (process.env.CODER_URL ?? "https://dev.coder.com").replace(/\/$/, "");
+  const baseUrl = (process.env.CODER_URL ?? "https://dogfood.cdr.dev").replace(/\/$/, "");
   const token = process.env.CODER_SESSION_TOKEN ?? "";
 
   if (!token) {

@@ -52,7 +52,9 @@ export type CoderClientOperation =
   | "updateChat"
   | "archiveChat"
   | "uploadChatFile"
-  | "getChatFile";
+  | "getChatFile"
+  | "streamEvents"
+  | "watchChats";
 
 interface HttpTransportEventBase extends TransportEventBase {
   /**
@@ -70,7 +72,7 @@ interface HttpTransportEventBase extends TransportEventBase {
   method: string;
   /**
    * Path + query relative to the client's `baseUrl`, e.g.
-   * `/api/experimental/chats/{id}/tool-results`. Never carries credentials.
+   * `/api/v2/chats/{id}/tool-results`. Never carries credentials.
    */
   path: string;
 }

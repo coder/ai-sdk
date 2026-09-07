@@ -40,6 +40,9 @@ jobs:
           persist-credentials: false
       - name: Install node and pnpm via mise
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          # Avoid release-in-progress 404s; mirrors pnpm's minimumReleaseAge posture.
+          minimum_release_age: 24h
       - run: pnpm install --frozen-lockfile
       # Runs release-please as a library with our AI changelog-notes hook
       # registered (changelog-type: "ai" in the config). release-please itself
@@ -74,6 +77,8 @@ jobs:
           persist-credentials: false
       - name: Install node and pnpm via mise
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          minimum_release_age: 24h
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @coder/ai-sdk-sandbox build
       - name: Publish @coder/ai-sdk-sandbox
@@ -92,6 +97,8 @@ jobs:
           persist-credentials: false
       - name: Install node and pnpm via mise
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          minimum_release_age: 24h
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @coder/ai-sdk-agent build
       - name: Publish @coder/ai-sdk-agent
@@ -110,6 +117,8 @@ jobs:
           persist-credentials: false
       - name: Install node and pnpm via mise
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          minimum_release_age: 24h
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @coder/ai-sdk-provider build
       - name: Publish @coder/ai-sdk-provider
@@ -131,6 +140,8 @@ jobs:
           persist-credentials: false
       - name: Install node and pnpm via mise
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          minimum_release_age: 24h
       - name: Resolve package from tag
         id: pkg
         env:

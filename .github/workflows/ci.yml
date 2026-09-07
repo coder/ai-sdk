@@ -44,6 +44,8 @@ jobs:
       - name: Set up mise
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
+          # Avoid release-in-progress 404s; mirrors pnpm's minimumReleaseAge posture.
+          minimum_release_age: 24h
           # Don't auto-install: the action force-adds `--locked` when a lockfile
           # is present, which fails for matrix node versions not in the lock.
           install: false
@@ -99,6 +101,8 @@ jobs:
 
       - name: Install tools via mise
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          minimum_release_age: 24h
 
       - name: actionlint
         run: actionlint

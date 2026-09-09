@@ -19,6 +19,10 @@ overrides:
   # defined) and breaks HarnessAgent type identity. Pin a single zod so the
   # whole monorepo shares one copy.
   zod: "4.5.4"
+  # release-please (CI-only, via @coder/release-please-ai) accepts ^4.3.1, but
+  # the lockfile resolved 4.3.1, which is affected by GHSA-2883-xcg3-v3hh
+  # (Dependabot alert #12). Pin the patched release.
+  js-yaml: "4.3.2"
 
 # Excludes for pnpm's `minimumReleaseAge` supply-chain delay (when configured),
 # so the fast-moving Vercel AI SDK packages stay installable immediately.

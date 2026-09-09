@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.10.1](https://github.com/coder/ai-sdk/compare/agent-v0.10.0...agent-v0.10.1) (2026-09-09)
+
+A maintenance release for the agent package with internal changes and no documented user-facing modifications.
+
 ## [0.10.0](https://github.com/coder/ai-sdk/compare/agent-v0.9.14...agent-v0.10.0) (2026-09-06)
 
 The agent now targets the stable /api/v2 chat routes while retaining a fallback to the experimental endpoints for compatibility.

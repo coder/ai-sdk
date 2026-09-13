@@ -20,7 +20,7 @@ against their concrete API shapes:
 
 | Dependency               | Version  | Surface used                                                                                               |
 | ------------------------ | -------- | ---------------------------------------------------------------------------------------------------------- |
-| `effect`                 | `3.22.1` | `Effect`, `Layer`, `Stream`, `Schema`, `Context`, `Data`                                                   |
+| `effect`                 | `3.22.2` | `Effect`, `Layer`, `Stream`, `Schema`, `Context`, `Data`                                                   |
 | `@effect/ai`             | `0.37.0` | `LanguageModel.make` (`ProviderOptions` → encoded response parts), `AiError`, `Prompt`, `Response`, `Tool` |
 | `@ai-sdk/provider`       | `4.0.11` | `LanguageModelV4` spec types (same pin as `@coder/ai-sdk-provider`)                                        |
 | `@coder/ai-sdk-provider` | `0.4.12` | `createCoder`, `CoderProviderSettings` (published release, not `workspace:*` — see below)                  |

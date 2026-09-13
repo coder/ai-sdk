@@ -1,7 +1,7 @@
 import { APICallError } from "@ai-sdk/provider";
 import { describe, expect, it, vi } from "vitest";
 import { CoderChatClient } from "../../src/coder/client.js";
-import type { ChatStreamEvent } from "../../src/coder/types.js";
+import type { Chat, ChatStreamEvent, ReasoningEffort } from "../../src/coder/types.js";
 import type { WebSocketFactory, WebSocketLike } from "../../src/coder/ws.js";
 import { CoderAgentError, CoderApiError } from "../../src/errors.js";
 
@@ -20,6 +20,30 @@ function fakeFetch(handler: () => Response) {
 function client(fetchFn: typeof globalThis.fetch) {
   return new CoderChatClient({ baseUrl: "https://x", token: "t", fetch: fetchFn });
 }
+
+describe("CoderChatClient.getChat reasoning effort", () => {
+  it.each([undefined, null, "low", "future-effort"])(
+    "round-trips last_reasoning_effort %s",
+    async (reasoningEffort) => {
+      const chat: Chat = {
+        id: "chat-1",
+        organization_id: "org-1",
+        owner_id: "u",
+        title: "t",
+        status: "waiting",
+        created_at: "",
+        updated_at: "",
+        archived: false,
+      };
+      if (reasoningEffort !== undefined) chat.last_reasoning_effort = reasoningEffort;
+      const { fn } = fakeFetch(() => new Response(JSON.stringify(chat)));
+      const result = await client(fn).getChat(chat.id);
+      expect(result).toEqual(chat);
+      if (reasoningEffort === undefined) expect(result).not.toHaveProperty("last_reasoning_effort");
+      else expect(result.last_reasoning_effort).toBe(reasoningEffort);
+    },
+  );
+});
 
 describe("CoderChatClient.uploadChatFile", () => {
   it("uploads bytes to the org-scoped endpoint and returns the id", async () => {
@@ -336,6 +360,15 @@ describe("CoderChatClient.resolveModelConfigId", () => {
       { ...GPT, provider: "openai" },
       { ...HAIKU, provider: "anthropic" },
     ]);
+  });
+
+  it("listModelConfigs preserves the org model's selectable reasoning efforts", async () => {
+    const reasoningEfforts: ReasoningEffort[] = ["none", "low", "high", "future-effort"];
+    const { client: c } = resolver([{ ...GPT, reasoning_efforts: reasoningEfforts }, HAIKU]);
+    const configs = await c.listModelConfigs(ORG);
+    const efforts: ReasoningEffort[] | undefined = configs[0]?.reasoning_efforts;
+    expect(efforts).toEqual(reasoningEfforts);
+    expect(configs[1]).not.toHaveProperty("reasoning_efforts");
   });
 
   it("deprecated no-argument listModelConfigs calls the legacy route directly", async () => {

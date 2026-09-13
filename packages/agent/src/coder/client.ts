@@ -698,6 +698,7 @@ function joinOrgModels(res: unknown): ChatModelConfig[] {
   for (const m of models) {
     if (typeof m !== "object" || m === null) continue;
     const config: ChatModelConfig = { ...m };
+    if (m.reasoning_efforts !== undefined) config.reasoning_efforts = m.reasoning_efforts;
     const providerType =
       typeof m.ai_provider_id === "string" ? providerTypeById.get(m.ai_provider_id) : undefined;
     if (providerType !== undefined) config.provider = providerType;

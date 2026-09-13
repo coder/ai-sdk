@@ -21,6 +21,7 @@ import type {
   ChatMessagePart,
   ChatMessagesResponse,
   ChatStreamEvent,
+  CreateChatMessageRequest,
   CreateChatMessageResponse,
   CreateChatRequest,
   SubmitToolResultsRequest,
@@ -33,6 +34,7 @@ class FakeClient {
   turns: ChatStreamEvent[][];
   #turnIndex = 0;
   createdChats: CreateChatRequest[] = [];
+  createdMessages: CreateChatMessageRequest[] = [];
   submitted: SubmitToolResultsRequest[] = [];
   uploads: ChatFileInput[] = [];
   #nextMessageId = 1000;
@@ -58,7 +60,11 @@ class FakeClient {
     return chatStub("chat-1", req.organization_id);
   }
 
-  async createChatMessage(): Promise<CreateChatMessageResponse> {
+  async createChatMessage(
+    _chatId: string,
+    req: CreateChatMessageRequest,
+  ): Promise<CreateChatMessageResponse> {
+    this.createdMessages.push(req);
     return {
       queued: false,
       message: { id: ++this.#nextMessageId, chat_id: "chat-1", role: "user", created_at: "" },
@@ -223,6 +229,66 @@ function makeAgent<T extends Record<string, unknown>>(fake: FakeClient, tools?: 
     ...(tools ? { tools: tools as never } : {}),
   });
 }
+
+describe("reasoning effort", () => {
+  it.each([undefined, "none", "minimal", "low", "medium", "high", "xhigh", "max", "future-effort"])(
+    "forwards %s on chat creation and every subsequent message, omitting only when unset",
+    async (reasoningEffort) => {
+      const turn = (id: number) => [
+        status("running"),
+        msg(id, "assistant", [{ type: "text", text: "Hello!" }]),
+        status("waiting"),
+      ];
+      const fake = new FakeClient([turn(2), turn(1002), turn(1004)]);
+      const agent = new CoderAgent({
+        client: fake as unknown as CoderChatClient,
+        organizationId: "org-1",
+        reasoningEffort,
+      });
+      for (let i = 0; i < 3; i++) {
+        expect((await agent.generate({ prompt: "hi" })).text).toBe("Hello!");
+      }
+      expect(fake.createdChats).toHaveLength(1);
+      expect(fake.createdMessages).toHaveLength(2);
+      for (const req of [...fake.createdChats, ...fake.createdMessages]) {
+        if (reasoningEffort === undefined) {
+          expect(req).not.toHaveProperty("reasoning_effort");
+        } else {
+          expect(req.reasoning_effort).toBe(reasoningEffort);
+        }
+      }
+    },
+  );
+
+  it.each([undefined, "low"])(
+    "forwards %s when a fresh model resumes an existing chat",
+    async (reasoningEffort) => {
+      const fake = new FakeClient([
+        [
+          status("running"),
+          msg(1002, "assistant", [{ type: "text", text: "Resumed." }]),
+          status("waiting"),
+        ],
+      ]);
+      const model = new CoderLanguageModel({
+        client: fake as unknown as CoderChatClient,
+        organizationId: "org-1",
+        chatId: "chat-1",
+        reasoningEffort,
+      });
+      await model.doGenerate({
+        prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      });
+      expect(fake.createdChats).toHaveLength(0);
+      expect(fake.createdMessages).toHaveLength(1);
+      if (reasoningEffort === undefined) {
+        expect(fake.createdMessages[0]).not.toHaveProperty("reasoning_effort");
+      } else {
+        expect(fake.createdMessages[0]?.reasoning_effort).toBe(reasoningEffort);
+      }
+    },
+  );
+});
 
 describe("CoderAgent integration (mock client)", () => {
   it("generates plain text over one turn", async () => {
@@ -3131,7 +3197,11 @@ class QueuedChatClient extends FakeClient {
       has_more: false,
     };
   }
-  override async createChatMessage(): Promise<CreateChatMessageResponse> {
+  override async createChatMessage(
+    _chatId: string,
+    req: CreateChatMessageRequest,
+  ): Promise<CreateChatMessageResponse> {
+    this.createdMessages.push(req);
     return {
       queued: true,
       queued_message: {
@@ -3169,6 +3239,26 @@ const queuedTurnEvents: ChatStreamEvent[] = [
 ];
 
 describe("queued submissions (#114)", () => {
+  it.each([undefined, "low"])(
+    "forwards reasoning effort %s on queued submissions",
+    async (reasoningEffort) => {
+      const fake = new QueuedChatClient([queuedTurnEvents]);
+      const agent = new CoderAgent({
+        client: fake as unknown as CoderChatClient,
+        organizationId: "org-1",
+        chatId: "chat-1",
+        reasoningEffort,
+      });
+      expect((await agent.generate({ prompt: "hi again" })).text).toBe("Fresh answer.");
+      expect(fake.createdMessages).toHaveLength(1);
+      if (reasoningEffort === undefined) {
+        expect(fake.createdMessages[0]).not.toHaveProperty("reasoning_effort");
+      } else {
+        expect(fake.createdMessages[0]?.reasoning_effort).toBe(reasoningEffort);
+      }
+    },
+  );
+
   it("does not absorb the concurrent run's tail: content, usage, and settle all start at the own user message", async () => {
     const fake = new QueuedChatClient([queuedTurnEvents]);
     const agent = new CoderAgent({

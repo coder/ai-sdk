@@ -919,6 +919,7 @@ sequence pinpoints _where_ a turn died:
 | `client` \| (`baseUrl` + `token`) | connection (one or the other; `baseUrl`/`token` default from `CODER_URL`/`CODER_SESSION_TOKEN`)                    |
 | `organizationId`                  | org UUID that owns the chat (required)                                                                             |
 | `model`                           | model hint: UUID, `provider:model`, model id, or display‑name substring                                            |
+| `reasoningEffort`                 | reasoning effort for chat creation and every user-message submission (see below)                                   |
 | `instructions`                    | system prompt                                                                                                      |
 | `tools`                           | AI SDK `ToolSet` (client‑executed)                                                                                 |
 | `workspaceId`                     | bind the chat to a Coder workspace (enables workspace‑scoped tools)                                                |
@@ -946,6 +947,37 @@ selection. Partial payloads from older/newer servers are tolerated (entries
 match on the fields they carry), and an unresolvable hint falls back to the
 server's default model instead of failing. Use
 `agent.listModels()` to see what's available.
+
+### Reasoning effort
+
+Set `reasoningEffort` on `CoderAgentSettings` (or `CoderLanguageModelConfig`
+when using the model directly). The global scale is `none`, `minimal`, `low`,
+`medium`, `high`, `xhigh`, `max`. The exported `ReasoningEffort` type also accepts
+other strings for forward compatibility. Model configs returned by
+`agent.listModels()` / `client.listModelConfigs(organizationId)` expose the
+optional `reasoning_efforts` list of selectable values for each model.
+
+```ts
+import { CoderAgent } from "@coder/ai-sdk-agent";
+
+const agent = new CoderAgent({
+  organizationId: "your-org-uuid",
+  reasoningEffort: "low",
+});
+await agent.generate({ prompt: "Reply with exactly: pong" });
+const chat = await agent.client.getChat(agent.chatId!);
+console.log(chat.last_reasoning_effort); // string, null, or absent on the wire
+await agent.archive();
+```
+
+The setting is independent of the `model` hint. It is sent as `reasoning_effort`
+on chat creation and every user-message submission, including submissions to
+resumed or busy chats that queue the message. When unset, the request key is
+omitted entirely. Tool-result submissions and WebSocket reconnects do not post
+user messages and do not send this field. There is no per-call reasoning-effort
+override; configure it on the agent/model instance. Older Coder servers that do
+not recognize `reasoning_effort` ignore the unknown JSON field, so setting it is
+safe but has no effect there.
 
 ## How it works
 

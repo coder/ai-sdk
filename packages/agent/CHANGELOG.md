@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.11.0](https://github.com/coder/ai-sdk/compare/agent-v0.10.1...agent-v0.11.0) (2026-09-13)
+
+Adds the ability to configure reasoning effort independently for the agent.
+
+### Highlights
+
+- Reasoning effort can now be set separately from other configuration, giving finer control over agent behavior. ([#190](https://github.com/coder/ai-sdk/pull/190))
+
+### Features
+
+* **agent:** expose decoupled reasoning effort ([#190](https://github.com/coder/ai-sdk/issues/190)) ([94bac60](https://github.com/coder/ai-sdk/commit/94bac607862385664b9bd56c3e38692f894a10c1))
+
 ## [0.10.1](https://github.com/coder/ai-sdk/compare/agent-v0.10.0...agent-v0.10.1) (2026-09-09)
 
 A maintenance release for the agent package with internal changes and no documented user-facing modifications.

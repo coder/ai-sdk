@@ -17,7 +17,9 @@ import type {
   ChatStatus,
   ChatStreamEvent,
   ChatStreamToolCall,
+  CreateChatMessageRequest,
   CreateChatRequest,
+  ReasoningEffort,
 } from "../coder/types.js";
 import { dataContentToFileContent } from "../files.js";
 import {
@@ -112,6 +114,8 @@ export interface CoderLanguageModelConfig {
   organizationId: string;
   /** Model hint (UUID, `provider:model`, model id, or display-name substring). */
   model?: string;
+  /** Reasoning effort sent on chat creation and each user-message submission. */
+  reasoningEffort?: ReasoningEffort;
   /** Bind the chat to a Coder workspace (enables workspace tools). */
   workspaceId?: string;
   /** chatd-side MCP servers to enable. */
@@ -819,6 +823,9 @@ export class CoderLanguageModel implements LanguageModelV4 {
           const tools = toolsToDynamicTools(options.tools);
           if (tools.length > 0) req.unsafe_dynamic_tools = tools;
           if (modelConfigId) req.model_config_id = modelConfigId;
+          if (this.#config.reasoningEffort !== undefined) {
+            req.reasoning_effort = this.#config.reasoningEffort;
+          }
           if (this.#config.workspaceId) req.workspace_id = this.#config.workspaceId;
           if (this.#config.mcpServerIds?.length) req.mcp_server_ids = this.#config.mcpServerIds;
           if (this.#config.planMode) req.plan_mode = this.#config.planMode;
@@ -829,14 +836,12 @@ export class CoderLanguageModel implements LanguageModelV4 {
           if (chat.mcp_server_ids?.length) chatHasMcpServers = true;
           afterId = this.#lastSeenMessageId > 0 ? this.#lastSeenMessageId : undefined;
         } else {
-          const resp = await this.#config.client.createChatMessage(
-            this.#chatId,
-            {
-              content,
-              ...(modelConfigId ? { model_config_id: modelConfigId } : {}),
-            },
-            signal,
-          );
+          const req: CreateChatMessageRequest = { content };
+          if (modelConfigId) req.model_config_id = modelConfigId;
+          if (this.#config.reasoningEffort !== undefined) {
+            req.reasoning_effort = this.#config.reasoningEffort;
+          }
+          const resp = await this.#config.client.createChatMessage(this.#chatId, req, signal);
           if (resp.message) {
             afterId = resp.message.id;
           } else if (resp.queued) {

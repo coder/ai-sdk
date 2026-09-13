@@ -59,6 +59,17 @@ export type ChatClientType = "ui" | "api";
 export type ChatPlanMode = "" | "plan";
 export type ChatBusyBehavior = "queue" | "interrupt";
 
+/** Coder's global reasoning effort scale; accepts future server-defined values. */
+export type ReasoningEffort =
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max"
+  | (string & {});
+
 /**
  * A client-executed ("dynamic") tool definition. chatd never executes these;
  * when the model calls one, the chat enters `requires_action` and the client
@@ -79,6 +90,7 @@ export interface CreateChatRequest {
   system_prompt?: string;
   workspace_id?: string;
   model_config_id?: string;
+  reasoning_effort?: ReasoningEffort;
   mcp_server_ids?: string[];
   labels?: Record<string, string>;
   unsafe_dynamic_tools?: DynamicTool[];
@@ -89,6 +101,7 @@ export interface CreateChatRequest {
 export interface CreateChatMessageRequest {
   content: ChatInputPart[];
   model_config_id?: string;
+  reasoning_effort?: ReasoningEffort;
   mcp_server_ids?: string[];
   busy_behavior?: ChatBusyBehavior;
   plan_mode?: ChatPlanMode;
@@ -238,6 +251,7 @@ export interface Chat {
   parent_chat_id?: string | null;
   root_chat_id?: string | null;
   last_model_config_id?: string;
+  last_reasoning_effort?: ReasoningEffort | null;
   title: string;
   status: ChatStatus;
   plan_mode?: ChatPlanMode;
@@ -294,6 +308,7 @@ export interface ChatModelConfig {
   is_default?: boolean;
   context_limit?: number;
   compression_threshold?: number;
+  reasoning_efforts?: ReasoningEffort[];
 }
 
 /**
@@ -315,7 +330,7 @@ export interface ChatModel {
   is_default?: boolean;
   context_limit?: number;
   compression_threshold?: number;
-  reasoning_efforts?: string[];
+  reasoning_efforts?: ReasoningEffort[];
   created_at?: string;
   updated_at?: string;
 }

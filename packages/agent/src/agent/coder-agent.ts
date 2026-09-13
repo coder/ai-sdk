@@ -16,7 +16,7 @@ import {
   type CoderChatClientOptions,
   type UploadedChatFile,
 } from "../coder/client.js";
-import type { ChatModelConfig } from "../coder/types.js";
+import type { ChatModelConfig, ReasoningEffort } from "../coder/types.js";
 import {
   type PreviewShareLevel,
   resolveWorkspacePreview,
@@ -193,6 +193,8 @@ export interface CoderAgentSettings<TOOLS extends ToolSet = {}> {
   organizationId: string;
   /** Model hint: UUID, `provider:model`, model id, or display-name substring. */
   model?: string;
+  /** Reasoning effort sent on chat creation and each user-message submission. */
+  reasoningEffort?: ReasoningEffort;
   /** Bind the chat to a Coder workspace (enables workspace-scoped tools). */
   workspaceId?: string;
   /**
@@ -390,6 +392,7 @@ export class CoderAgent<TOOLS extends ToolSet = {}> implements Agent<never, TOOL
       client: this.#client,
       organizationId: settings.organizationId,
       model: settings.model,
+      reasoningEffort: settings.reasoningEffort,
       workspaceId: settings.workspaceId,
       mcpServerIds: settings.mcpServerIds,
       planMode: settings.planMode,

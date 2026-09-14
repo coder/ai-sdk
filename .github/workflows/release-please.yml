@@ -40,6 +40,9 @@ jobs:
           persist-credentials: false
       - name: Install node and pnpm via mise
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        env:
+          # The action exports this token only after cached-binary self-update.
+          MISE_GITHUB_TOKEN: ${{ github.token }}
         with:
           # Avoid release-in-progress 404s; mirrors pnpm's minimumReleaseAge posture.
           minimum_release_age: 24h
@@ -77,6 +80,8 @@ jobs:
           persist-credentials: false
       - name: Install node and pnpm via mise
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        env:
+          MISE_GITHUB_TOKEN: ${{ github.token }}
         with:
           minimum_release_age: 24h
       - run: pnpm install --frozen-lockfile
@@ -97,6 +102,8 @@ jobs:
           persist-credentials: false
       - name: Install node and pnpm via mise
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        env:
+          MISE_GITHUB_TOKEN: ${{ github.token }}
         with:
           minimum_release_age: 24h
       - run: pnpm install --frozen-lockfile
@@ -117,6 +124,8 @@ jobs:
           persist-credentials: false
       - name: Install node and pnpm via mise
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        env:
+          MISE_GITHUB_TOKEN: ${{ github.token }}
         with:
           minimum_release_age: 24h
       - run: pnpm install --frozen-lockfile
@@ -140,6 +149,8 @@ jobs:
           persist-credentials: false
       - name: Install node and pnpm via mise
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        env:
+          MISE_GITHUB_TOKEN: ${{ github.token }}
         with:
           minimum_release_age: 24h
       - name: Resolve package from tag

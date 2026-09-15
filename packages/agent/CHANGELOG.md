@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.11.2](https://github.com/coder/ai-sdk/compare/agent-v0.11.1...agent-v0.11.2) (2026-09-15)
+
+A maintenance release with no user-facing changes documented.
+
 ## [0.11.1](https://github.com/coder/ai-sdk/compare/agent-v0.11.0...agent-v0.11.1) (2026-09-14)
 
 A patch release with internal maintenance changes and no documented user-facing updates.

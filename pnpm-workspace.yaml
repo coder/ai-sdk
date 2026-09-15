@@ -18,7 +18,7 @@ overrides:
   # 4.4.3), which duplicates @ai-sdk/provider-utils (where Tool/ToolSet are
   # defined) and breaks HarnessAgent type identity. Pin a single zod so the
   # whole monorepo shares one copy.
-  zod: "4.6.4"
+  zod: "4.6.5"
   # release-please (CI-only, via @coder/release-please-ai) accepts ^4.3.1, but
   # the lockfile resolved 4.3.1, which is affected by GHSA-2883-xcg3-v3hh
   # (Dependabot alert #12). Pin the patched release.

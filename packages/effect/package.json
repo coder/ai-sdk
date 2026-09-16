@@ -49,18 +49,18 @@
     "effect": "3.22.2"
   },
   "devDependencies": {
-    "@ai-sdk/harness": "^1.0.110",
-    "@ai-sdk/provider-utils": "^5.0.40",
+    "@ai-sdk/harness": "^1.0.112",
+    "@ai-sdk/provider-utils": "^5.0.41",
     "@effect/experimental": "0.61.1",
     "@effect/platform": "0.97.2",
     "@effect/rpc": "0.76.2",
-    "@types/node": "^26.5.1",
-    "@vitest/coverage-v8": "^5.0.0",
-    "ai": "^7.0.100",
+    "@types/node": "^26.6.0",
+    "@vitest/coverage-v8": "^5.0.1",
+    "ai": "^7.0.102",
     "tsup": "^8.5.1",
     "tsx": "^4.23.13",
     "typescript": "^6.0.3",
-    "vitest": "^5.0.0",
+    "vitest": "^5.0.1",
     "zod": "4.6.5"
   },
   "peerDependencies": {

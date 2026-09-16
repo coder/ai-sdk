@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
 A **Vercel AI SDK provider that routes requests through your Coder deployment's
-[AI Gateway](https://coder.com/docs/ai-coder/ai-gateway)** (formerly "AI Bridge" — the URL path is still `aibridge`). Point it
+[AI Gateway](https://coder.com/docs/ai-coder/ai-gateway)** (formerly "AI Bridge"). Point it
 at your deployment URL, hand it a Coder API token, and use any model your
 deployment proxies with the AI SDK's `generateText` / `streamText` — the same way
 you'd use [OpenRouter](https://ai-sdk.dev/providers/community-providers/openrouter)
@@ -192,9 +192,8 @@ normal provider call:
 
 - **URL** — `POST <baseURL>/api/v2/aibridge/<provider>/v1/chat/completions`
   (OpenAI surface) or `…/v1/messages` (Anthropic surface). `/api/v2/aibridge`
-  is this package's
-  default; deployments also serve the post-rename alias `/api/v2/ai-gateway`
-  (see `aiGatewayPath`).
+  is this package's default for compatibility. Use the canonical
+  `/api/v2/ai-gateway` path with Coder v2.35.0 or later (see `aiGatewayPath`).
 - **Auth headers** — per the mode matrix below.
 - **Body** — standard OpenAI-/Anthropic-format JSON: the model id (passed
   through unchanged), your full prompt/message content, tool definitions, and

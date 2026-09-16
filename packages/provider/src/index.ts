@@ -1,7 +1,7 @@
 /**
  * `@coder/ai-sdk-provider` — a Vercel AI SDK provider that routes requests
- * through a Coder deployment's **AI Gateway** (formerly "AI Bridge"; the URL
- * path is still `aibridge`).
+ * through a Coder deployment's **AI Gateway** (formerly "AI Bridge"). The default
+ * path remains `/api/v2/aibridge` for compatibility.
  *
  * AI Gateway exposes two provider-namespaced surfaces on a deployment — an
  * OpenAI-compatible one (`/api/v2/aibridge/openai/v1`) and an Anthropic-compatible

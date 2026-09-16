@@ -57,19 +57,19 @@
     "yaml": "^2.9.1"
   },
   "devDependencies": {
-    "@ai-sdk/harness": "^1.0.110",
-    "@ai-sdk/harness-claude-code": "^1.0.114",
-    "@ai-sdk/provider-utils": "^5.0.40",
-    "@ai-sdk/tui": "^1.0.101",
+    "@ai-sdk/harness": "^1.0.112",
+    "@ai-sdk/harness-claude-code": "^1.0.116",
+    "@ai-sdk/provider-utils": "^5.0.41",
+    "@ai-sdk/tui": "^1.0.103",
     "@arethetypeswrong/cli": "^0.18.5",
-    "@types/node": "^26.5.1",
+    "@types/node": "^26.6.0",
     "@types/ws": "^8.18.1",
-    "@vitest/coverage-v8": "^5.0.0",
+    "@vitest/coverage-v8": "^5.0.1",
     "publint": "^0.3.24",
     "tsup": "^8.5.1",
     "tsx": "^4.23.13",
     "typescript": "^6.0.3",
-    "vitest": "^5.0.0",
+    "vitest": "^5.0.1",
     "zod": "4.6.5"
   },
   "peerDependencies": {

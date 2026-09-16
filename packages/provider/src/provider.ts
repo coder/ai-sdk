@@ -47,8 +47,7 @@ export interface CoderProviderSettings {
   headers?: Record<string, string>;
   /**
    * Mount path of AI Gateway on the deployment. Defaults to `/api/v2/aibridge`.
-   * Exposed because the `aibridge` path segment may change in a future Coder
-   * release (the feature was renamed "AI Gateway").
+   * Set to the canonical `/api/v2/ai-gateway` path with Coder v2.35.0 or later.
    */
   aiGatewayPath?: string;
   /**

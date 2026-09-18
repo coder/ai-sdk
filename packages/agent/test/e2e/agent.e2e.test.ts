@@ -294,11 +294,11 @@ suite("CoderAgent e2e (live Coder)", () => {
   }, 120_000);
 
   it("attaches a file and the model reads its contents", async () => {
-    // An un-guessable token, so a correct answer proves the model actually read
-    // the uploaded file (not its own prior knowledge).
-    const secret = "ZEBRA-7731";
+    // An un-guessable reference id, so a correct answer proves the model read
+    // the uploaded file without asking it to disclose confidential information.
+    const marker = "ZEBRA-7731";
     const doc = new TextEncoder().encode(
-      `# Internal Note\n\nThe access code is ${secret}. Keep it confidential.\n`,
+      `# Shipment Note\n\nThe reference id for this shipment is ${marker}.\n`,
     );
     const agent = new CoderAgent({
       client,
@@ -313,7 +313,7 @@ suite("CoderAgent e2e (live Coder)", () => {
         {
           role: "user",
           content: [
-            { type: "text", text: "What is the access code in the attached file?" },
+            { type: "text", text: "What is the reference id in the attached file?" },
             { type: "file", data: doc, mediaType: "text/markdown", filename: "note.md" },
           ],
         },
@@ -321,6 +321,6 @@ suite("CoderAgent e2e (live Coder)", () => {
     });
     if (agent.chatId) cleanup.push(agent.chatId);
 
-    expect(result.text).toContain(secret);
+    expect(result.text).toContain(marker);
   }, 120_000);
 });

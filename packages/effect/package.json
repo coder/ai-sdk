@@ -49,14 +49,14 @@
     "effect": "3.22.2"
   },
   "devDependencies": {
-    "@ai-sdk/harness": "^1.0.112",
-    "@ai-sdk/provider-utils": "^5.0.41",
+    "@ai-sdk/harness": "^1.0.115",
+    "@ai-sdk/provider-utils": "^5.0.43",
     "@effect/experimental": "0.61.1",
     "@effect/platform": "0.97.2",
     "@effect/rpc": "0.76.2",
-    "@types/node": "^26.6.0",
+    "@types/node": "^26.6.1",
     "@vitest/coverage-v8": "^5.0.1",
-    "ai": "^7.0.102",
+    "ai": "^7.0.105",
     "tsup": "^8.5.1",
     "tsx": "^4.23.13",
     "typescript": "^6.0.3",

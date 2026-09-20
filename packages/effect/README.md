@@ -23,8 +23,8 @@ against their concrete API shapes:
 | `effect`                 | `3.22.2` | `Effect`, `Layer`, `Stream`, `Schema`, `Context`, `Data`                                                   |
 | `@effect/ai`             | `0.37.0` | `LanguageModel.make` (`ProviderOptions` → encoded response parts), `AiError`, `Prompt`, `Response`, `Tool` |
 | `@ai-sdk/provider`       | `4.0.17` | `LanguageModelV4` spec types (same pin as `@coder/ai-sdk-provider`)                                        |
-| `@coder/ai-sdk-provider` | `0.4.17` | `createCoder`, `CoderProviderSettings` (published release, not `workspace:*` — see below)                  |
-| `@coder/ai-sdk-sandbox`  | `0.4.20` | `ensureCoderWorkspace`, `createCoderWorkspace`, `CoderTransport`                                           |
+| `@coder/ai-sdk-provider` | `0.4.18` | `createCoder`, `CoderProviderSettings` (published release, not `workspace:*` — see below)                  |
+| `@coder/ai-sdk-sandbox`  | `0.4.21` | `ensureCoderWorkspace`, `createCoderWorkspace`, `CoderTransport`                                           |
 
 The spike depends on the _published_ `@coder/ai-sdk-*` releases rather than
 `workspace:*` so that repo-wide `typecheck`/`test` need no cross-package build

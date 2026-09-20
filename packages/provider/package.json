@@ -58,15 +58,15 @@
     "example:anthropic": "tsx examples/03-anthropic.ts"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^4.0.56",
-    "@ai-sdk/openai-compatible": "^3.0.51",
+    "@ai-sdk/anthropic": "^4.0.58",
+    "@ai-sdk/openai-compatible": "^3.0.53",
     "@ai-sdk/provider": "4.0.17"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",
-    "@types/node": "^26.6.1",
+    "@types/node": "^26.6.2",
     "@vitest/coverage-v8": "^5.0.1",
-    "ai": "^7.0.105",
+    "ai": "^7.0.107",
     "publint": "^0.3.24",
     "tsup": "^8.5.1",
     "tsx": "^4.23.13",

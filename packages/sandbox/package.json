@@ -57,12 +57,12 @@
     "yaml": "^2.9.1"
   },
   "devDependencies": {
-    "@ai-sdk/harness": "^1.0.115",
-    "@ai-sdk/harness-claude-code": "^1.0.119",
-    "@ai-sdk/provider-utils": "^5.0.43",
-    "@ai-sdk/tui": "^1.0.106",
+    "@ai-sdk/harness": "^1.0.117",
+    "@ai-sdk/harness-claude-code": "^1.0.121",
+    "@ai-sdk/provider-utils": "^5.0.45",
+    "@ai-sdk/tui": "^1.0.108",
     "@arethetypeswrong/cli": "^0.18.5",
-    "@types/node": "^26.6.1",
+    "@types/node": "^26.6.2",
     "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "^5.0.1",
     "publint": "^0.3.24",

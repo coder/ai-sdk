@@ -66,11 +66,11 @@ importers:
         specifier: 4.0.17
         version: 4.0.17
       '@coder/ai-sdk-provider':
-        specifier: 0.4.19
-        version: 0.4.19(ai@7.0.111(zod@4.6.5))(zod@4.6.5)
+        specifier: 0.4.20
+        version: 0.4.20(ai@7.0.111(zod@4.6.5))(zod@4.6.5)
       '@coder/ai-sdk-sandbox':
-        specifier: 0.4.22
-        version: 0.4.22(@ai-sdk/harness@1.0.121(ws@8.21.3)(zod@4.6.5))(@ai-sdk/provider-utils@5.0.45(zod@4.6.5))
+        specifier: 0.4.23
+        version: 0.4.23(@ai-sdk/harness@1.0.121(ws@8.21.3)(zod@4.6.5))(@ai-sdk/provider-utils@5.0.45(zod@4.6.5))
       '@effect/ai':
         specifier: 0.37.0
         version: 0.37.0(@effect/experimental@0.61.1(@effect/platform@0.97.2(effect@3.22.2))(effect@3.22.2))(@effect/platform@0.97.2(effect@3.22.2))(@effect/rpc@0.76.2(@effect/platform@0.97.2(effect@3.22.2))(effect@3.22.2))(effect@3.22.2)
@@ -343,8 +343,8 @@ packages:
   '@braidai/lang@1.1.2':
     resolution: {integrity: sha512-qBcknbBufNHlui137Hft8xauQMTZDKdophmLFv05r2eNmdIv/MlPuP4TdUknHG68UdWLgVZwgxVe735HzJNIwA==}
 
-  '@coder/ai-sdk-provider@0.4.19':
-    resolution: {integrity: sha512-nbudLc6IJD+98lZSj5sD5DKffSJxPwN5+XmwxKjX4gsmmmo+Rb1nSYKVZCg8fD0AFI9fTtzgFZg/OkCbRwyqzg==}
+  '@coder/ai-sdk-provider@0.4.20':
+    resolution: {integrity: sha512-EicvjKIAA6oSnG1LtY/V+U4ajJfBkSK3c7j2IZCGzjb7WML+Fnp+jd5mFeR9L8OzO4CwmtnP1Ir/2xYWpDMdbQ==}
     engines: {node: '>=22'}
     peerDependencies:
       ai: ^7.0.0
@@ -353,8 +353,8 @@ packages:
       zod:
         optional: true
 
-  '@coder/ai-sdk-sandbox@0.4.22':
-    resolution: {integrity: sha512-avkddwN0np6+QopZi/3NP1ihJye5W92p6yU3IozC7zwocxdql4dT3d0jzFI0qJAhu5pE6G7zwxD0wIrNoCRHDQ==}
+  '@coder/ai-sdk-sandbox@0.4.23':
+    resolution: {integrity: sha512-rE12f2/Yx/Fv940fzKKo1B2XkrT9Vcd4VQSh6KCechD2LlnLma7NNlPkxgBVMZzlsgWXW1/uziUQ4hWf/0tfCQ==}
     engines: {node: '>=22'}
     peerDependencies:
       '@ai-sdk/harness': ^1.0.0
@@ -2575,7 +2575,7 @@ snapshots:
 
   '@braidai/lang@1.1.2': {}
 
-  '@coder/ai-sdk-provider@0.4.19(ai@7.0.111(zod@4.6.5))(zod@4.6.5)':
+  '@coder/ai-sdk-provider@0.4.20(ai@7.0.111(zod@4.6.5))(zod@4.6.5)':
     dependencies:
       '@ai-sdk/anthropic': 4.0.60(zod@4.6.5)
       '@ai-sdk/openai-compatible': 3.0.53(zod@4.6.5)
@@ -2584,7 +2584,7 @@ snapshots:
     optionalDependencies:
       zod: 4.6.5
 
-  '@coder/ai-sdk-sandbox@0.4.22(@ai-sdk/harness@1.0.121(ws@8.21.3)(zod@4.6.5))(@ai-sdk/provider-utils@5.0.45(zod@4.6.5))':
+  '@coder/ai-sdk-sandbox@0.4.23(@ai-sdk/harness@1.0.121(ws@8.21.3)(zod@4.6.5))(@ai-sdk/provider-utils@5.0.45(zod@4.6.5))':
     dependencies:
       '@ai-sdk/harness': 1.0.121(ws@8.21.3)(zod@4.6.5)
       '@ai-sdk/provider-utils': 5.0.45(zod@4.6.5)

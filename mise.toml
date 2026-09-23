@@ -1,5 +1,5 @@
 [tools]
-node = "26.9.0"
+node = "26.10.0"
 pnpm = "11.27.0"
 actionlint = "1.7.12"
 zizmor = "1.30.1"

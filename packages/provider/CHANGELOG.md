@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.21](https://github.com/coder/ai-sdk/compare/provider-v0.4.20...provider-v0.4.21) (2026-09-24)
+
+Documentation-only release that rewrites the README files for readability, splits lengthy guides into a dedicated docs/ directory, and corrects inaccuracies uncovered during the rewrite.
+
+### Highlights
+
+- READMEs were rewritten for readability, with long guides moved into a separate docs/ directory. ([#234](https://github.com/coder/ai-sdk/pull/234))
+- Fixed documentation inaccuracies found during the README rewrite. ([#235](https://github.com/coder/ai-sdk/pull/235))
+
+### Documentation
+
+* fix inaccuracies found during the README rewrite ([#235](https://github.com/coder/ai-sdk/issues/235)) ([f91e7d0](https://github.com/coder/ai-sdk/commit/f91e7d0bc4ec82927ffc01d23b8a3762fe47a306))
+* rewrite READMEs for readability and split long guides into docs/ ([#234](https://github.com/coder/ai-sdk/issues/234)) ([1c5079b](https://github.com/coder/ai-sdk/commit/1c5079b103c1719ea49dc1dc07ecc2ad527b163d))
+
 ## [0.4.20](https://github.com/coder/ai-sdk/compare/provider-v0.4.19...provider-v0.4.20) (2026-09-23)
 
 A maintenance release with internal changes and no documented user-facing modifications.

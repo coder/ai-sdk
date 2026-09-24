@@ -885,6 +885,6 @@ for (const call of filed.reverse()) {
   [Workspaces & quota](./workspaces-and-quota.md).
 - Steps that don't need server‑side tools (plan / extract / synthesize) are
   cheaper and natively structured through
-  [`@coder/ai-sdk-provider`](../../provider) + `generateObject` — no chat, no
+  [`@coder/ai-sdk-provider`](https://github.com/coder/ai-sdk/tree/main/packages/provider) + `generateObject` — no chat, no
   workspace, no cleanup.
 - Archive in the final step / failure handler — never per step.

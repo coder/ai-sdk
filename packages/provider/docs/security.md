@@ -4,10 +4,10 @@ Reference for security reviewers evaluating `@coder/ai-sdk-provider`.
 
 Two kinds of claims appear below. Keep them apart:
 
-| Claim kind           | Covers                                | Where it is enforced / verifiable                                                                                                             |
-| -------------------- | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Client behavior**  | What this package puts on the wire    | [`src/provider.ts`](../src/provider.ts): ~250 lines, no dependencies beyond the official AI SDK provider packages                             |
-| **Gateway behavior** | Key custody, audit capture, retention | Your Coder deployment, server-side, regardless of what any client does. See the [AI Gateway docs](https://coder.com/docs/ai-coder/ai-gateway) |
+| Claim kind           | Covers                                | Where it is enforced / verifiable                                                                                                                                          |
+| -------------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Client behavior**  | What this package puts on the wire    | [`src/provider.ts`](https://github.com/coder/ai-sdk/blob/main/packages/provider/src/provider.ts): ~250 lines, no dependencies beyond the official AI SDK provider packages |
+| **Gateway behavior** | Key custody, audit capture, retention | Your Coder deployment, server-side, regardless of what any client does. See the [AI Gateway docs](https://coder.com/docs/ai-coder/ai-gateway)                              |
 
 ## Data flow
 
@@ -149,10 +149,10 @@ counts are retained alongside them.
 
 Yes.
 
-- [`src/provider.ts`](../src/provider.ts) is the entire wire-facing surface. It
+- [`src/provider.ts`](https://github.com/coder/ai-sdk/blob/main/packages/provider/src/provider.ts) is the entire wire-facing surface. It
   only selects base URLs and auth headers, then delegates request construction
   to the official AI SDK provider packages.
-- [`test/provider.test.ts`](../test/provider.test.ts) asserts the request URL,
+- [`test/provider.test.ts`](https://github.com/coder/ai-sdk/blob/main/packages/provider/test/provider.test.ts) asserts the request URL,
   auth headers, and model pass-through for the chat/messages routes in both
   auth modes.
 - The underlying AI SDK packages add their own protocol headers (e.g.

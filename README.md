@@ -1,42 +1,41 @@
 # coder/ai-sdk
 
-**Coder's integrations with the [Vercel AI SDK](https://ai-sdk.dev).** Run coding
-agents inside Coder workspaces, and drive Coder Agents from AI SDK code.
+**Coder integrations for the [Vercel AI SDK](https://ai-sdk.dev).** Run coding
+agents inside Coder workspaces, drive Coder Agents from AI SDK code, and call
+models through your deployment's AI Gateway.
 
 > [!NOTE]
-> All three packages are pre-1.0 and track experimental upstreams (Coder's
-> chat API is experimental). Expect breaking changes.
+> All packages are pre-1.0. Expect breaking changes.
 
 ## Packages
 
-Each package is published to npm independently and ships its own README with full
-install instructions, usage, and API docs.
+| Package                                         | Version                                                                                                                 | Use it to…                                                                                                                                                                       |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`@coder/ai-sdk-provider`](./packages/provider) | [![npm](https://img.shields.io/npm/v/@coder/ai-sdk-provider.svg)](https://www.npmjs.com/package/@coder/ai-sdk-provider) | Call models with `generateText` / `streamText` through [AI Gateway](https://coder.com/docs/ai-coder/ai-gateway). One Coder token, no raw provider keys, per-user auth and audit. |
+| [`@coder/ai-sdk-agent`](./packages/agent)       | [![npm](https://img.shields.io/npm/v/@coder/ai-sdk-agent.svg)](https://www.npmjs.com/package/@coder/ai-sdk-agent)       | Run **Coder Agents**, Coder's server-side agent runtime, as a real AI SDK v7 `Agent` (`generate()`, `stream()`, tool calls).                                                     |
+| [`@coder/ai-sdk-sandbox`](./packages/sandbox)   | [![npm](https://img.shields.io/npm/v/@coder/ai-sdk-sandbox.svg)](https://www.npmjs.com/package/@coder/ai-sdk-sandbox)   | Run CLI coding agents (Claude Code, Codex) under the AI SDK v7 `HarnessAgent` in an isolated **Coder workspace**, with your tools, secrets, and network.                         |
 
-| Package                                         | Version                                                                                                                 | What it does                                                                                                                                                                                                                                                                                                 |
-| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| [`@coder/ai-sdk-sandbox`](./packages/sandbox)   | [![npm](https://img.shields.io/npm/v/@coder/ai-sdk-sandbox.svg)](https://www.npmjs.com/package/@coder/ai-sdk-sandbox)   | A **sandbox provider** for the Vercel AI SDK v7 `HarnessAgent`. Runs CLI coding agents — Claude Code, Codex — inside a **Coder workspace** instead of on the local machine, so each agent gets a real, isolated dev environment with your tools, secrets, and network.                                       |
-| [`@coder/ai-sdk-agent`](./packages/agent)       | [![npm](https://img.shields.io/npm/v/@coder/ai-sdk-agent.svg)](https://www.npmjs.com/package/@coder/ai-sdk-agent)       | A Vercel AI SDK–compliant **`Agent`** (AI SDK v7) backed by **Coder Agents**, Coder's server-side agent runtime. `new CoderAgent()` returns a real `Agent` — `generate()`, `stream()`, tool calls, the whole interface.                                                                                      |
-| [`@coder/ai-sdk-provider`](./packages/provider) | [![npm](https://img.shields.io/npm/v/@coder/ai-sdk-provider.svg)](https://www.npmjs.com/package/@coder/ai-sdk-provider) | A **Vercel AI SDK provider** that routes `generateText` / `streamText` calls through your Coder deployment's [AI Gateway](https://coder.com/docs/ai-coder/ai-gateway). Point it at your deployment with a Coder API token and use any model it proxies — no raw provider keys, with per-user auth and audit. |
+Each package ships on npm independently, with its own README.
+[`@coder/ai-sdk-effect`](./packages/effect) is an unpublished, experimental
+[Effect](https://effect.website) bridge ([#144](https://github.com/coder/ai-sdk/issues/144)).
 
-Experimental: [`@coder/ai-sdk-effect`](./packages/effect) bridges these
-packages to [Effect](https://effect.website) (unpublished Phase 1 spike, see
-[#144](https://github.com/coder/ai-sdk/issues/144)).
+### Which package?
 
-**Which package?** Need a **model** (text, streaming, or schema‑constrained
-structured output) through your deployment → `@coder/ai-sdk-provider`. Need Coder's
-**server‑side agent** (multi‑step tool loop, MCP, workspace file/shell tools) →
-`@coder/ai-sdk-agent`. Need to run a **CLI coding agent** (Claude Code, Codex)
-inside a workspace → `@coder/ai-sdk-sandbox`.
+| You need…                                                                 | Use                      |
+| ------------------------------------------------------------------------- | ------------------------ |
+| A **model**: text, streaming, or schema-constrained structured output     | `@coder/ai-sdk-provider` |
+| Coder's **server-side agent**: multi-step tool loop, MCP, workspace tools | `@coder/ai-sdk-agent`    |
+| A **CLI coding agent** (Claude Code, Codex) inside a workspace            | `@coder/ai-sdk-sandbox`  |
 
 ## Using them together
 
-The packages are independent, but they compose into one application against one
-deployment, authenticated by one Coder token: **provision** a workspace with the
-sandbox package, **drive** Coder's server-side agent in it with the agent
-package, then **extract** a typed result with the provider. The full flow below
-audits a project's dependencies — the agent works inside the workspace (calling
-one custom tool that executes in _your_ process), and the provider parses the
-prose report into a typed object through AI Gateway.
+The packages are independent, but they compose against one deployment with one
+Coder token. This example audits a project's dependencies:
+
+1. **Sandbox** provisions a workspace.
+2. **Agent** works inside it and calls one custom tool that runs in _your_
+   process.
+3. **Provider** turns the agent's prose report into a typed object.
 
 ```bash
 pnpm add @coder/ai-sdk-sandbox @coder/ai-sdk-agent @coder/ai-sdk-provider ai zod
@@ -54,13 +53,12 @@ import { CoderNativeTransport, ensureCoderWorkspace } from "@coder/ai-sdk-sandbo
 import { CoderAgent } from "@coder/ai-sdk-agent";
 import { createCoder } from "@coder/ai-sdk-provider";
 
-// The sandbox transport and the agent both default their connection from the
-// CODER_URL + CODER_SESSION_TOKEN exported above (explicit `url`/`baseUrl` and
-// `token` options remain available).
+// The transport and the agent read CODER_URL + CODER_SESSION_TOKEN by default
+// (explicit `url`/`baseUrl` and `token` options also exist).
 
 // 1. Sandbox: get-or-create a workspace and wait until its agent is ready.
-//    The native transport talks straight to your deployment — no `coder` CLI
-//    or `ssh` on the host. Assumes the template checks out your project.
+//    The native transport talks straight to your deployment (no `coder` CLI
+//    or `ssh` on the host). Assumes the template checks out your project.
 const transport = new CoderNativeTransport();
 const ws = await ensureCoderWorkspace({
   workspace: "dep-audit",
@@ -69,9 +67,8 @@ const ws = await ensureCoderWorkspace({
 });
 if (ws.id === undefined) throw new Error("transport did not report a workspace id");
 
-// 2. Agent: drive Coder's server-side agent loop in that workspace. The
-//    server runs the multi-step loop and its file/shell tools; your custom
-//    tool executes here, in this process, and its result is sent back.
+// 2. Agent: the server runs the loop and its file/shell tools; your custom
+//    tool executes here, and its result is sent back.
 const agent = new CoderAgent({
   organizationId: process.env.CODER_ORG_ID!,
   model: "claude-sonnet-4-6",
@@ -124,31 +121,32 @@ console.table(audit.outdated);
 await transport.close(); // close cached relay WebSockets on shutdown
 ```
 
-Each step stands alone — skip the ones you don't need. For depth on each:
-[`ensureCoderWorkspace` and workspace creation settings](./packages/sandbox/README.md#provisioning-a-workspace-without-a-session)
-in the sandbox README; [custom tools](./packages/agent/README.md#custom-tools),
-[structured output](./packages/agent/README.md#structured-output) (when the
-typed answer must come out of the agent run itself, not a follow-up model call),
-the [workspaces & quota operations guide](./packages/agent/README.md#workspaces--quota)
-(fleet sizing, autostop, troubleshooting stuck turns),
-and the [durable-workflow how-to](./packages/agent/README.md#durable-workflows-persist-resume-recover)
-(persisting `chatId` across job/queue boundaries, drop & timeout recovery)
-in the agent README;
-[named providers and authentication modes](./packages/provider/README.md#named-providers-and-the-two-wire-protocols)
-and the [enterprise governance & security reference](./packages/provider/README.md#enterprise-governance--security)
-(data flow, credential isolation, audit capture, required permissions)
-in the provider README.
+Each step stands alone; skip the ones you don't need.
+
+### Go deeper
+
+- **Sandbox:** [`ensureCoderWorkspace` and create settings](./packages/sandbox/README.md#provisioning-a-workspace-without-a-session)
+- **Agent:** [custom tools](./packages/agent/README.md#custom-tools) ·
+  [structured output](./packages/agent/README.md#structured-output) (typed
+  answer from the agent run itself, no follow-up model call)
+- **Agent guides:** [workspaces & quota](./packages/agent/docs/workspaces-and-quota.md)
+  (fleet sizing, autostop, stuck turns) ·
+  [durable workflows](./packages/agent/docs/durable-workflows.md) (persist
+  `chatId` across jobs, recover from drops and timeouts)
+- **Provider:** [named providers and auth modes](./packages/provider/README.md#named-providers-and-the-two-wire-protocols) ·
+  [enterprise governance & security](./packages/provider/README.md#enterprise-governance--security)
+  (data flow, credential isolation, audit, permissions)
 
 ## Contributing
 
-Development setup, the command reference, and how releases work all live in
-[`CONTRIBUTING.md`](./CONTRIBUTING.md). The short version — with
-[mise](https://mise.jdx.dev) installed:
+With [mise](https://mise.jdx.dev) installed:
 
 ```bash
-mise install && pnpm install   # set up the toolchain + dependencies
+mise install && pnpm install   # toolchain + dependencies
 pnpm check && pnpm test        # format check, lint, typecheck, then test
 ```
+
+Setup, commands, and releases: [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ## License
 

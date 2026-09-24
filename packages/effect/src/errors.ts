@@ -73,17 +73,31 @@ const classifyChatError = (error: CoderChatError): ErrorReason => {
   return "unknown";
 };
 
+/**
+ * Agent error guards. They also match by `name` (the agent package's
+ * documented contract for `CoderStreamError`), so errors thrown by another
+ * installed copy of `@coder/ai-sdk-agent` keep their retry verdicts.
+ */
+const isCoderApiError = (error: Error): error is CoderApiError =>
+  error instanceof CoderApiError || error.name === "CoderApiError";
+const isCoderChatError = (error: Error): error is CoderChatError =>
+  error instanceof CoderChatError || error.name === "CoderChatError";
+const isCoderStreamError = (error: Error): error is CoderStreamError =>
+  error instanceof CoderStreamError ||
+  (APICallError.isInstance(error) && error.name === "CoderStreamError");
+
 /** A Coder Agents error that {@link toAiError} preserved as an `AiError`'s cause. */
 const agentCause = (error: AiError.AiError): CoderChatError | CoderStreamError | undefined => {
   if (error._tag === "HttpResponseError") return undefined;
   const cause = error.cause;
-  if (cause instanceof CoderChatError || cause instanceof CoderStreamError) return cause;
+  if (!(cause instanceof Error)) return undefined;
+  if (isCoderChatError(cause) || isCoderStreamError(cause)) return cause;
   return undefined;
 };
 
 const classifyAiError = (error: AiError.AiError): ErrorReason => {
   const cause = agentCause(error);
-  if (cause instanceof CoderChatError) return classifyChatError(cause);
+  if (cause !== undefined && isCoderChatError(cause)) return classifyChatError(cause);
   switch (error._tag) {
     case "HttpResponseError":
       return error.reason === "StatusCode"
@@ -120,8 +134,9 @@ export const classifyError = (error: ClassifiableError): ErrorReason => {
  */
 const retryVerdict = (error: ClassifiableError): boolean | undefined => {
   const source = AiError.isAiError(error) ? agentCause(error) : error;
-  if (source instanceof CoderStreamError) return source.isRetryable;
-  if (source instanceof CoderChatError) return source.retryable;
+  if (!(source instanceof Error)) return undefined;
+  if (isCoderStreamError(source)) return source.isRetryable;
+  if (isCoderChatError(source)) return source.retryable;
   return undefined;
 };
 
@@ -176,7 +191,7 @@ export const toAiError = (options: {
 }): AiError.AiError => {
   const { module, method, error } = options;
   if (AiError.isAiError(error)) return error;
-  if (error instanceof CoderApiError) {
+  if (error instanceof Error && isCoderApiError(error)) {
     return new AiError.HttpResponseError({
       module,
       method,
@@ -187,7 +202,7 @@ export const toAiError = (options: {
       description: `${error.message} (classified: ${classifyStatus(error.status)})`,
     });
   }
-  if (error instanceof CoderChatError) {
+  if (error instanceof Error && isCoderChatError(error)) {
     return new AiError.UnknownError({
       module,
       method,

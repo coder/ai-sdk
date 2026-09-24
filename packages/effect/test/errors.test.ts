@@ -190,4 +190,39 @@ describe("Coder Agents errors", () => {
       expect(isTransient(map(raw))).toBe(transient);
     },
   );
+
+  it("recognizes agent errors from another installed copy by name", () => {
+    // Stand-ins for classes from a duplicate @coder/ai-sdk-agent install:
+    // same names and fields, different class identity.
+    class ForeignChatError extends Error {
+      override name = "CoderChatError";
+      readonly kind = "timeout";
+      readonly retryable = true;
+      readonly statusCode = undefined;
+      readonly provider = undefined;
+    }
+    const chat = new ForeignChatError("too slow");
+    expect(chat instanceof CoderChatError).toBe(false);
+    expect(classifyError(map(chat))).toBe("timeout");
+    expect(isTransient(map(chat))).toBe(true);
+
+    const stream = new APICallError({
+      message: "stream dropped",
+      url: "https://coder.example.com/stream",
+      requestBodyValues: undefined,
+      isRetryable: false,
+    });
+    stream.name = "CoderStreamError";
+    expect(isTransient(stream)).toBe(false);
+    expect(isTransient(map(stream))).toBe(false);
+
+    class ForeignApiError extends Error {
+      override name = "CoderApiError";
+      readonly status = 401;
+      readonly method = "GET";
+      readonly path = "/p";
+      readonly detail = undefined;
+    }
+    expect(classifyError(map(new ForeignApiError("denied")))).toBe("auth");
+  });
 });

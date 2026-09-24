@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.24](https://github.com/coder/ai-sdk/compare/sandbox-v0.4.23...sandbox-v0.4.24) (2026-09-24)
+
+Documentation-only update that reworks the package READMEs for clarity, moves lengthy guides into a dedicated docs/ directory, and corrects several inaccuracies. No functional or API changes.
+
+### Highlights
+
+- The READMEs were rewritten for readability, with long guides split out into a separate docs/ directory. ([#234](https://github.com/coder/ai-sdk/pull/234))
+- Several documentation inaccuracies were corrected during the README rewrite. ([#235](https://github.com/coder/ai-sdk/pull/235))
+
+### Documentation
+
+* fix inaccuracies found during the README rewrite ([#235](https://github.com/coder/ai-sdk/issues/235)) ([f91e7d0](https://github.com/coder/ai-sdk/commit/f91e7d0bc4ec82927ffc01d23b8a3762fe47a306))
+* rewrite READMEs for readability and split long guides into docs/ ([#234](https://github.com/coder/ai-sdk/issues/234)) ([1c5079b](https://github.com/coder/ai-sdk/commit/1c5079b103c1719ea49dc1dc07ecc2ad527b163d))
+
 ## [0.4.23](https://github.com/coder/ai-sdk/compare/sandbox-v0.4.22...sandbox-v0.4.23) (2026-09-23)
 
 A maintenance release for the sandbox package with no user-facing changes.

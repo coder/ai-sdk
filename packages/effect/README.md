@@ -88,7 +88,13 @@ agent loop runs server-side; the layer adapts it to Effect.
   `metadata.coder.serverToolCalls`.
   chatd registers client tools only when the chat is created, so the toolkit
   cannot change afterwards, and only the `auto` tool choice is supported.
-  Other cases fail with `MalformedInput`.
+  Other cases fail with `MalformedInput`. `toolChoice` governs toolkit tools
+  only; chatd's server-side tools come from `settings` (`workspaceId`,
+  `mcpServerIds`). A chat resumed with `settings.chatId` keeps the client
+  tools it was created with, and the layer cannot verify them: pass the same
+  toolkit, and set `requestTimeoutMs`.
+- **Structured output.** `generateObject` fails with `MalformedInput`: chatd
+  enforces no schema. Use the AI Gateway model for structured output.
 - **Interruption.** Interrupting the fiber aborts the call. The agent then
   interrupts the chat's run server-side, exactly once.
 - **Scope.** Closing the layer's scope disposes the model and closes its

@@ -452,6 +452,15 @@ describe("CoderAgentModel", () => {
     );
     expect(toolChoice._tag).toBe("MalformedInput");
     expect(toolChoice.description).toContain("tool choice");
+
+    const structured = failure(
+      await run(
+        new FakeClient([]),
+        LanguageModel.generateObject({ prompt: "hi", schema: Schema.Struct({ a: Schema.String }) }),
+      ),
+    );
+    expect(structured._tag).toBe("MalformedInput");
+    expect(structured.description).toContain("structured output");
   });
 
   it("rejects a toolkit change after the chat is created", async () => {

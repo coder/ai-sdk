@@ -102,6 +102,14 @@ const rejectUnsupported = (options: LanguageModelV4CallOptions): void => {
       throw invalid(`Coder Agents choose "${key}" server-side; it cannot be set per call`, key);
     }
   }
+  // chatd reads system messages (where the bridge puts the JSON schema) only
+  // when it creates the chat, and enforces no schema itself.
+  if (options.responseFormat?.type === "json") {
+    throw invalid(
+      "Coder Agents do not support structured output; use CoderLanguageModel (AI Gateway) instead",
+      "responseFormat",
+    );
+  }
   // chatd has no tool-choice control; only the default "auto" is honest.
   if (options.toolChoice !== undefined && options.toolChoice.type !== "auto") {
     throw invalid(

@@ -19,12 +19,25 @@ client‑side loop without re‑implementing the loop.
 > Coder 2.37.0 (September 1, 2026). This package remains pre‑1.0.
 > See [API compatibility](#api-compatibility) for older deployments.
 
+**Contents**
+
+| Get started                                             | Build                                                 | Reference                               | Run in production                                              |
+| ------------------------------------------------------- | ----------------------------------------------------- | --------------------------------------- | -------------------------------------------------------------- |
+| [Install](#install)                                     | [Custom tools](#custom-tools)                         | [Auth](#auth)                           | [Timeouts & cancellation](#timeouts--cancellation)             |
+| [Quick start](#quick-start)                             | [Files](#files)                                       | [Configuration](#configuration)         | [Handling errors](#handling-errors)                            |
+| [Examples](#examples)                                   | [Structured output](#structured-output)               | [API compatibility](#api-compatibility) | [Cleanup](#cleanup)                                            |
+| [Agent vs. provider](#agent-vs-provider--which-package) | [Sessions](#sessions)                                 | [How it works](#how-it-works)           | [Usage & cost](#usage--cost)                                   |
+|                                                         | [Rehydrating chat history](#rehydrating-chat-history) | [Testing](#testing)                     | [Observability](#observability)                                |
+|                                                         | [Watching chats](#watching-chats)                     | [Limitations](#limitations)             | [Workspaces & quota](#workspaces--quota)                       |
+|                                                         | [Workspace previews](#workspace-previews)             |                                         | [Durable workflows](#durable-workflows-persist-resume-recover) |
+|                                                         | [Sources](#sources)                                   |                                         |                                                                |
+
 ## Agent vs. provider — which package?
 
 |                   | `@coder/ai-sdk-agent` (this package)                                                                                                                | [`@coder/ai-sdk-provider`](../provider)                                                                                |
 | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | What runs         | Coder's server‑side agent: tool loop, built‑in tools, MCP servers, workspace‑scoped file/shell tools, sub‑agents, and compaction, on the deployment | Plain model calls through Coder's AI Gateway. A normal AI SDK provider: `generateText`, `streamText`, `generateObject` |
-| Server state      | Each `CoderAgent` is one server chat ("session") and may provision a workspace                                                                      | No chat, no workspace; natively cancelable                                                                             |
+| Server state      | Each `CoderAgent` is one server chat ("session"), bound to at most one workspace                                                                    | No chat, no workspace; natively cancelable                                                                             |
 | Structured output | Through a tool call ([Structured output](#structured-output))                                                                                       | `generateObject`, schema‑constrained                                                                                   |
 | Reach for it when | You need **server‑side tools, MCP, or a workspace**                                                                                                 | You just need **a model** (plan / extract / summarize / classify)                                                      |
 
@@ -195,61 +208,23 @@ const { path } = await agent.uploadToWorkspace({
 // Then ask the agent to `unzip assets.zip` — uploadToWorkspace writes bytes as-is; it does not unpack.
 ```
 
-## Auth
+## Structured output
 
-Pass a Coder **API token** or **session token** as `token`. It is sent as the
-`Coder-Session-Token` header (REST) and authenticates the streaming WebSocket.
-Create one with `coder tokens create`, or reuse your CLI session.
+Coder Agents has no server‑side `response_format`, so `CoderAgent` cannot
+constrain what the model **says** to a JSON schema. A `responseFormat` /
+`experimental_output` request emits a warning and is best‑effort at most.
 
-`baseUrl`/`token` default from the `CODER_URL` and `CODER_SESSION_TOKEN`
-environment variables, the same convention as `@coder/ai-sdk-sandbox`'s
-transports. Explicit settings win over the environment:
+- **Pure text‑in / JSON‑out, no server‑side tools** → use
+  [`@coder/ai-sdk-provider`](../provider) with `generateObject` /
+  `Output.object` (schema‑constrained; requires AI Gateway on the deployment).
+- **The answer must come out of an agent run** (server‑side tools, MCP, a
+  workspace) → have the model submit its answer by _calling a tool_ whose
+  `inputSchema` is your Zod schema. The answer arrives as the tool call's typed
+  `input`.
 
-```ts
-const agent = new CoderAgent({ organizationId }); // uses CODER_URL + CODER_SESSION_TOKEN
-```
-
-You can also pass a pre‑built client:
-
-```ts
-import { CoderAgent, CoderChatClient } from "@coder/ai-sdk-agent";
-const client = new CoderChatClient({ baseUrl, token });
-const agent = new CoderAgent({ client, organizationId });
-```
-
-## API compatibility
-
-Coder 2.37.0 promoted chat routes to `/api/v2/chats`
-([server routes](https://github.com/coder/coder/pull/28496),
-[Go SDK](https://github.com/coder/coder/pull/28497)). Coder 2.36.4 has no stable
-chat mount. During the compatibility window (CODAGT-921) the promoted routes also
-remain under `/api/experimental/chats`; legacy removal is tracked in CODAGT-922.
-
-Each `CoderChatClient` selects its chat prefix from HTTP responses, not version
-strings: v2 first, then the experimental prefix on a 404. The first non‑404 HTTP
-response locks the prefix for the client's lifetime.
-
-<details>
-<summary>Prefix selection rules</summary>
-
-- Until a prefix is selected, an actual REST request (including JSON requests
-  and `Blob` uploads) tries v2 first and retries once under the experimental
-  prefix only on 404.
-- The first non‑404 HTTP response (including an error) locks that prefix for the
-  client's lifetime. Concurrent unresolved calls may probe independently; the
-  first conclusive response wins.
-- Two 404s preserve the original v2 error without locking. Non‑HTTP failures do
-  not lock either.
-- A locked prefix is never renegotiated, even on 404.
-- Before opening a per‑chat `/stream` or global `/watch` WebSocket, an
-  unresolved client preflights with `GET /api/v2/chats`, using the same
-  selection rules and cancellation signal.
-- `ReadableStream` uploads also preflight, so their consumed bodies are never
-  replayed.
-- Legacy model‑config lookup remains independent of chat‑prefix selection (see
-  [Configuration](#configuration)).
-
-</details>
+The tool pattern needs four rules to stay robust (validate client‑side, never
+stop on the call, and more). Guide: [docs/structured-output.md](./docs/structured-output.md).
+Copyable helper: [`examples/06-structured-output.ts`](./examples/06-structured-output.ts).
 
 ## Sessions
 
@@ -344,249 +319,6 @@ prefix selection.
 
 </details>
 
-## Observability
-
-Pass `onTransportEvent` to receive typed events for HTTP exchanges, the per‑chat
-stream's WebSocket lifecycle, and turn‑segment boundaries. You get timing and
-tracing without wrapping `fetch`/`webSocketFactory` or re‑parsing stream frames.
-
-Handler exceptions are swallowed, there is zero overhead without a handler, and
-events carry no headers or tokens. Example, event reference, and semantics:
-[docs/observability.md](./docs/observability.md).
-
-## Timeouts & cancellation
-
-**Cancel a turn** by passing an `abortSignal` to `generate()`/`stream()`.
-Aborting **interrupts the server‑side run**, not just the local socket, so the
-chat stops generating and releases its resources instead of running on,
-orphaned. Tearing down a `stream()` early (cancelling the stream) interrupts the
-run too.
-
-**Bound each segment** with `requestTimeoutMs`. If a segment runs longer (e.g.
-the server is wedged, or a workspace can't be scheduled), the run is interrupted
-and the call rejects with a retryable `CoderChatError` (`kind: "timeout"`)
-instead of hanging:
-
-```ts
-const agent = new CoderAgent({ /* … */ requestTimeoutMs: 120_000 });
-```
-
-A segment is one model round‑trip, until it settles or pauses for a client tool.
-A multi‑step `generate()` that drives client tools runs several segments, so
-`requestTimeoutMs` bounds each one, not the whole call.
-
-**Cap total wall‑clock** of a multi‑step call with a deadline signal instead:
-
-```ts
-await agent.generate({ prompt: "…", abortSignal: AbortSignal.timeout(120_000) });
-```
-
-**Stream drops heal themselves.** If the event stream drops mid‑turn, the agent
-redials it automatically with exponential backoff, replays the turn's events from
-its starting cursor, and deduplicates them on receipt. The server keeps
-generating during the gap, so a transient drop costs nothing and the run is
-**not** interrupted.
-
-Only when the stream cannot be re‑established (several consecutive failed
-attempts, ~15s) is the server run interrupted and the call rejected with a
-`CoderStreamError`, an AI SDK `APICallError`:
-
-| `isRetryable` | When                                                                                                                                                                                                                         | Then                                                                                                                        |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `true`        | The failed turn had just created its chat **and** had no external effects a replay would repeat: no `workspaceId`, no `mcpServerIds`, and no freshly uploaded inline attachments (pre‑uploaded `fileId` references are fine) | The dead session is discarded. `generate()` calls with `maxRetries` set retry the whole turn on a fresh chat automatically. |
-| `false`       | Otherwise                                                                                                                                                                                                                    | Retrying is the caller's deliberate decision.                                                                               |
-
-<details>
-<summary>Why the other cases aren't retryable</summary>
-
-On a chat with prior state (resumed sessions, later turns, tool‑result
-segments), a re‑invocation would resubmit the same prompt as a new user turn.
-Workspace/MCP tools may already have executed side effects, and inline
-attachments would upload again.
-
-</details>
-
-- For `stream()`, a mid‑stream failure surfaces on the stream itself, outside
-  the SDK's retry wrapper. Handle it in your consumption loop.
-- A non‑transient 4xx upgrade rejection (bad/expired token, deleted chat) fails
-  fast with a `CoderApiError` instead of retrying. 408/425/429 consume the redial
-  budget like any other transient failure.
-
-## Cleanup
-
-The agent is an **async disposable**, so cleanup can ride scope exit instead of a
-`finally` you have to remember:
-
-```ts
-await using agent = new CoderAgent({/* … */});
-const { text } = await agent.generate({ prompt: "…" });
-// agent.interrupt() + agent.archive() run automatically when the scope exits.
-```
-
-- Disposal interrupts any in‑flight run, then archives.
-- Disposal is **bounded and never throws** (~15s overall, best‑effort). Its
-  errors are swallowed so they can't mask the scope's own error. Call
-  `archive()` directly when you need guaranteed cleanup.
-- In a request handler that returns before a fire‑and‑forget `archive()`
-  settles, the archive can be abandoned. `await using` (or an awaited
-  `archive()` in `finally`) avoids accumulating live chats.
-
-**What `archive()` does:**
-
-- It soft‑hides the chat: the chat stays in listings as `archived: true`. There
-  is no hard delete yet.
-- A freshly interrupted chat keeps winding down server‑side for a few seconds,
-  and archiving 409s meanwhile. `archive()` retries those 409s (~1s apart, up to
-  ~15s overall; tune with `settleDeadlineMs` / `settleRetryDelayMs`) and
-  rethrows the last one if the chat never settles.
-- Any other failure, including your own abort, rethrows immediately.
-
-**Return values.** Both methods report what they acted on instead of silently
-no‑oping:
-
-| Method        | Acted on a chat                                                                                 | No chat exists at all    |
-| ------------- | ----------------------------------------------------------------------------------------------- | ------------------------ |
-| `archive()`   | `{ archived: true, chatId, archivedChatIds }` (each archived id is cleared as a cleanup target) | `{ archived: false }`    |
-| `interrupt()` | `{ interrupted: true, chatId }`                                                                 | `{ interrupted: false }` |
-
-<details>
-<summary>Which chat <code>archive()</code> and <code>interrupt()</code> target after a session is dropped</summary>
-
-- They target the session's chat. After the session was dropped —
-  `resetSession()`, or the automatic discard after a fresh‑chat stream failure
-  (see [Handling errors](#handling-errors)) — they target the **last‑known chat
-  id** (`agent.lastKnownChatId`), so a stranded chat is still cleaned up instead
-  of leaking.
-- Generation never uses the last‑known id: a turn after a drop creates a fresh
-  chat as always.
-- Every chat stranded by an _automatic_ discard is also recorded on a ledger,
-  `agent.strandedChatIds` (oldest first). With `maxRetries`, several failed
-  attempts can strand one chat each while only the final attempt's error
-  surfaces. One `archive()` retires them all, oldest first, alongside its
-  primary target.
-- Deliberate abandonment is different: `resetSession()` does **not** add to the
-  ledger (you may want that chat kept). After a manual reset, the old chat is
-  targetable only until a new chat supersedes `lastKnownChatId`.
-
-</details>
-
-## Handling errors
-
-All errors extend `CoderAgentError`, except `CoderStreamError`.
-
-| Error              | Extends               | Thrown when                                                                       | Fields                                        |
-| ------------------ | --------------------- | --------------------------------------------------------------------------------- | --------------------------------------------- |
-| `CoderApiError`    | `CoderAgentError`     | An HTTP request failed                                                            | `status`, `method`, `path`, `detail`          |
-| `CoderChatError`   | `CoderAgentError`     | A turn ended in an error, timed out, or lost its stream                           | `kind`, `retryable`, `statusCode`, `provider` |
-| `CoderStreamError` | AI SDK `APICallError` | The event stream dropped and could not be re‑established within its redial budget | `isRetryable`, `cause`, `chatId`              |
-
-`CoderStreamError` extends `APICallError` so `generate()`'s `maxRetries`
-machinery recognizes it:
-
-- `isRetryable` is `true` only when the failed turn created its chat and had no
-  external effects to repeat (workspace/MCP tooling, fresh attachment uploads).
-  Full rules: [Timeouts & cancellation](#timeouts--cancellation).
-- `cause` holds the last transport failure.
-- `chatId` names the chat the failed turn had created or attached to (absent
-  when it failed before a chat existed). After the fresh‑chat discard the chat
-  still exists server‑side, and `archive()` keeps targeting it via
-  `agent.lastKnownChatId` ([Cleanup](#cleanup)).
-
-```ts
-import { CoderApiError, CoderChatError } from "@coder/ai-sdk-agent";
-
-try {
-  await agent.generate({ prompt: "…" });
-} catch (err) {
-  if (err instanceof CoderChatError && err.retryable) {
-    // transient (timeout, stream_closed, an upstream 5xx) — back off and retry
-  } else if (err instanceof CoderApiError && err.status === 429) {
-    // rate limited
-  } else {
-    throw err;
-  }
-}
-```
-
-**`maxRetries` defaults to `0`.** This agent owns server‑side chat state, so an
-SDK‑level retry could duplicate a turn. Prefer catching `retryable` errors and
-retrying the whole step deliberately.
-
-## Usage & cost
-
-`result.usage` reflects what the whole turn actually consumed:
-
-- A chatd turn runs several model steps server‑side (one per server tool round),
-  each reporting its own usage. The SDK **sums every step**, and the AI SDK adds
-  up the steps of a turn that paused for client tools.
-- `inputTokens` is the full prompt size. Coder normalizes the wire
-  `input_tokens` to the _uncached_ count (cache reads/writes are separate
-  fields), so the SDK adds them back into the total and exposes the split via
-  `inputTokenDetails` (`noCacheTokens`, `cacheReadTokens`, `cacheWriteTokens`).
-
-**Cost and runtime.** When the server reports them, `total_cost_micros`
-(micro‑USD) and `total_runtime_ms` are mirrored under each step's
-`providerMetadata.coder`.
-
-- `result.providerMetadata` reflects only the final step. Sum
-  `result.steps[*].providerMetadata.coder` for whole‑turn cost when client tools
-  ran.
-- Both are absence‑tolerant mirrors: on servers that don't send them, nothing is
-  emitted. Cost is otherwise only on the aggregate cost endpoints
-  (`/api/v2/chats/cost/*`).
-
-<details>
-<summary>Raw wire usage per step (<code>steps[i].usage.raw</code>)</summary>
-
-- The snake_case wire usage lives **per step** at `result.steps[i].usage.raw`.
-  The AI SDK does not carry `raw` onto the summed `result.usage`.
-- Use it for fields the normalized shape has no slot for: `context_limit`, cost,
-  runtime, and any newer wire fields (which pass through newest‑value‑wins).
-- `raw` keeps the wire convention (`input_tokens` = uncached only). Its counters
-  are summed over that step's server‑side model steps, with `context_limit` from
-  the newest one.
-- So don't divide `raw`'s summed counters by `context_limit` to estimate context
-  fullness. They are turn consumption, not a prompt‑size snapshot.
-
-</details>
-
-Forward usage to a UI via message metadata:
-
-```ts
-const result = await agent.stream({ prompt: "…" });
-return result.toUIMessageStream({
-  messageMetadata: ({ part }) =>
-    part.type === "finish-step"
-      ? { usage: part.usage, coder: part.providerMetadata?.coder }
-      : undefined,
-});
-```
-
-## Sources
-
-Model configs with web search enabled emit `source` parts. They flow through to
-`result.sources` and, in UI message streams, to `source-url` parts. Pass
-`sendSources: true` to `toUIMessageStream`; the AI SDK omits them by default.
-Earlier releases dropped them.
-
-## Structured output
-
-Coder Agents has no server‑side `response_format`, so `CoderAgent` cannot
-constrain what the model **says** to a JSON schema. A `responseFormat` /
-`experimental_output` request emits a warning and is best‑effort at most.
-
-- **Pure text‑in / JSON‑out, no server‑side tools** → use
-  [`@coder/ai-sdk-provider`](../provider) with `generateObject` /
-  `Output.object` (schema‑constrained; requires AI Gateway on the deployment).
-- **The answer must come out of an agent run** (server‑side tools, MCP, a
-  workspace) → have the model submit its answer by _calling a tool_ whose
-  `inputSchema` is your Zod schema. The answer arrives as the tool call's typed
-  `input`.
-
-The tool pattern needs four rules to stay robust (validate client‑side, never
-stop on the call, and more). Guide: [docs/structured-output.md](./docs/structured-output.md).
-Copyable helper: [`examples/06-structured-output.ts`](./examples/06-structured-output.ts).
-
 ## Workspace previews
 
 When the agent is bound to a workspace (the `workspaceId` setting), resolve — and
@@ -644,14 +376,34 @@ They fail clearly instead of returning broken URLs:
 
 </details>
 
-## Workspaces & quota
+## Sources
 
-A chat may be backed by a **Coder workspace** that runs its tools, and
-workspaces are the scarce resource: **N agents running concurrently can need N
-schedulable workspaces**. Past that bound, a turn can sit unscheduled and never
-settle. Read [docs/workspaces-and-quota.md](./docs/workspaces-and-quota.md)
-before running fleets: how chats bind to workspaces, fleet sizing, autostop and
-cleanup, preventing stuck turns, and troubleshooting.
+Model configs with web search enabled emit `source` parts. They flow through to
+`result.sources` and, in UI message streams, to `source-url` parts. Pass
+`sendSources: true` to `toUIMessageStream`; the AI SDK omits them by default.
+Earlier releases dropped them.
+
+## Auth
+
+Pass a Coder **API token** or **session token** as `token`. It is sent as the
+`Coder-Session-Token` header (REST) and authenticates the streaming WebSocket.
+Create one with `coder tokens create`, or reuse your CLI session.
+
+`baseUrl`/`token` default from the `CODER_URL` and `CODER_SESSION_TOKEN`
+environment variables, the same convention as `@coder/ai-sdk-sandbox`'s
+transports. Explicit settings win over the environment:
+
+```ts
+const agent = new CoderAgent({ organizationId }); // uses CODER_URL + CODER_SESSION_TOKEN
+```
+
+You can also pass a pre‑built client:
+
+```ts
+import { CoderAgent, CoderChatClient } from "@coder/ai-sdk-agent";
+const client = new CoderChatClient({ baseUrl, token });
+const agent = new CoderAgent({ client, organizationId });
+```
 
 ## Configuration
 
@@ -745,6 +497,276 @@ await agent.archive();
 
 </details>
 
+## API compatibility
+
+Coder 2.37.0 promoted chat routes to `/api/v2/chats`
+([server routes](https://github.com/coder/coder/pull/28496),
+[Go SDK](https://github.com/coder/coder/pull/28497)). Coder 2.36.4 has no stable
+chat mount. During the compatibility window (CODAGT-921) the promoted routes also
+remain under `/api/experimental/chats`; legacy removal is tracked in CODAGT-922.
+
+Each `CoderChatClient` selects its chat prefix from HTTP responses, not version
+strings: v2 first, then the experimental prefix on a 404. The first non‑404 HTTP
+response locks the prefix for the client's lifetime.
+
+<details>
+<summary>Prefix selection rules</summary>
+
+- Until a prefix is selected, an actual REST request (including JSON requests
+  and `Blob` uploads) tries v2 first and retries once under the experimental
+  prefix only on 404.
+- The first non‑404 HTTP response (including an error) locks that prefix for the
+  client's lifetime. Concurrent unresolved calls may probe independently; the
+  first conclusive response wins.
+- Two 404s preserve the original v2 error without locking. Non‑HTTP failures do
+  not lock either.
+- A locked prefix is never renegotiated, even on 404.
+- Before opening a per‑chat `/stream` or global `/watch` WebSocket, an
+  unresolved client preflights with `GET /api/v2/chats`, using the same
+  selection rules and cancellation signal.
+- `ReadableStream` uploads also preflight, so their consumed bodies are never
+  replayed.
+- Legacy model‑config lookup remains independent of chat‑prefix selection (see
+  [Configuration](#configuration)).
+
+</details>
+
+## Timeouts & cancellation
+
+**Cancel a turn** by passing an `abortSignal` to `generate()`/`stream()`.
+Aborting **interrupts the server‑side run**, not just the local socket, so the
+chat stops generating and releases its resources instead of running on,
+orphaned. Tearing down a `stream()` early (cancelling the stream) interrupts the
+run too.
+
+**Bound each segment** with `requestTimeoutMs`. If a segment runs longer (e.g.
+the server is wedged, or a workspace can't be scheduled), the run is interrupted
+and the call rejects with a retryable `CoderChatError` (`kind: "timeout"`)
+instead of hanging:
+
+```ts
+const agent = new CoderAgent({ /* … */ requestTimeoutMs: 120_000 });
+```
+
+A segment is one model round‑trip, until it settles or pauses for a client tool.
+A multi‑step `generate()` that drives client tools runs several segments, so
+`requestTimeoutMs` bounds each one, not the whole call.
+
+**Cap total wall‑clock** of a multi‑step call with a deadline signal instead:
+
+```ts
+await agent.generate({ prompt: "…", abortSignal: AbortSignal.timeout(120_000) });
+```
+
+**Stream drops heal themselves.** If the event stream drops mid‑turn, the agent
+redials it automatically with exponential backoff, replays the turn's events from
+its starting cursor, and deduplicates them on receipt. The server keeps
+generating during the gap, so a transient drop costs nothing and the run is
+**not** interrupted.
+
+Only when the stream cannot be re‑established (several consecutive failed
+attempts, ~15s) is the server run interrupted and the call rejected with a
+`CoderStreamError`, an AI SDK `APICallError`:
+
+| `isRetryable` | When                                                                                                                                                                                                                         | Then                                                                                                                        |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `true`        | The failed turn had just created its chat **and** had no external effects a replay would repeat: no `workspaceId`, no `mcpServerIds`, and no freshly uploaded inline attachments (pre‑uploaded `fileId` references are fine) | The dead session is discarded. `generate()` calls with `maxRetries` set retry the whole turn on a fresh chat automatically. |
+| `false`       | Otherwise                                                                                                                                                                                                                    | Retrying is the caller's deliberate decision.                                                                               |
+
+<details>
+<summary>Why the other cases aren't retryable</summary>
+
+On a chat with prior state (resumed sessions, later turns, tool‑result
+segments), a re‑invocation would resubmit the same prompt as a new user turn.
+Workspace/MCP tools may already have executed side effects, and inline
+attachments would upload again.
+
+</details>
+
+- For `stream()`, a mid‑stream failure surfaces on the stream itself, outside
+  the SDK's retry wrapper. Handle it in your consumption loop.
+- A non‑transient 4xx upgrade rejection (bad/expired token, deleted chat) fails
+  fast with a `CoderApiError` instead of retrying. 408/425/429 consume the redial
+  budget like any other transient failure.
+
+## Handling errors
+
+All errors extend `CoderAgentError`, except `CoderStreamError`.
+
+| Error              | Extends               | Thrown when                                                                       | Fields                                        |
+| ------------------ | --------------------- | --------------------------------------------------------------------------------- | --------------------------------------------- |
+| `CoderApiError`    | `CoderAgentError`     | An HTTP request failed                                                            | `status`, `method`, `path`, `detail`          |
+| `CoderChatError`   | `CoderAgentError`     | A turn ended in an error, timed out, or lost its stream                           | `kind`, `retryable`, `statusCode`, `provider` |
+| `CoderStreamError` | AI SDK `APICallError` | The event stream dropped and could not be re‑established within its redial budget | `isRetryable`, `cause`, `chatId`              |
+
+`CoderStreamError` extends `APICallError` so `generate()`'s `maxRetries`
+machinery recognizes it:
+
+- `isRetryable` is `true` only when the failed turn created its chat and had no
+  external effects to repeat (workspace/MCP tooling, fresh attachment uploads).
+  Full rules: [Timeouts & cancellation](#timeouts--cancellation).
+- `cause` holds the last transport failure.
+- `chatId` names the chat the failed turn had created or attached to (absent
+  when it failed before a chat existed). After the fresh‑chat discard the chat
+  still exists server‑side, and `archive()` keeps targeting it via
+  `agent.lastKnownChatId` ([Cleanup](#cleanup)).
+
+```ts
+import { CoderApiError, CoderChatError } from "@coder/ai-sdk-agent";
+
+try {
+  await agent.generate({ prompt: "…" });
+} catch (err) {
+  if (err instanceof CoderChatError && err.retryable) {
+    // transient (timeout, stream_closed, an upstream 5xx) — back off and retry
+  } else if (err instanceof CoderApiError && err.status === 429) {
+    // rate limited
+  } else {
+    throw err;
+  }
+}
+```
+
+**`maxRetries` defaults to `0`.** This agent owns server‑side chat state, so an
+SDK‑level retry could duplicate a turn. Prefer catching `retryable` errors and
+retrying the whole step deliberately.
+
+## Cleanup
+
+The agent is an **async disposable**, so cleanup can ride scope exit instead of a
+`finally` you have to remember:
+
+```ts
+await using agent = new CoderAgent({/* … */});
+const { text } = await agent.generate({ prompt: "…" });
+// agent.interrupt() + agent.archive() run automatically when the scope exits.
+```
+
+- Disposal interrupts any in‑flight run, then archives.
+- Disposal is **bounded and never throws** (~15s overall, best‑effort). Its
+  errors are swallowed so they can't mask the scope's own error. Call
+  `archive()` directly when you need guaranteed cleanup.
+- In a request handler that returns before a fire‑and‑forget `archive()`
+  settles, the archive can be abandoned. `await using` (or an awaited
+  `archive()` in `finally`) avoids accumulating live chats.
+
+**What `archive()` does:**
+
+- It soft‑hides the chat: the chat stays in listings as `archived: true`. There
+  is no hard delete yet.
+- A freshly interrupted chat keeps winding down server‑side for a few seconds,
+  and archiving 409s meanwhile. `archive()` retries those 409s (~1s apart, up to
+  ~15s overall; tune with `settleDeadlineMs` / `settleRetryDelayMs`) and
+  rethrows the last one if the chat never settles.
+- Any other failure, including your own abort, rethrows immediately.
+
+**Return values.** Both methods report what they acted on instead of silently
+no‑oping:
+
+| Method        | Acted on a chat                                                                                 | No chat exists at all    |
+| ------------- | ----------------------------------------------------------------------------------------------- | ------------------------ |
+| `archive()`   | `{ archived: true, chatId, archivedChatIds }` (each archived id is cleared as a cleanup target) | `{ archived: false }`    |
+| `interrupt()` | `{ interrupted: true, chatId }`                                                                 | `{ interrupted: false }` |
+
+<details>
+<summary>Which chat <code>archive()</code> and <code>interrupt()</code> target after a session is dropped</summary>
+
+- They target the session's chat. After the session was dropped —
+  `resetSession()`, or the automatic discard after a fresh‑chat stream failure
+  (see [Handling errors](#handling-errors)) — they target the **last‑known chat
+  id** (`agent.lastKnownChatId`), so a stranded chat is still cleaned up instead
+  of leaking.
+- Generation never uses the last‑known id: a turn after a drop creates a fresh
+  chat as always.
+- Every chat stranded by an _automatic_ discard is also recorded on a ledger,
+  `agent.strandedChatIds` (oldest first). With `maxRetries`, several failed
+  attempts can strand one chat each while only the final attempt's error
+  surfaces. One `archive()` retires them all, oldest first, alongside its
+  primary target.
+- Deliberate abandonment is different: `resetSession()` does **not** add to the
+  ledger (you may want that chat kept). After a manual reset, the old chat is
+  targetable only until a new chat supersedes `lastKnownChatId`.
+
+</details>
+
+## Usage & cost
+
+`result.usage` reflects what the whole turn actually consumed:
+
+- A chatd turn runs several model steps server‑side (one per server tool round),
+  each reporting its own usage. The SDK **sums every step**, and the AI SDK adds
+  up the steps of a turn that paused for client tools.
+- `inputTokens` is the full prompt size. Coder normalizes the wire
+  `input_tokens` to the _uncached_ count (cache reads/writes are separate
+  fields), so the SDK adds them back into the total and exposes the split via
+  `inputTokenDetails` (`noCacheTokens`, `cacheReadTokens`, `cacheWriteTokens`).
+
+**Cost and runtime.** When the server reports them, `total_cost_micros`
+(micro‑USD) and `total_runtime_ms` are mirrored under each step's
+`providerMetadata.coder`.
+
+- `result.providerMetadata` reflects only the final step. Sum
+  `result.steps[*].providerMetadata.coder` for whole‑turn cost when client tools
+  ran.
+- Both are absence‑tolerant mirrors: on servers that don't send them, nothing is
+  emitted. Cost is otherwise only on the aggregate cost endpoints
+  (`/api/v2/chats/cost/*`).
+
+<details>
+<summary>Raw wire usage per step (<code>steps[i].usage.raw</code>)</summary>
+
+- The snake_case wire usage lives **per step** at `result.steps[i].usage.raw`.
+  The AI SDK does not carry `raw` onto the summed `result.usage`.
+- Use it for fields the normalized shape has no slot for: `context_limit`, cost,
+  runtime, and any newer wire fields (which pass through newest‑value‑wins).
+- `raw` keeps the wire convention (`input_tokens` = uncached only). Its counters
+  are summed over that step's server‑side model steps, with `context_limit` from
+  the newest one.
+- So don't divide `raw`'s summed counters by `context_limit` to estimate context
+  fullness. They are turn consumption, not a prompt‑size snapshot.
+
+</details>
+
+Forward usage to a UI via message metadata:
+
+```ts
+const result = await agent.stream({ prompt: "…" });
+return result.toUIMessageStream({
+  messageMetadata: ({ part }) =>
+    part.type === "finish-step"
+      ? { usage: part.usage, coder: part.providerMetadata?.coder }
+      : undefined,
+});
+```
+
+## Observability
+
+Pass `onTransportEvent` to receive typed events for HTTP exchanges, the per‑chat
+stream's WebSocket lifecycle, and turn‑segment boundaries. You get timing and
+tracing without wrapping `fetch`/`webSocketFactory` or re‑parsing stream frames.
+
+Handler exceptions are swallowed, there is zero overhead without a handler, and
+events carry no headers or tokens. Example, event reference, and semantics:
+[docs/observability.md](./docs/observability.md).
+
+## Workspaces & quota
+
+A chat may be backed by a **Coder workspace** that runs its tools, and
+workspaces are the scarce resource: **N agents running concurrently can need N
+schedulable workspaces**. Past that bound, a turn can sit unscheduled and never
+settle. Read [docs/workspaces-and-quota.md](./docs/workspaces-and-quota.md)
+before running fleets: how chats bind to workspaces, fleet sizing, autostop and
+cleanup, preventing stuck turns, and troubleshooting.
+
+## Durable workflows: persist, resume, recover
+
+Run **one agent session across process boundaries** — queue jobs,
+durable‑workflow steps (Vercel Workflow, step functions, Temporal, …), cron
+ticks — and survive crashes, stream drops, and timeouts in between. All chat
+state lives on the Coder server, so a workflow carries only `agent.chatId` (plus,
+optionally, the `agent.lastSeenMessageId` resume cursor) between steps, and
+each turn runs inside a durable step. Guide: [docs/durable-workflows.md](./docs/durable-workflows.md).
+
 ## How it works
 
 ```
@@ -774,15 +796,6 @@ double‑counts:
 - rewrites that can't be expressed as deltas are safely suppressed.
 
 </details>
-
-## Durable workflows: persist, resume, recover
-
-Run **one agent session across process boundaries** — queue jobs,
-durable‑workflow steps (Vercel Workflow, step functions, Temporal, …), cron
-ticks — and survive crashes, stream drops, and timeouts in between. All chat
-state lives on the Coder server, so a workflow carries only `agent.chatId` (plus,
-optionally, the `agent.lastSeenMessageId` resume cursor) between steps, and
-each turn runs inside a durable step. Guide: [docs/durable-workflows.md](./docs/durable-workflows.md).
 
 ## Testing
 

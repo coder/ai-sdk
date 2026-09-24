@@ -200,7 +200,7 @@ This needs a `workspaceFiles` adapter. The agent core stays dependency‑free, s
 whoever holds a workspace connection supplies a few‑line adapter:
 
 ```ts
-const agent = new CoderAgent({ /* … */ workspaceId: ws.id, workspaceFiles });
+const agent = new CoderAgent({ organizationId, workspaceId: ws.id, workspaceFiles });
 const { path } = await agent.uploadToWorkspace({
   content: await openAsBlob("assets.zip"),
   path: "assets.zip",
@@ -545,7 +545,7 @@ and the call rejects with a retryable `CoderChatError` (`kind: "timeout"`)
 instead of hanging:
 
 ```ts
-const agent = new CoderAgent({ /* … */ requestTimeoutMs: 120_000 });
+const agent = new CoderAgent({ organizationId, requestTimeoutMs: 120_000 });
 ```
 
 A segment is one model round‑trip, until it settles or pauses for a client tool.
@@ -637,7 +637,7 @@ The agent is an **async disposable**, so cleanup can ride scope exit instead of 
 `finally` you have to remember:
 
 ```ts
-await using agent = new CoderAgent({/* … */});
+await using agent = new CoderAgent({ organizationId });
 const { text } = await agent.generate({ prompt: "…" });
 // agent.interrupt() + agent.archive() run automatically when the scope exits.
 ```

@@ -587,7 +587,10 @@ const chargeCard = (chatId: () => string) =>
 // checker — defer it through a box assigned right after.
 let self: { chatId?: string } | undefined;
 const agent = new CoderAgent({
-  /* …base options as in runTurn… */
+  baseUrl: process.env.CODER_URL!,
+  token: process.env.CODER_SESSION_TOKEN!,
+  organizationId: process.env.CODER_ORG_ID!,
+  // …plus chatId, requestTimeoutMs, etc. as in runTurn
   tools: { charge_card: chargeCard(() => self!.chatId!) },
 });
 self = agent;

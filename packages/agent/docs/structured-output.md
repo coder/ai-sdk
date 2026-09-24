@@ -26,7 +26,7 @@ import { z } from "zod";
 const Answer = z.object({ severity: z.enum(["critical", "major", "minor"]), summary: z.string() });
 
 const agent = new CoderAgent({
-  /* … */
+  organizationId: "your-org-uuid", // connection defaults to CODER_URL + CODER_SESSION_TOKEN
   instructions: "… Submit your final answer by calling the structured_output tool exactly once.",
   tools: {
     structured_output: tool({

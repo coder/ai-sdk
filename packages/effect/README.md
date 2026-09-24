@@ -7,11 +7,13 @@
 > without notice until the spike review concludes.
 
 An [Effect](https://effect.website) bridge for `@coder/ai-sdk-provider` (Coder
-AI Gateway) and `@coder/ai-sdk-sandbox` (workspace sandboxes):
+AI Gateway), `@coder/ai-sdk-agent` (Coder Agents), and `@coder/ai-sdk-sandbox`
+(workspace sandboxes):
 
 | Feature                                                                              | API                                                                      |
 | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------ |
 | [`@effect/ai` `LanguageModel` over AI Gateway](#languagemodel-over-coder-ai-gateway) | `CoderLanguageModel.layer`, `CoderLanguageModel.fromModel`               |
+| [`@effect/ai` `LanguageModel` over Coder Agents](#languagemodel-over-coder-agents)   | `CoderAgentModel.layer`                                                  |
 | [Typed `AiError` failures](#typed-error-taxonomy)                                    | `classifyError`, `isTransient`                                           |
 | [Effect Schema → Vercel AI SDK schemas](#effect-schema--vercel-ai-sdk-schemas)       | `toAiSdkSchema`                                                          |
 | [Scoped workspace `Layer`s](#scoped-sandbox-layers)                                  | `acquireWorkspace` / `layerWorkspace`, `acquireSession` / `layerSession` |
@@ -66,6 +68,52 @@ const deterministic = LanguageModel.generateText({ prompt: "Name a color." }).pi
 
 `CoderLanguageModel.fromModel` (the bridge core) adapts any AI SDK
 `LanguageModelV4`; unit tests use it to run without HTTP.
+
+## `LanguageModel` over Coder Agents
+
+`CoderAgentModel.layer(settings)` implements `LanguageModel` on top of a Coder
+Agents chat (chatd) through `@coder/ai-sdk-agent`'s `CoderLanguageModel`. The
+agent loop runs server-side; the layer adapts it to Effect.
+
+- **`settings`:** the agent's `CoderLanguageModelConfig` (`organizationId`,
+  `model`, `reasoningEffort`, `workspaceId`, `chatId`, `requestTimeoutMs`,
+  ...) plus `client`, or `baseUrl` + `token` (default: `CODER_URL` +
+  `CODER_SESSION_TOKEN`).
+- **One chat per layer.** chatd keeps the history. Each call sends only the
+  prompt's newest user message, or the results of client tools. System
+  messages apply when the chat is created. Calls are single-flight.
+- **Tools.** Toolkit tools run client-side: `@effect/ai` resolves the tool
+  calls, and the next call sends the results back to the same chat. chatd's
+  server-side tools are reported in the finish part's
+  `metadata.coder.serverToolCalls`.
+- **Interruption.** Interrupting the fiber aborts the call. The agent then
+  interrupts the chat's run server-side, exactly once.
+- **Scope.** Closing the layer's scope disposes the model and closes its
+  event stream. The chat is not archived. To archive chats, collect their ids
+  from `segment:*` events in `onTransportEvent`.
+- **Generation options.** Sampling controls (`temperature`,
+  `maxOutputTokens`, ...) and `providerOptions` fail with `MalformedInput`,
+  because chatd chooses them. `model` and `reasoningEffort` are set in
+  `settings`.
+
+```ts
+import * as LanguageModel from "@effect/ai/LanguageModel";
+import * as Effect from "effect/Effect";
+import { CoderAgentModel } from "@coder/ai-sdk-effect";
+
+const program = Effect.gen(function* () {
+  const first = yield* LanguageModel.generateText({ prompt: "Summarize the repo README." });
+  const second = yield* LanguageModel.generateText({ prompt: "Now in one line." });
+  return [first.text, second.text];
+});
+
+program.pipe(
+  Effect.provide(
+    CoderAgentModel.layer({ organizationId: "<org-uuid>", model: "claude-sonnet-4-5" }),
+  ),
+  Effect.runPromise,
+);
+```
 
 ## Typed error taxonomy
 
@@ -205,8 +253,6 @@ workspace is rolled back best-effort per the teardown policy.
 <details>
 <summary>Phase 2 (not in this package yet)</summary>
 
-- `LanguageModel` over `CoderAgent`/chatd (`TurnTranslator` → `Effect.Stream`,
-  fiber interruption → `agent.interrupt()`).
 - Publishing decision: versioning, `peerDependency` policy on
   `effect`/`@effect/ai`, release-please wiring, `workspace:*` deps.
 
@@ -227,7 +273,7 @@ against their concrete API shapes.
 | `@ai-sdk/provider`       | `4.0.17` | `LanguageModelV4` spec types (same pin as `@coder/ai-sdk-provider`)                                        |
 | `@coder/ai-sdk-provider` | `0.4.21` | `createCoder`, `CoderProviderSettings` (published release, not `workspace:*`)                              |
 | `@coder/ai-sdk-sandbox`  | `0.4.24` | `ensureCoderWorkspace`, `createCoderWorkspace`, `CoderTransport`                                           |
-| `@coder/ai-sdk-agent`    | `0.11.8` | `CoderApiError`, `CoderChatError`, `CoderStreamError` (error mapping)                                      |
+| `@coder/ai-sdk-agent`    | `0.11.8` | `CoderLanguageModel` (+ dispose), `CoderChatClient`, `CoderLanguageModelConfig`, error classes             |
 
 The spike depends on the _published_ `@coder/ai-sdk-*` releases rather than
 `workspace:*`, so repo-wide `typecheck`/`test` need no cross-package build

@@ -198,8 +198,7 @@ The event looks like
 <details><summary>Turn settled <code>status: "requires_action"</code>; follow‑up messages queue forever</summary>
 
 - **Likely cause:** the loop ended on an unanswered client tool call.
-- **Fix:** submit the stranded results or interrupt — see rule 4 under
-  [Structured output](../README.md#structured-output). If a crash left the
+- **Fix:** submit the stranded results or interrupt — see [rule 4 of the structured-output guide](./structured-output.md#4-settle-a-turn-that-stopped-on-a-tool-call). If a crash left the
   pause behind, reconcile effects first
   ([Make client tools crash-safe](./durable-workflows.md#make-client-tools-crash-safe)).
 

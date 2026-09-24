@@ -274,11 +274,11 @@ history; tool effects that already ran are not undone. `retryable` means the
 _failure_ is transient, not that a re‑run is free: retry only steps that
 tolerate re‑submission, and reconcile first otherwise.
 
-| Error                                         | Cause                                                                                                              | Before retrying                                                                                                                                                                                      |
-| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CoderChatError`, `retryable: true`           | `requestTimeoutMs` expired (`kind: "timeout"`) or a transient turn failure (`kind: "stream_closed"`, upstream 5xx) | Chat survives. Run the [settle‑wait](#recover-after-a-crash); pin `cutShort = true` in the [result check](#recover-the-result-before-resubmitting).                                                  |
-| `CoderStreamError` (an AI SDK `APICallError`) | The stream could not be re‑established                                                                             | `isRetryable: true` only for a turn that just created its chat with no workspace, no MCP servers, and no fresh inline uploads (the SDK then discards the session). Always `false` on a resumed chat. |
-| `CoderApiError` (every non‑2xx)               | An HTTP request failed                                                                                             | Back off and retry 408, 425, 429, 5xx. Fail the workflow on 401/403/404 and the archived‑chat 400 — every attempt hits the same wall.                                                                |
+| Error                                         | Cause                                                                                                              | Before retrying                                                                                                                                                                                                                        |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CoderChatError`, `retryable: true`           | `requestTimeoutMs` expired (`kind: "timeout"`) or a transient turn failure (`kind: "stream_closed"`, upstream 5xx) | Chat survives. Run the [settle‑wait](#recover-after-a-crash) before resubmitting. After a `timeout`, also pin `cutShort = true` in the [result check](#recover-the-result-before-resubmitting): the expiry already fired an interrupt. |
+| `CoderStreamError` (an AI SDK `APICallError`) | The stream could not be re‑established                                                                             | `isRetryable: true` only for a turn that just created its chat with no workspace, no MCP servers, and no fresh inline uploads (the SDK then discards the session). Always `false` on a resumed chat.                                   |
+| `CoderApiError` (every non‑2xx)               | An HTTP request failed                                                                                             | Back off and retry 408, 425, 429, 5xx. Fail the workflow on 401/403/404 and the archived‑chat 400 — every attempt hits the same wall.                                                                                                  |
 
 <details><summary><code>CoderChatError</code>: why wait, and why pin <code>cutShort</code></summary>
 
@@ -838,7 +838,7 @@ see:
 
 <details><summary>Structured‑output steps: recover the call's input, not the text</summary>
 
-A [structured output](../README.md#structured-output) step's answer is the
+A [structured output](./structured-output.md) step's answer is the
 `structured_output` call's typed input, which rehydrates as a `dynamic-tool`
 part on the recovered turn
 ([Rehydrating chat history](../README.md#rehydrating-chat-history)).
@@ -846,7 +846,7 @@ part on the recovered turn
 join above cuts at it and returns only the ack prose that follows. Recover the
 filed call instead: this scan replaces the text join _inside_ the recovery
 branch above, reusing its `parts`, and validates client‑side exactly like the
-live path (rule 2 there — the schema is the real gate):
+live path ([rule 2](./structured-output.md#2-validate-clientside) — the schema is the real gate):
 
 ```ts
 // Scan backward to the last call that VALIDATES, as in the live path — a

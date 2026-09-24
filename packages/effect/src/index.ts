@@ -1,5 +1,6 @@
 export {
   classifyError,
+  type ClassifiableError,
   classifyStatus,
   type ErrorReason,
   isTransient,

@@ -12,6 +12,12 @@
  * expressible in the `LanguageModelV4` call options. Response parts with no
  * `@effect/ai` equivalent (custom parts, reasoning files, tool approval
  * requests, URL/reference/text file payloads) are dropped.
+ *
+ * Provider-executed tool calls and results for tools that are not in the
+ * call's toolkit (e.g. Coder Agents' server-side tools) cannot be decoded by
+ * `@effect/ai`, whose tool parts are typed by the toolkit. They are moved to
+ * the finish part's `metadata.coder.serverToolCalls` instead; streaming still
+ * emits their `tool-params-start` / `tool-params-end` markers.
  */
 import type {
   JSONSchema7,
@@ -41,8 +47,11 @@ import * as LanguageModel from "@effect/ai/LanguageModel";
 import type * as Prompt from "@effect/ai/Prompt";
 import type * as Response from "@effect/ai/Response";
 import * as Tool from "@effect/ai/Tool";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import { dual } from "effect/Function";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { toAiError } from "./errors.js";
 
@@ -52,9 +61,9 @@ const MODULE = "CoderLanguageModel";
 export type ProviderSource = CoderProviderSettings | { readonly provider: CoderProvider };
 
 /**
- * Generation controls forwarded to the underlying model on every call. These
- * are fixed at construction time; a per-call override channel (an Effect
- * config service, as `@effect/ai`'s own providers use) is Phase 2.
+ * Generation controls forwarded to the underlying model. Options given at
+ * construction apply to every call; {@link withGenerationOptions} overrides
+ * them per call.
  */
 export type GenerationOptions = Pick<
   LanguageModelV4CallOptions,
@@ -67,7 +76,62 @@ export type GenerationOptions = Pick<
   | "stopSequences"
   | "seed"
   | "reasoning"
+  | "providerOptions"
 >;
+
+/**
+ * Per-call generation overrides, read when a request starts and merged over
+ * the construction-time {@link GenerationOptions} (per-call keys win; nested
+ * objects such as `providerOptions` are replaced, not merged). Provide it with
+ * {@link withGenerationOptions}, the same way `@effect/ai`'s own providers
+ * expose their `Config` services.
+ */
+export class GenerationConfig extends Context.Tag("@coder/ai-sdk-effect/GenerationConfig")<
+  GenerationConfig,
+  GenerationOptions
+>() {}
+
+/**
+ * Run `self` with per-call generation overrides. Nested calls merge, with the
+ * innermost override winning per key.
+ *
+ * @example
+ * ```ts
+ * LanguageModel.generateText({ prompt: "hi" }).pipe(
+ *   CoderLanguageModel.withGenerationOptions({ temperature: 0 }),
+ * );
+ * ```
+ */
+export const withGenerationOptions: {
+  (
+    overrides: GenerationOptions,
+  ): <A, E, R>(self: Effect.Effect<A, E, R>) => Effect.Effect<A, E, Exclude<R, GenerationConfig>>;
+  <A, E, R>(
+    self: Effect.Effect<A, E, R>,
+    overrides: GenerationOptions,
+  ): Effect.Effect<A, E, Exclude<R, GenerationConfig>>;
+} = dual(
+  2,
+  <A, E, R>(
+    self: Effect.Effect<A, E, R>,
+    overrides: GenerationOptions,
+  ): Effect.Effect<A, E, Exclude<R, GenerationConfig>> =>
+    Effect.flatMap(Effect.serviceOption(GenerationConfig), (current) =>
+      Effect.provideService(self, GenerationConfig, {
+        ...Option.getOrElse(current, () => ({})),
+        ...overrides,
+      }),
+    ),
+);
+
+/** Construction-time options with the caller's per-call overrides applied. */
+const resolveGeneration = (generation: GenerationOptions): Effect.Effect<GenerationOptions> =>
+  Effect.map(Effect.serviceOption(GenerationConfig), (overrides) =>
+    Option.match(overrides, {
+      onNone: () => generation,
+      onSome: (perCall) => ({ ...generation, ...perCall }),
+    }),
+  );
 
 /**
  * Build a `LanguageModel` service from any AI SDK `LanguageModelV4`. This is
@@ -136,7 +200,11 @@ const generateText = (
   generation: GenerationOptions,
 ): Effect.Effect<Array<Response.PartEncoded>, AiError.AiError> =>
   Effect.gen(function* () {
-    const callOptions = yield* buildCallOptions(options, generation, "generateText");
+    const callOptions = yield* buildCallOptions(
+      options,
+      yield* resolveGeneration(generation),
+      "generateText",
+    );
     const result = yield* Effect.tryPromise({
       try: (signal) => model.doGenerate({ ...callOptions, abortSignal: signal }),
       catch: (error) => toAiError({ module: MODULE, method: "generateText", error }),
@@ -144,13 +212,15 @@ const generateText = (
     return yield* Effect.try({
       try: () => {
         const parts: Array<Response.PartEncoded> = [];
+        const serverTools = new ServerToolCalls(options);
         if (result.response !== undefined) {
           parts.push(responseMetadataPart(result.response));
         }
         for (const content of result.content) {
+          if (serverTools.absorb(content)) continue;
           parts.push(...contentToParts(content));
         }
-        parts.push(finishPart(result.finishReason, result.usage));
+        parts.push(serverTools.attach(finishPart(result.finishReason, result.usage)));
         return parts;
       },
       catch: (error) => toAiError({ module: MODULE, method: "generateText", error }),
@@ -164,7 +234,12 @@ const streamText = (
 ): Stream.Stream<Response.StreamPartEncoded, AiError.AiError> =>
   Stream.unwrapScoped(
     Effect.gen(function* () {
-      const callOptions = yield* buildCallOptions(options, generation, "streamText");
+      const callOptions = yield* buildCallOptions(
+        options,
+        yield* resolveGeneration(generation),
+        "streamText",
+      );
+      const serverTools = new ServerToolCalls(options);
       // Tie request cancellation to the stream scope so that fiber
       // interruption aborts the underlying HTTP request. Aborting after a
       // normal end is a no-op.
@@ -187,7 +262,10 @@ const streamText = (
             );
           }
           try {
-            return Stream.fromIterable(streamPartToParts(part));
+            if (serverTools.absorb(part)) return Stream.empty;
+            return Stream.fromIterable(
+              streamPartToParts(part).map((p) => (p.type === "finish" ? serverTools.attach(p) : p)),
+            );
           } catch (error) {
             return Stream.fail(toAiError({ module: MODULE, method: "streamText", error }));
           }
@@ -533,6 +611,67 @@ const streamPartToParts = (
       return sharedContentToParts(part);
   }
 };
+
+/** A provider-executed tool call the call's toolkit cannot represent. */
+interface ServerToolCall {
+  readonly id: string;
+  readonly name: string;
+  params?: unknown;
+  result?: unknown;
+  isFailure?: boolean;
+}
+
+/**
+ * Collects provider-executed tool activity for tools outside the call's
+ * toolkit (see the module docs) and attaches it to the finish part.
+ */
+class ServerToolCalls {
+  readonly #toolNames: ReadonlySet<string>;
+  readonly #calls = new Map<string, ServerToolCall>();
+
+  constructor(options: LanguageModel.ProviderOptions) {
+    this.#toolNames = new Set(options.tools.map((tool) => tool.name));
+  }
+
+  /** Records `part` and returns `true` when it must not reach `@effect/ai`. */
+  absorb(part: LanguageModelV4Content | LanguageModelV4StreamPart): boolean {
+    if (part.type === "tool-call") {
+      if (part.providerExecuted !== true || this.#toolNames.has(part.toolName)) return false;
+      const call = this.#entry(part.toolCallId, part.toolName);
+      call.params = toolCallPart(part).params;
+      return true;
+    }
+    if (part.type === "tool-result") {
+      if (this.#toolNames.has(part.toolName)) return false;
+      const call = this.#entry(part.toolCallId, part.toolName);
+      call.result = part.result;
+      call.isFailure = part.isError ?? false;
+      return true;
+    }
+    return false;
+  }
+
+  attach(finish: Response.FinishPartEncoded): Response.FinishPartEncoded {
+    if (this.#calls.size === 0) return finish;
+    return { ...finish, metadata: { coder: { serverToolCalls: [...this.#calls.values()] } } };
+  }
+
+  #entry(id: string, name: string): ServerToolCall {
+    let call = this.#calls.get(id);
+    if (call === undefined) {
+      call = { id, name };
+      this.#calls.set(id, call);
+    }
+    if (call.name !== name) {
+      throw new AiError.MalformedOutput({
+        module: MODULE,
+        method: "serverToolCall",
+        description: `tool call ${id} changed its tool name from "${call.name}" to "${name}"`,
+      });
+    }
+    return call;
+  }
+}
 
 const responseMetadataPart = (metadata: {
   readonly id?: string;

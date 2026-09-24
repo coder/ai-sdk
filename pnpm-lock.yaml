@@ -65,6 +65,9 @@ importers:
       '@ai-sdk/provider':
         specifier: 4.0.17
         version: 4.0.17
+      '@coder/ai-sdk-agent':
+        specifier: 0.11.8
+        version: 0.11.8(ai@7.0.111(zod@4.6.5))(zod@4.6.5)
       '@coder/ai-sdk-provider':
         specifier: 0.4.21
         version: 0.4.21(ai@7.0.111(zod@4.6.5))(zod@4.6.5)
@@ -342,6 +345,16 @@ packages:
 
   '@braidai/lang@1.1.2':
     resolution: {integrity: sha512-qBcknbBufNHlui137Hft8xauQMTZDKdophmLFv05r2eNmdIv/MlPuP4TdUknHG68UdWLgVZwgxVe735HzJNIwA==}
+
+  '@coder/ai-sdk-agent@0.11.8':
+    resolution: {integrity: sha512-da6rSsPlNPUS7+Ep9PyvZZIj24ZnRqOOeuDBnhHMPKTZIs2jqVt5vJEHvwJwe2xMZWpt4KYQ/mxLj+nAmtv9Wg==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      ai: ^7.0.0
+      zod: 4.6.5
+    peerDependenciesMeta:
+      zod:
+        optional: true
 
   '@coder/ai-sdk-provider@0.4.21':
     resolution: {integrity: sha512-2MYh2d/nkGgEILT9Klw6jH3M6KG3b7MPwP6WNW11Bhhs9f/Om1pEF28Xo47E/8unoGRWwTEeCBjciEvU4bjtXA==}
@@ -2574,6 +2587,17 @@ snapshots:
   '@bcoe/v8-coverage@1.0.2': {}
 
   '@braidai/lang@1.1.2': {}
+
+  '@coder/ai-sdk-agent@0.11.8(ai@7.0.111(zod@4.6.5))(zod@4.6.5)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.17
+      ai: 7.0.111(zod@4.6.5)
+      ws: 8.21.3
+    optionalDependencies:
+      zod: 4.6.5
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
 
   '@coder/ai-sdk-provider@0.4.21(ai@7.0.111(zod@4.6.5))(zod@4.6.5)':
     dependencies:

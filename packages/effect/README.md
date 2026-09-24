@@ -26,8 +26,11 @@ AI Gateway) and `@coder/ai-sdk-sandbox` (workspace sandboxes):
 - **Supported calls:** `generateText`, `generateObject`, and `streamText`.
   Structured outputs derive their JSON schema from the Effect Schema you pass.
 - **`generation` (`GenerationOptions`):** `maxOutputTokens`, `temperature`,
-  `topP`, `topK`, penalties, `stopSequences`, `seed`, `reasoning`. Set at
-  construction time and forwarded on every call.
+  `topP`, `topK`, penalties, `stopSequences`, `seed`, `reasoning`,
+  `providerOptions`. Set at construction time and forwarded on every call.
+- **Per-call overrides:** `CoderLanguageModel.withGenerationOptions(overrides)`
+  provides the `GenerationConfig` service to one effect. Its keys win over the
+  construction options; nested overrides merge, innermost first.
 
 ```ts
 import * as LanguageModel from "@effect/ai/LanguageModel";
@@ -52,13 +55,23 @@ program.pipe(
 );
 ```
 
+```ts
+import * as LanguageModel from "@effect/ai/LanguageModel";
+import { CoderLanguageModel } from "@coder/ai-sdk-effect";
+
+const deterministic = LanguageModel.generateText({ prompt: "Name a color." }).pipe(
+  CoderLanguageModel.withGenerationOptions({ temperature: 0, seed: 1 }),
+);
+```
+
 `CoderLanguageModel.fromModel` (the bridge core) adapts any AI SDK
 `LanguageModelV4`; unit tests use it to run without HTTP.
 
 ## Typed error taxonomy
 
-`classifyError` maps an `AiError` or a raw AI SDK error to one of: `auth`,
-`rate-limit`, `provider-unavailable`, `malformed-response`, `transport`,
+`classifyError` maps an `AiError`, a raw AI SDK error, or a raw
+`@coder/ai-sdk-agent` error to one of: `auth`, `rate-limit`,
+`provider-unavailable`, `malformed-response`, `transport`, `timeout`,
 `unknown`. `isTransient` composes with `Effect.retry`:
 
 ```ts
@@ -84,6 +97,25 @@ own error classes to the `LanguageModel` failure channel (a delta from the
 tracking issue's sketch). Failures are mapped losslessly into that union
 (`HttpResponseError` keeps status, headers, and body), and `classifyError`
 recovers the Coder-oriented taxonomy.
+
+</details>
+
+<details>
+<summary>How <code>@coder/ai-sdk-agent</code> errors map</summary>
+
+| Agent error                                   | `AiError`                             | Reason                                     | `isTransient`   |
+| --------------------------------------------- | ------------------------------------- | ------------------------------------------ | --------------- |
+| `CoderApiError`                               | `HttpResponseError` (status, path)    | from the status, like gateway errors       | from the reason |
+| `CoderStreamError`                            | `HttpRequestError` (error as `cause`) | `transport`                                | `isRetryable`   |
+| `CoderChatError` with `kind: "timeout"`       | `UnknownError` (error as `cause`)     | `timeout`                                  | `retryable`     |
+| `CoderChatError` with `kind: "stream_closed"` | `UnknownError` (error as `cause`)     | `transport`                                | `retryable`     |
+| Any other `CoderChatError`                    | `UnknownError` (error as `cause`)     | from `statusCode` if present, or `unknown` | `retryable`     |
+
+An explicit verdict wins over the reason. The agent sets
+`CoderStreamError.isRetryable` to `false` when replaying the prompt would
+repeat server-side effects, so such a failure is not transient even though
+its reason is `transport`. Fiber interruption stays Effect interruption; it
+never becomes an `AiError`.
 
 </details>
 
@@ -157,13 +189,13 @@ program.pipe(
 Unsupported _inputs_ fail loudly with `MalformedInput`; response parts with no
 `@effect/ai` equivalent are dropped.
 
-| Limitation                                                                                                                                               | Behavior                                                   |
-| -------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| Provider-defined tools; the `oneOf` tool-choice mode (not expressible in `LanguageModelV4` call options)                                                 | `MalformedInput`                                           |
-| Response parts of type `custom`, `reasoning-file`, `tool-approval-request`; file payloads that are not raw data (URL / provider-reference / inline-text) | Dropped                                                    |
-| `Prompt` provider options (per-part metadata)                                                                                                            | Not forwarded                                              |
-| Generation controls                                                                                                                                      | Fixed at model construction (per-call override is Phase 2) |
-| `ProviderOptions.span` (telemetry)                                                                                                                       | Not wired into request headers                             |
+| Limitation                                                                                                                                               | Behavior                                                    |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| Provider-defined tools; the `oneOf` tool-choice mode (not expressible in `LanguageModelV4` call options)                                                 | `MalformedInput`                                            |
+| Response parts of type `custom`, `reasoning-file`, `tool-approval-request`; file payloads that are not raw data (URL / provider-reference / inline-text) | Dropped                                                     |
+| Provider-executed tool calls and results for tools outside the call's toolkit (`@effect/ai` types tool parts by toolkit)                                 | Moved to the finish part's `metadata.coder.serverToolCalls` |
+| `Prompt` provider options (per-part metadata)                                                                                                            | Not forwarded                                               |
+| `ProviderOptions.span` (telemetry)                                                                                                                       | Not wired into request headers                              |
 
 Workspace acquisition is uninterruptible (standard `acquireRelease`
 semantics): a slow `ensureCoderWorkspace` cannot be cancelled mid-flight. If an
@@ -175,10 +207,6 @@ workspace is rolled back best-effort per the teardown policy.
 
 - `LanguageModel` over `CoderAgent`/chatd (`TurnTranslator` → `Effect.Stream`,
   fiber interruption → `agent.interrupt()`).
-- Retryable error tagging aligned with the agent package's
-  `CoderStreamError.isRetryable`.
-- A per-call override channel for generation controls (an Effect config
-  service, as `@effect/ai`'s own providers use).
 - Publishing decision: versioning, `peerDependency` policy on
   `effect`/`@effect/ai`, release-please wiring, `workspace:*` deps.
 
@@ -194,11 +222,12 @@ against their concrete API shapes.
 
 | Dependency               | Version  | Surface used                                                                                               |
 | ------------------------ | -------- | ---------------------------------------------------------------------------------------------------------- |
-| `effect`                 | `3.22.2` | `Effect`, `Layer`, `Stream`, `Schema`, `Context`, `Data`                                                   |
+| `effect`                 | `3.22.2` | `Effect`, `Layer`, `Stream`, `Schema`, `Context`, `Data`, `Option`, `Function.dual`                        |
 | `@effect/ai`             | `0.37.0` | `LanguageModel.make` (`ProviderOptions` → encoded response parts), `AiError`, `Prompt`, `Response`, `Tool` |
 | `@ai-sdk/provider`       | `4.0.17` | `LanguageModelV4` spec types (same pin as `@coder/ai-sdk-provider`)                                        |
 | `@coder/ai-sdk-provider` | `0.4.21` | `createCoder`, `CoderProviderSettings` (published release, not `workspace:*`)                              |
 | `@coder/ai-sdk-sandbox`  | `0.4.24` | `ensureCoderWorkspace`, `createCoderWorkspace`, `CoderTransport`                                           |
+| `@coder/ai-sdk-agent`    | `0.11.8` | `CoderApiError`, `CoderChatError`, `CoderStreamError` (error mapping)                                      |
 
 The spike depends on the _published_ `@coder/ai-sdk-*` releases rather than
 `workspace:*`, so repo-wide `typecheck`/`test` need no cross-package build

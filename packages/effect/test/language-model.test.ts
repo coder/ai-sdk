@@ -249,6 +249,86 @@ describe("generateText", () => {
     expect(captured?.seed).toBe(42);
   });
 
+  it("applies per-call overrides over construction options, innermost first", async () => {
+    const captured: Array<LanguageModelV4CallOptions> = [];
+    const model = fakeModel({
+      doGenerate: async (options) => {
+        captured.push(options);
+        return {
+          content: [{ type: "text", text: "ok" }],
+          finishReason: { unified: "stop", raw: undefined },
+          usage: USAGE,
+          warnings: [],
+        };
+      },
+    });
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const m = yield* CoderLanguageModel.fromModel(model, { temperature: 1, seed: 7 });
+        yield* m.generateText({ prompt: "plain" });
+        yield* m
+          .generateText({ prompt: "outer" })
+          .pipe(CoderLanguageModel.withGenerationOptions({ temperature: 0, topP: 0.5 }));
+        yield* m.generateText({ prompt: "nested" }).pipe(
+          CoderLanguageModel.withGenerationOptions({
+            topP: 0.1,
+            providerOptions: { coder: { note: "x" } },
+          }),
+          CoderLanguageModel.withGenerationOptions({ temperature: 0, topP: 0.5 }),
+        );
+      }),
+    );
+
+    expect(captured.map((o) => [o.temperature, o.topP, o.seed, o.providerOptions])).toEqual([
+      [1, undefined, 7, undefined],
+      [0, 0.5, 7, undefined],
+      [0, 0.1, 7, { coder: { note: "x" } }],
+    ]);
+  });
+
+  it("moves provider-executed tool activity outside the toolkit to finish metadata", async () => {
+    const model = fakeModel({
+      doGenerate: async () => ({
+        content: [
+          { type: "text", text: "Listed the files." },
+          {
+            type: "tool-call",
+            toolCallId: "srv_1",
+            toolName: "execute",
+            input: `{"command":"ls"}`,
+            providerExecuted: true,
+          },
+          { type: "tool-result", toolCallId: "srv_1", toolName: "execute", result: "a.txt" },
+        ],
+        finishReason: { unified: "stop", raw: undefined },
+        usage: USAGE,
+        warnings: [],
+      }),
+    });
+
+    const response = await Effect.runPromise(
+      Effect.flatMap(service(model), (m) => m.generateText({ prompt: "ls" })),
+    );
+
+    expect(response.text).toBe("Listed the files.");
+    expect(response.toolCalls).toHaveLength(0);
+    const finish = response.content.find((part) => part.type === "finish");
+    expect(finish?.metadata).toEqual({
+      coder: {
+        serverToolCalls: [
+          {
+            id: "srv_1",
+            name: "execute",
+            params: { command: "ls" },
+            result: "a.txt",
+            isFailure: false,
+          },
+        ],
+      },
+    });
+  });
+
   it("fails with MalformedInput for the oneOf tool choice mode", async () => {
     const GetWeather = Tool.make("get_weather", {
       parameters: { city: Schema.String },
@@ -408,6 +488,57 @@ describe("streamText", () => {
       .flatMap((part) => (part.type === "text-delta" ? [part.delta] : []))
       .join("");
     expect(text).toBe("Hello");
+  });
+
+  it("streams server tool markers and reports server tool calls on finish", async () => {
+    const model = fakeModel({
+      doStream: async () => ({
+        stream: streamOf([
+          { type: "tool-input-start", id: "srv_1", toolName: "execute", providerExecuted: true },
+          { type: "tool-input-end", id: "srv_1" },
+          {
+            type: "tool-call",
+            toolCallId: "srv_1",
+            toolName: "execute",
+            input: `{"command":"false"}`,
+            providerExecuted: true,
+          },
+          {
+            type: "tool-result",
+            toolCallId: "srv_1",
+            toolName: "execute",
+            result: "exit 1",
+            isError: true,
+          },
+          { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage: USAGE },
+        ]),
+      }),
+    });
+
+    const parts = Chunk.toReadonlyArray(
+      await Effect.runPromise(
+        Effect.flatMap(service(model), (m) => Stream.runCollect(m.streamText({ prompt: "hi" }))),
+      ),
+    );
+
+    expect(parts.map((part) => part.type)).toEqual([
+      "tool-params-start",
+      "tool-params-end",
+      "finish",
+    ]);
+    expect(parts.at(-1)?.metadata).toEqual({
+      coder: {
+        serverToolCalls: [
+          {
+            id: "srv_1",
+            name: "execute",
+            params: { command: "false" },
+            result: "exit 1",
+            isFailure: true,
+          },
+        ],
+      },
+    });
   });
 
   it("fails the stream with a typed AiError on error parts", async () => {

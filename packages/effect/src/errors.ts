@@ -10,6 +10,11 @@
  * {@link classifyError} / {@link classifyStatus} to recover the Coder-oriented
  * failure taxonomy (auth, rate limit / quota, provider unavailable, malformed
  * response, ...) from either side — useful with `Effect.retry` policies.
+ *
+ * Coder Agents (`@coder/ai-sdk-agent`) errors map into the same union:
+ * `CoderApiError` becomes an `HttpResponseError` carrying its status, while
+ * `CoderStreamError` and `CoderChatError` keep the original error as `cause`
+ * so that {@link isTransient} can honor their explicit retryable verdicts.
  */
 import {
   AISDKError,
@@ -20,6 +25,12 @@ import {
   NoSuchModelError,
   TypeValidationError,
 } from "@ai-sdk/provider";
+import {
+  CoderAgentError,
+  CoderApiError,
+  CoderChatError,
+  CoderStreamError,
+} from "@coder/ai-sdk-agent";
 import * as AiError from "@effect/ai/AiError";
 import * as Option from "effect/Option";
 
@@ -30,7 +41,10 @@ import * as Option from "effect/Option";
  * - `rate-limit`: the gateway or upstream throttled or exhausted quota (402/429).
  * - `provider-unavailable`: the upstream or gateway failed server-side (5xx).
  * - `malformed-response`: the response could not be parsed or validated.
- * - `transport`: the request never produced an HTTP response (network error).
+ * - `transport`: the request never produced an HTTP response (network error),
+ *   or a Coder Agents chat stream dropped and could not be resumed.
+ * - `timeout`: a Coder Agents turn exceeded its `requestTimeoutMs` budget
+ *   (the agent interrupted the run server-side).
  * - `unknown`: anything else.
  */
 export type ErrorReason =
@@ -39,6 +53,7 @@ export type ErrorReason =
   | "provider-unavailable"
   | "malformed-response"
   | "transport"
+  | "timeout"
   | "unknown";
 
 /** Classify an HTTP status code into an {@link ErrorReason}. */
@@ -49,7 +64,40 @@ export const classifyStatus = (status: number): ErrorReason => {
   return "unknown";
 };
 
+/** Classify a chat-level failure reported by Coder Agents (chatd). */
+const classifyChatError = (error: CoderChatError): ErrorReason => {
+  if (error.kind === "timeout") return "timeout";
+  // Raised by the agent when the chat stream closed before the turn settled.
+  if (error.kind === "stream_closed") return "transport";
+  if (error.statusCode !== undefined) return classifyStatus(error.statusCode);
+  return "unknown";
+};
+
+/**
+ * Agent error guards. They also match by `name` (the agent package's
+ * documented contract for `CoderStreamError`), so errors thrown by another
+ * installed copy of `@coder/ai-sdk-agent` keep their retry verdicts.
+ */
+const isCoderApiError = (error: Error): error is CoderApiError =>
+  error instanceof CoderApiError || error.name === "CoderApiError";
+const isCoderChatError = (error: Error): error is CoderChatError =>
+  error instanceof CoderChatError || error.name === "CoderChatError";
+const isCoderStreamError = (error: Error): error is CoderStreamError =>
+  error instanceof CoderStreamError ||
+  (APICallError.isInstance(error) && error.name === "CoderStreamError");
+
+/** A Coder Agents error that {@link toAiError} preserved as an `AiError`'s cause. */
+const agentCause = (error: AiError.AiError): CoderChatError | CoderStreamError | undefined => {
+  if (error._tag === "HttpResponseError") return undefined;
+  const cause = error.cause;
+  if (!(cause instanceof Error)) return undefined;
+  if (isCoderChatError(cause) || isCoderStreamError(cause)) return cause;
+  return undefined;
+};
+
 const classifyAiError = (error: AiError.AiError): ErrorReason => {
+  const cause = agentCause(error);
+  if (cause !== undefined && isCoderChatError(cause)) return classifyChatError(cause);
   switch (error._tag) {
     case "HttpResponseError":
       return error.reason === "StatusCode"
@@ -65,23 +113,49 @@ const classifyAiError = (error: AiError.AiError): ErrorReason => {
   }
 };
 
+/** Errors accepted by {@link classifyError} and {@link isTransient}. */
+export type ClassifiableError = AiError.AiError | AISDKError | CoderAgentError;
+
 /**
  * Classify an error into an {@link ErrorReason}: either an `@effect/ai`
- * `AiError` produced by this bridge, or a raw AI SDK error (which is first
- * mapped with {@link toAiError}).
+ * `AiError` produced by this bridge, or a raw AI SDK / Coder Agents error
+ * (which is first mapped with {@link toAiError}).
  */
-export const classifyError = (error: AiError.AiError | AISDKError): ErrorReason => {
+export const classifyError = (error: ClassifiableError): ErrorReason => {
   if (AiError.isAiError(error)) return classifyAiError(error);
   return classifyAiError(toAiError({ module: "CoderAiError", method: "classifyError", error }));
 };
 
 /**
- * Whether a failure is worth retrying (throttling, upstream outage, or a
- * network error). Auth and malformed-response failures are terminal.
+ * The explicit retry verdict of a Coder Agents error, if the failure carries
+ * one. `CoderStreamError.isRetryable` is downgraded to `false` by the agent
+ * when replaying the prompt would duplicate server-side effects;
+ * `CoderChatError.retryable` is chatd's (or the agent's) own verdict.
  */
-export const isTransient = (error: AiError.AiError | AISDKError): boolean => {
+const retryVerdict = (error: ClassifiableError): boolean | undefined => {
+  const source = AiError.isAiError(error) ? agentCause(error) : error;
+  if (!(source instanceof Error)) return undefined;
+  if (isCoderStreamError(source)) return source.isRetryable;
+  if (isCoderChatError(source)) return source.retryable;
+  return undefined;
+};
+
+/**
+ * Whether a failure is worth retrying. An explicit verdict carried by a
+ * Coder Agents error wins; otherwise throttling, upstream outages, network
+ * errors, and turn timeouts are transient, while auth and malformed-response
+ * failures are terminal.
+ */
+export const isTransient = (error: ClassifiableError): boolean => {
+  const verdict = retryVerdict(error);
+  if (verdict !== undefined) return verdict;
   const reason = classifyError(error);
-  return reason === "rate-limit" || reason === "provider-unavailable" || reason === "transport";
+  return (
+    reason === "rate-limit" ||
+    reason === "provider-unavailable" ||
+    reason === "transport" ||
+    reason === "timeout"
+  );
 };
 
 const HTTP_METHODS = ["GET", "POST", "PATCH", "PUT", "DELETE", "HEAD", "OPTIONS"] as const;
@@ -117,6 +191,27 @@ export const toAiError = (options: {
 }): AiError.AiError => {
   const { module, method, error } = options;
   if (AiError.isAiError(error)) return error;
+  if (error instanceof Error && isCoderApiError(error)) {
+    return new AiError.HttpResponseError({
+      module,
+      method,
+      reason: "StatusCode",
+      request: requestDetails(error.path, error.method),
+      response: { status: error.status, headers: {} },
+      body: error.detail,
+      description: `${error.message} (classified: ${classifyStatus(error.status)})`,
+    });
+  }
+  if (error instanceof Error && isCoderChatError(error)) {
+    return new AiError.UnknownError({
+      module,
+      method,
+      description: `${error.message} (classified: ${classifyChatError(error)})`,
+      cause: error,
+    });
+  }
+  // CoderStreamError is an APICallError without a status: it maps to a
+  // Transport HttpRequestError below, keeping the error as `cause`.
   if (APICallError.isInstance(error)) {
     if (error.statusCode === undefined) {
       return new AiError.HttpRequestError({

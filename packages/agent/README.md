@@ -423,7 +423,7 @@ const agent = new CoderAgent({ client, organizationId });
 | `planMode`                        | enable plan mode (`"plan"`)                                                                                        |
 | `stopWhen`                        | AI SDK stop condition(s); default `stepCountIs(64)`                                                                |
 | `maxRetries`                      | default `0` — SDK retries can duplicate server‑side turns; override with care                                      |
-| `requestTimeoutMs`                | per‑turn time budget (ms); interrupts the run and rejects (`kind: "timeout"`) instead of hanging                   |
+| `requestTimeoutMs`                | per‑segment time budget (ms), not per call; interrupts the run and rejects (`kind: "timeout"`) instead of hanging  |
 | `onTransportEvent`                | observability hook for typed transport events (see [Observability](#observability))                                |
 | `settleDeadlineMs`                | overall deadline for bounded cleanup (`archive()` 409 retries, disposal); default 15 000                           |
 | `settleRetryDelayMs`              | pause between `archive()` retries while the chat settles; default 1000                                             |

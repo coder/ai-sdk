@@ -77,14 +77,14 @@ suite("CoderAgentModel (live)", () => {
     onTransportEvent,
   });
 
-  it("generates, then continues the same chat", async () => {
+  it("generates, then continues the same chat with per-call reasoning effort", async () => {
     const { events, onTransportEvent } = recorder();
     const [first, second] = await Effect.runPromise(
       Effect.gen(function* () {
         const a = yield* LanguageModel.generateText({ prompt: "Reply with exactly: pong" });
         const b = yield* LanguageModel.generateText({
           prompt: "Reply with exactly the word you said before, in uppercase.",
-        });
+        }).pipe(CoderAgentModel.withAgentOptions({ reasoningEffort: "low" }));
         return [a, b] as const;
       }).pipe(Effect.provide(CoderAgentModel.layer(settings(onTransportEvent)))),
     );

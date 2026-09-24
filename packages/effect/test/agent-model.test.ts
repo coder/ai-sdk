@@ -482,4 +482,110 @@ describe("CoderAgentModel", () => {
     expect(fake.created).toHaveLength(1);
     expect(fake.messages).toEqual([]);
   });
+
+  it("applies per-call model and reasoning effort on the same chat", async () => {
+    const fake = new FakeClient([
+      simpleTurn(2, "one"),
+      simpleTurn(102, "two"),
+      simpleTurn(104, "three"),
+    ]);
+
+    const exit = await run(
+      fake,
+      Effect.gen(function* () {
+        yield* LanguageModel.generateText({ prompt: "one" });
+        yield* LanguageModel.generateText({ prompt: "two" }).pipe(
+          CoderAgentModel.withAgentOptions({ model: "big", reasoningEffort: "high" }),
+        );
+        yield* LanguageModel.generateText({ prompt: "three" });
+      }),
+      { model: "small", reasoningEffort: "low" },
+    );
+
+    expect(Exit.isSuccess(exit)).toBe(true);
+    expect(fake.created).toHaveLength(1);
+    expect(fake.created[0]).toMatchObject({
+      model_config_id: "cfg-small",
+      reasoning_effort: "low",
+    });
+    expect(fake.messages).toEqual([
+      expect.objectContaining({ model_config_id: "cfg-big", reasoning_effort: "high" }),
+      expect.objectContaining({ model_config_id: "cfg-small", reasoning_effort: "low" }),
+    ]);
+  });
+
+  it("refuses to change agent options while submitting tool results", async () => {
+    const fake = new FakeClient([]);
+    const prompt = Prompt.make([
+      { role: "user", content: "weather?" },
+      {
+        role: "assistant",
+        content: [{ type: "tool-call", id: "tc1", name: "get_weather", params: {} }],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            id: "tc1",
+            name: "get_weather",
+            result: 1,
+            isFailure: false,
+            providerExecuted: false,
+          },
+        ],
+      },
+    ]);
+    const error = failure(
+      await run(
+        fake,
+        LanguageModel.generateText({ prompt }).pipe(
+          CoderAgentModel.withAgentOptions({ model: "big" }),
+        ),
+      ),
+    );
+    expect(error._tag).toBe("MalformedInput");
+    expect(fake.submitted).toEqual([]);
+  });
+
+  it("does not record the toolkit of a call it rejects", async () => {
+    const Ping = Tool.make("ping", { success: Schema.String });
+    const toolkit = Toolkit.make(Ping);
+    const fake = new FakeClient([simpleTurn(2, "ok")]);
+    const resume = Prompt.make([
+      { role: "user", content: "hi" },
+      { role: "assistant", content: [{ type: "tool-call", id: "tc1", name: "ping", params: {} }] },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            id: "tc1",
+            name: "ping",
+            result: "pong",
+            isFailure: false,
+            providerExecuted: false,
+          },
+        ],
+      },
+    ]);
+
+    const exit = await run(
+      fake,
+      Effect.gen(function* () {
+        const rejected = yield* Effect.either(
+          LanguageModel.generateText({ prompt: resume, toolkit }).pipe(
+            CoderAgentModel.withAgentOptions({ model: "big" }),
+          ),
+        );
+        // The corrected call registers no toolkit and must not be refused.
+        const next = yield* LanguageModel.generateText({ prompt: "again" });
+        return [rejected._tag, next.text] as const;
+      }).pipe(Effect.provide(toolkit.toLayer({ ping: () => Effect.succeed("pong") }))),
+      { chatId: CHAT },
+    );
+
+    expect(Exit.getOrElse(exit, () => undefined)).toEqual(["Left", "ok"]);
+    expect(fake.submitted).toEqual([]);
+  });
 });

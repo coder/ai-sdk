@@ -1,7 +1,10 @@
 # Examples
 
-Runnable scripts for `@coder/ai-sdk-provider`. They import from `../src/index.js`
-so you can run them straight against the source with [`tsx`](https://tsx.is).
+Runnable scripts for `@coder/ai-sdk-provider`, run against the source
+(`../src/index.js`) with [`tsx`](https://tsx.is).
+
+**Prerequisite:** a deployment with **AI Gateway enabled** and at least one
+provider configured.
 
 ## Setup
 
@@ -14,9 +17,8 @@ export CODER_MODEL=claude-sonnet-4-6     # any model id your deployment proxies
 export CODER_ANTHROPIC_MODEL=claude-sonnet-4-6    # used by 03-anthropic.ts
 ```
 
-Your deployment must have **AI Gateway enabled** and at least one provider
-configured. The default model ids assume Anthropic is configured; override them
-with the env vars above to match what your deployment proxies.
+Default model ids assume Anthropic is configured; override them to match your
+deployment.
 
 ## Run
 

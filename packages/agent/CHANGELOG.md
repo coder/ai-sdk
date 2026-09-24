@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.11.8](https://github.com/coder/ai-sdk/compare/agent-v0.11.7...agent-v0.11.8) (2026-09-24)
+
+Documentation-only update that rewrites the package READMEs for improved readability, moves lengthy guides into a dedicated docs/ directory, and corrects inaccuracies discovered during the rewrite.
+
+### Highlights
+
+- READMEs were rewritten for clarity and long guides were split out into a docs/ directory. ([#234](https://github.com/coder/ai-sdk/pull/234))
+- Fixed several documentation inaccuracies surfaced during the README rewrite. ([#235](https://github.com/coder/ai-sdk/pull/235))
+
+### Documentation
+
+* fix inaccuracies found during the README rewrite ([#235](https://github.com/coder/ai-sdk/issues/235)) ([f91e7d0](https://github.com/coder/ai-sdk/commit/f91e7d0bc4ec82927ffc01d23b8a3762fe47a306))
+* rewrite READMEs for readability and split long guides into docs/ ([#234](https://github.com/coder/ai-sdk/issues/234)) ([1c5079b](https://github.com/coder/ai-sdk/commit/1c5079b103c1719ea49dc1dc07ecc2ad527b163d))
+
 ## [0.11.7](https://github.com/coder/ai-sdk/compare/agent-v0.11.6...agent-v0.11.7) (2026-09-23)
 
 A maintenance release for the agent package with no user-facing changes.

@@ -7,7 +7,7 @@ export {
   toAiError,
 } from "./errors.js";
 export * as CoderAgentModel from "./agent-model.js";
-export type { AgentModelSettings } from "./agent-model.js";
+export type { AgentModelSettings, AgentOptions } from "./agent-model.js";
 export * as CoderLanguageModel from "./language-model.js";
 export type { GenerationOptions, ProviderSource } from "./language-model.js";
 export {

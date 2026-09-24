@@ -13,7 +13,7 @@ AI Gateway), `@coder/ai-sdk-agent` (Coder Agents), and `@coder/ai-sdk-sandbox`
 | Feature                                                                              | API                                                                      |
 | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------ |
 | [`@effect/ai` `LanguageModel` over AI Gateway](#languagemodel-over-coder-ai-gateway) | `CoderLanguageModel.layer`, `CoderLanguageModel.fromModel`               |
-| [`@effect/ai` `LanguageModel` over Coder Agents](#languagemodel-over-coder-agents)   | `CoderAgentModel.layer`                                                  |
+| [`@effect/ai` `LanguageModel` over Coder Agents](#languagemodel-over-coder-agents)   | `CoderAgentModel.layer`, `CoderAgentModel.withAgentOptions`              |
 | [Typed `AiError` failures](#typed-error-taxonomy)                                    | `classifyError`, `isTransient`                                           |
 | [Effect Schema → Vercel AI SDK schemas](#effect-schema--vercel-ai-sdk-schemas)       | `toAiSdkSchema`                                                          |
 | [Scoped workspace `Layer`s](#scoped-sandbox-layers)                                  | `acquireWorkspace` / `layerWorkspace`, `acquireSession` / `layerSession` |
@@ -100,10 +100,13 @@ agent loop runs server-side; the layer adapts it to Effect.
 - **Scope.** Closing the layer's scope disposes the model and closes its
   event stream. The chat is not archived. To archive chats, collect their ids
   from `segment:*` events in `onTransportEvent`.
+- **Per-call options.** `CoderAgentModel.withAgentOptions({ model, reasoningEffort })`
+  changes these for one call on the same chat. A change is refused while
+  client tool results are submitted, because that continues a turn in
+  progress.
 - **Generation options.** Sampling controls (`temperature`,
-  `maxOutputTokens`, ...) and `providerOptions` fail with `MalformedInput`,
-  because chatd chooses them. `model` and `reasoningEffort` are set in
-  `settings`.
+  `maxOutputTokens`, ...) and `providerOptions` other than `coder` fail with
+  `MalformedInput`, because chatd chooses them.
 
 ```ts
 import * as LanguageModel from "@effect/ai/LanguageModel";
@@ -112,7 +115,9 @@ import { CoderAgentModel } from "@coder/ai-sdk-effect";
 
 const program = Effect.gen(function* () {
   const first = yield* LanguageModel.generateText({ prompt: "Summarize the repo README." });
-  const second = yield* LanguageModel.generateText({ prompt: "Now in one line." });
+  const second = yield* LanguageModel.generateText({ prompt: "Now in one line." }).pipe(
+    CoderAgentModel.withAgentOptions({ reasoningEffort: "high" }),
+  );
   return [first.text, second.text];
 });
 
@@ -275,14 +280,14 @@ against their concrete API shapes.
 <details>
 <summary>Pinned versions and the API surface used</summary>
 
-| Dependency               | Version  | Surface used                                                                                               |
-| ------------------------ | -------- | ---------------------------------------------------------------------------------------------------------- |
-| `effect`                 | `3.22.2` | `Effect`, `Layer`, `Stream`, `Schema`, `Context`, `Data`, `Option`, `Function.dual`                        |
-| `@effect/ai`             | `0.37.0` | `LanguageModel.make` (`ProviderOptions` → encoded response parts), `AiError`, `Prompt`, `Response`, `Tool` |
-| `@ai-sdk/provider`       | `4.0.17` | `LanguageModelV4` spec types (same pin as `@coder/ai-sdk-provider`)                                        |
-| `@coder/ai-sdk-provider` | `0.4.21` | `createCoder`, `CoderProviderSettings` (published release, not `workspace:*`)                              |
-| `@coder/ai-sdk-sandbox`  | `0.4.24` | `ensureCoderWorkspace`, `createCoderWorkspace`, `CoderTransport`                                           |
-| `@coder/ai-sdk-agent`    | `0.11.8` | `CoderLanguageModel` (+ dispose), `CoderChatClient`, `CoderLanguageModelConfig`, error classes             |
+| Dependency               | Version  | Surface used                                                                                                            |
+| ------------------------ | -------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `effect`                 | `3.22.2` | `Effect`, `Layer`, `Stream`, `Schema`, `Context`, `Data`, `Option`, `Function.dual`                                     |
+| `@effect/ai`             | `0.37.0` | `LanguageModel.make` (`ProviderOptions` → encoded response parts), `AiError`, `Prompt`, `Response`, `Tool`              |
+| `@ai-sdk/provider`       | `4.0.17` | `LanguageModelV4` spec types (same pin as `@coder/ai-sdk-provider`)                                                     |
+| `@coder/ai-sdk-provider` | `0.4.21` | `createCoder`, `CoderProviderSettings` (published release, not `workspace:*`)                                           |
+| `@coder/ai-sdk-sandbox`  | `0.4.24` | `ensureCoderWorkspace`, `createCoderWorkspace`, `CoderTransport`                                                        |
+| `@coder/ai-sdk-agent`    | `0.11.8` | `CoderLanguageModel` (+ `chatId`, `lastSeenMessageId`, dispose), `CoderChatClient`, `classifyTurnAction`, error classes |
 
 The spike depends on the _published_ `@coder/ai-sdk-*` releases rather than
 `workspace:*`, so repo-wide `typecheck`/`test` need no cross-package build

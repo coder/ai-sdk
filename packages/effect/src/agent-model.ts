@@ -14,10 +14,15 @@
  *   closes. The chat itself is not archived.
  * - **Interruption.** Interrupting the consuming fiber aborts the call. The
  *   agent model then interrupts the chat's run server-side, at most once.
+ * - **Per-call agent options.** {@link withAgentOptions} changes `model` or
+ *   `reasoningEffort` for one call. chatd applies both per user message, so a
+ *   change swaps in a fresh `CoderLanguageModel` that resumes the same chat
+ *   (`chatId` + `lastSeenMessageId`). It is refused while client tool results
+ *   are being submitted, because that continues a turn in progress.
  *
  * Sampling controls (`temperature`, `maxOutputTokens`, ...) are chosen by
- * chatd, so the agent model rejects them, and any `providerOptions`, with
- * `MalformedInput`.
+ * chatd, so the agent model rejects them, and any `providerOptions` other
+ * than `coder`, with `MalformedInput`.
  */
 import {
   InvalidArgumentError,
@@ -25,16 +30,19 @@ import {
   type LanguageModelV4CallOptions,
 } from "@ai-sdk/provider";
 import {
+  classifyTurnAction,
   CoderChatClient,
   type CoderLanguageModelConfig,
   CoderLanguageModel as ChatdModel,
+  type ReasoningEffort,
 } from "@coder/ai-sdk-agent";
 import * as AiError from "@effect/ai/AiError";
 import * as LanguageModel from "@effect/ai/LanguageModel";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
-import { type GenerationOptions, fromModel } from "./language-model.js";
+import { type GenerationOptions, fromModel, withGenerationOptions } from "./language-model.js";
 
 /** Settings for {@link make}: the agent model config plus a connection. */
 export type AgentModelSettings = Omit<CoderLanguageModelConfig, "client"> & {
@@ -44,6 +52,26 @@ export type AgentModelSettings = Omit<CoderLanguageModelConfig, "client"> & {
   readonly baseUrl?: string;
   /** Coder session token. Defaults to `CODER_SESSION_TOKEN`. */
   readonly token?: string;
+};
+
+/** Per-call agent options; unset keys fall back to {@link AgentModelSettings}. */
+export interface AgentOptions {
+  readonly model?: string;
+  readonly reasoningEffort?: ReasoningEffort;
+}
+
+/**
+ * Run `self` with per-call agent options. They travel on the shared
+ * generation channel as `providerOptions.coder`, so they replace any
+ * `providerOptions` set by an outer {@link withGenerationOptions}.
+ */
+export const withAgentOptions = (
+  options: AgentOptions,
+): (<A, E, R>(self: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>) => {
+  const coder: Record<string, string> = {};
+  if (options.model !== undefined) coder.model = options.model;
+  if (options.reasoningEffort !== undefined) coder.reasoningEffort = options.reasoningEffort;
+  return withGenerationOptions({ providerOptions: { coder } });
 };
 
 /**
@@ -92,11 +120,14 @@ const UNSUPPORTED: ReadonlyArray<keyof GenerationOptions> = [
   "reasoning",
 ];
 
-const invalid = (message: string, argument: string): InvalidArgumentError =>
+const invalid = (message: string, argument = "providerOptions.coder"): InvalidArgumentError =>
   new InvalidArgumentError({ argument, message });
 
-/** Fails fast on call options chatd would silently ignore. */
-const rejectUnsupported = (options: LanguageModelV4CallOptions): void => {
+/** Validates the call's agent options and resolves them against the settings. */
+const turnOptions = (
+  settings: Omit<CoderLanguageModelConfig, "client">,
+  options: LanguageModelV4CallOptions,
+): AgentOptions => {
   for (const key of UNSUPPORTED) {
     if (options[key] !== undefined) {
       throw invalid(`Coder Agents choose "${key}" server-side; it cannot be set per call`, key);
@@ -118,24 +149,44 @@ const rejectUnsupported = (options: LanguageModelV4CallOptions): void => {
     );
   }
   const namespaces = Object.keys(options.providerOptions ?? {});
-  if (namespaces.length > 0) {
-    throw invalid(
-      `Coder Agents do not accept providerOptions (got "${namespaces.join(", ")}")`,
-      "providerOptions",
-    );
+  const foreign = namespaces.find((namespace) => namespace !== "coder");
+  if (foreign !== undefined) {
+    throw invalid(`only providerOptions.coder is honored, got "${foreign}"`, "providerOptions");
   }
+  let perCall: AgentOptions;
+  try {
+    perCall = decodeAgentOptions(options.providerOptions?.coder ?? {});
+  } catch (error) {
+    throw invalid(`expected only a string model and reasoningEffort: ${String(error)}`);
+  }
+  return {
+    model: perCall.model ?? settings.model,
+    reasoningEffort: perCall.reasoningEffort ?? settings.reasoningEffort,
+  };
 };
 
+const decodeAgentOptions = Schema.decodeUnknownSync(
+  Schema.Struct({
+    model: Schema.optional(Schema.String),
+    reasoningEffort: Schema.optional(Schema.String),
+  }),
+  { onExcessProperty: "error" },
+);
+
 /**
- * A `LanguageModelV4` that owns one chat through a `CoderLanguageModel`,
- * validating call options and tracking the in-flight call. Like the agent
- * model, it is single-flight.
+ * A `LanguageModelV4` that owns one chat through a current `CoderLanguageModel`,
+ * swapping it (on the same chat) when per-call agent options change. Like the
+ * agent model, it is single-flight.
  */
 class AgentSession implements LanguageModelV4 {
   readonly specificationVersion = "v4";
   readonly provider = "coder.chatd";
   readonly supportedUrls = {};
-  readonly #model: ChatdModel;
+  /** The model config without connection settings (the token stays out of it). */
+  readonly #settings: Omit<CoderLanguageModelConfig, "client">;
+  readonly #client: CoderChatClient;
+  #current: ChatdModel;
+  #options: AgentOptions;
   #busy = false;
   /**
    * The tools registered with the chat. chatd receives client tools only when
@@ -147,11 +198,10 @@ class AgentSession implements LanguageModelV4 {
     const env = globalThis.process?.env;
     const baseUrl = settings.baseUrl ?? env?.CODER_URL;
     const token = settings.token ?? env?.CODER_SESSION_TOKEN;
-    let client: CoderChatClient;
     if (settings.client !== undefined) {
-      client = settings.client;
+      this.#client = settings.client;
     } else if (baseUrl && token) {
-      client = new CoderChatClient({
+      this.#client = new CoderChatClient({
         baseUrl,
         token,
         onTransportEvent: settings.onTransportEvent,
@@ -162,29 +212,30 @@ class AgentSession implements LanguageModelV4 {
           "(or the CODER_URL and CODER_SESSION_TOKEN environment variables).",
       );
     }
-    // The model config gets the client, not the raw credentials.
     const { client: _client, baseUrl: _baseUrl, token: _token, ...modelSettings } = settings;
-    this.#model = new ChatdModel({ ...modelSettings, client });
+    this.#settings = modelSettings;
+    this.#options = { model: settings.model, reasoningEffort: settings.reasoningEffort };
+    this.#current = this.#build(this.#options, settings.chatId, settings.lastSeenMessageId);
   }
 
   get modelId(): string {
-    return this.#model.modelId;
+    return this.#current.modelId;
   }
 
   async doGenerate(options: LanguageModelV4CallOptions) {
-    this.#begin(options);
+    const model = await this.#begin(options);
     try {
-      return await this.#model.doGenerate(options);
+      return await model.doGenerate(options);
     } finally {
       this.#busy = false;
     }
   }
 
   async doStream(options: LanguageModelV4CallOptions) {
-    this.#begin(options);
+    const model = await this.#begin(options);
     let result: Awaited<ReturnType<ChatdModel["doStream"]>>;
     try {
-      result = await this.#model.doStream(options);
+      result = await model.doStream(options);
     } catch (error) {
       this.#busy = false;
       throw error;
@@ -218,22 +269,46 @@ class AgentSession implements LanguageModelV4 {
   }
 
   async dispose(): Promise<void> {
-    await this.#model[Symbol.asyncDispose]();
+    await this.#current[Symbol.asyncDispose]();
   }
 
-  /** Validates the call and marks the session busy. */
-  #begin(options: LanguageModelV4CallOptions): void {
+  /** Marks the session busy and returns the model for this call's options. */
+  async #begin(options: LanguageModelV4CallOptions): Promise<ChatdModel> {
     if (this.#busy) {
       throw invalid("a call is already in flight on this Coder Agents session", "prompt");
     }
-    rejectUnsupported(options);
+    const wanted = turnOptions(this.#settings, options);
+    const change =
+      wanted.model !== this.#options.model ||
+      wanted.reasoningEffort !== this.#options.reasoningEffort;
+    if (change && classifyTurnAction(options.prompt).kind !== "new-turn") {
+      throw invalid(
+        "model and reasoningEffort can only change on a new user message, " +
+          "not while client tool results are submitted",
+      );
+    }
+    // Last check: it records the toolkit, so a rejected call must not reach it.
     this.#checkTools(options);
     this.#busy = true;
+    try {
+      if (change) {
+        const previous = this.#current;
+        const chatId = previous.chatId;
+        const next = this.#build(wanted, chatId, chatId ? previous.lastSeenMessageId : undefined);
+        await previous[Symbol.asyncDispose]();
+        this.#current = next;
+        this.#options = wanted;
+      }
+      return this.#current;
+    } catch (error) {
+      this.#busy = false;
+      throw error;
+    }
   }
 
   #checkTools(options: LanguageModelV4CallOptions): void {
     const tools = JSON.stringify(options.tools ?? []);
-    if (this.#model.chatId === undefined || this.#tools === undefined) {
+    if (this.#current.chatId === undefined || this.#tools === undefined) {
       // This call creates (or first attaches to) the chat and registers them.
       this.#tools = tools;
     } else if (tools !== this.#tools) {
@@ -242,5 +317,17 @@ class AgentSession implements LanguageModelV4 {
         "tools",
       );
     }
+  }
+
+  #build(options: AgentOptions, chatId?: string, lastSeenMessageId?: number): ChatdModel {
+    const config: CoderLanguageModelConfig = {
+      ...this.#settings,
+      client: this.#client,
+      model: options.model,
+      reasoningEffort: options.reasoningEffort,
+      chatId,
+      lastSeenMessageId,
+    };
+    return new ChatdModel(config);
   }
 }

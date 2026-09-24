@@ -1,5 +1,5 @@
 # Workspace image for @coder/ai-sdk-sandbox sessions with zero runtime install
-# latency. See "Template authoring" in the package README for the full guide.
+# latency. See docs/template-authoring.md in the package for the full guide.
 #
 # The pre-bake step below mirrors the Claude Code adapter's bootstrap recipe
 # (@ai-sdk/harness-claude-code ships the bridge's package.json, pnpm-lock.yaml,

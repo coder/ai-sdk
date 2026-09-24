@@ -25,10 +25,12 @@ const { text } = await generateText({
 });
 ```
 
-**Why:** developers authenticate with their Coder token and never handle raw
-provider keys. AI Gateway authenticates each request against a Coder identity,
-injects the centrally managed keys for the upstream providers (Anthropic,
-OpenAI, Bedrock, Copilot, …), and audits usage per user. The deployment decides
+**Why:** in centralized mode (the default), developers authenticate with their
+Coder token and never handle raw provider keys. AI Gateway authenticates each
+request against a Coder identity, injects the centrally managed keys for the
+upstream providers (Anthropic, OpenAI, Bedrock, Copilot, …), and audits usage
+per user. In bring-your-own-key mode, developers supply their own upstream key
+instead (see [Authentication](#authentication)). The deployment decides
 which models and providers are available.
 
 > [!TIP]

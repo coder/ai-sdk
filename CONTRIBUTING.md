@@ -1,17 +1,15 @@
 # Contributing
 
-`coder/ai-sdk` is a pnpm monorepo of three independent, independently-published
-packages — `@coder/ai-sdk-sandbox`, `@coder/ai-sdk-agent`, and
-`@coder/ai-sdk-provider`; see the [README](./README.md) for what each one is.
-All three target Vercel AI SDK v7, and pnpm keeps their dependency trees
-isolated.
+A pnpm monorepo of three independently published packages, all targeting Vercel
+AI SDK v7: `@coder/ai-sdk-sandbox`, `@coder/ai-sdk-agent`, and
+`@coder/ai-sdk-provider` ([what each does](./README.md#packages)).
 
-Repo-operational knowledge — review protocol, release quirks, invariants — lives
-in [AGENTS.md](./AGENTS.md).
+Review protocol, release quirks, and invariants live in
+[AGENTS.md](./AGENTS.md).
 
 ## Setup
 
-The toolchain — node, pnpm, and the workflow linters — is pinned in
+The toolchain (Node, pnpm, workflow linters) is pinned in
 [`mise.toml`](./mise.toml) and locked in `mise.lock`. With
 [mise](https://mise.jdx.dev) installed:
 
@@ -22,7 +20,7 @@ pnpm install     # install workspace dependencies
 
 ## Commands
 
-Everything runs from the repo root:
+Run everything from the repo root:
 
 ```bash
 pnpm check       # the CI gate: format check + lint + typecheck
@@ -31,28 +29,27 @@ pnpm build       # build every package
 pnpm format      # auto-format with oxfmt
 ```
 
-Lint and format are centralized at the root via [oxc](https://oxc.rs) (`oxlint` +
-`oxfmt`) and cover the whole tree at once; typecheck, test, and build fan out to
-each package. To work on just one, use pnpm's `--filter`:
+Lint and format ([oxc](https://oxc.rs): `oxlint` + `oxfmt`) cover the whole
+tree at once. Typecheck, test, and build fan out to each package; target one
+with `--filter`:
 
 ```bash
 pnpm --filter @coder/ai-sdk-agent test
 pnpm --filter @coder/ai-sdk-sandbox build
 ```
 
-GitHub Actions workflows are linted with [`actionlint`](https://github.com/rhysd/actionlint)
-and audited with [`zizmor`](https://docs.zizmor.sh) (both pinned in `mise.toml`);
-run them locally with `actionlint` and `zizmor .github/workflows`.
+Workflows are linted with [`actionlint`](https://github.com/rhysd/actionlint)
+and audited with [`zizmor`](https://docs.zizmor.sh), both pinned in
+`mise.toml`. Run them locally with `actionlint` and `zizmor .github/workflows`.
 
 ### The anti-slop lint rules
 
-On top of oxlint's built-in rules, the repo enforces
-[anti-slop](https://github.com/dmmulroy/anti-slop) — opinionated rules that
-reject low-evidence TypeScript patterns (unjustified type assertions, `unknown`
-in signatures, ad hoc `typeof` narrowing, and similar). The plugin is
-**vendored** at [`tools/oxlint/anti-slop/`](./tools/oxlint/anti-slop/) as
-upstream recommends, and loaded through `jsPlugins` in
-[`.oxlintrc.json`](./.oxlintrc.json). Notes:
+[anti-slop](https://github.com/dmmulroy/anti-slop) adds opinionated rules that
+reject low-evidence TypeScript patterns: unjustified type assertions, `unknown`
+in signatures, ad hoc `typeof` narrowing, and similar. It is **vendored** at
+[`tools/oxlint/anti-slop/`](./tools/oxlint/anti-slop/) (as upstream
+recommends) and loaded through `jsPlugins` in
+[`.oxlintrc.json`](./.oxlintrc.json).
 
 - **Updating**: copy `skills/install-anti-slop/assets/anti-slop/` from upstream
   over `tools/oxlint/anti-slop/` and record the upstream commit in the PR. The
@@ -74,10 +71,10 @@ upstream recommends, and loaded through `jsPlugins` in
 
 ## Commits & pull requests
 
-PRs are **squash-merged**, and the PR title becomes the commit on `main` — which is
-what drives releases. So the **PR title must be a valid [Conventional Commit][cc]**
-(CI enforces it). Use the package's short name as the scope, or omit the scope for
-repo-wide changes:
+PRs are **squash-merged**: the PR title becomes the commit on `main` and drives
+releases. The **title must be a valid [Conventional Commit][cc]** (CI enforces
+it). Scope it with the package's short name, or omit the scope for repo-wide
+changes:
 
 ```text
 feat(sandbox): add port leasing
@@ -87,11 +84,15 @@ ci: bump actions
 
 ## Releases
 
-Releases are fully automated with
-[release-please](https://github.com/googleapis/release-please) — no manual version
-bumps or `npm publish`. It reads Conventional Commit history and opens a release PR
-per package; merging that PR versions the package, tags it (`sandbox-vX.Y.Z` /
-`agent-vX.Y.Z` / `provider-vX.Y.Z`), and publishes to npm with provenance. The
-three packages version and release independently.
+Fully automated with
+[release-please](https://github.com/googleapis/release-please); never bump
+versions or `npm publish` by hand.
+
+1. release-please reads the Conventional Commit history and opens one release
+   PR per package.
+2. Merging that PR versions the package, tags it (`sandbox-vX.Y.Z` /
+   `agent-vX.Y.Z` / `provider-vX.Y.Z`), and publishes to npm with provenance.
+
+Each package versions and releases independently.
 
 [cc]: https://www.conventionalcommits.org

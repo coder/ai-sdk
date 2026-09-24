@@ -2,7 +2,7 @@
 
 Build a Coder template whose workspaces start harness sessions with **zero
 runtime install latency**. A validated Dockerfile + `main.tf` pair lives in
-[`examples/template/`](../examples/template/).
+[`examples/template/`](https://github.com/coder/ai-sdk/tree/main/packages/sandbox/examples/template).
 
 This guide covers only the ai-sdk-specific delta. For generic template
 authoring, see the [Coder template docs](https://coder.com/docs/admin/templates)
@@ -33,7 +33,7 @@ read.
 
 ## Step 1 — Dockerfile: pre-bake the bootstrap
 
-[`examples/template/Dockerfile`](../examples/template/Dockerfile) installs the
+[`examples/template/Dockerfile`](https://github.com/coder/ai-sdk/blob/main/packages/sandbox/examples/template/Dockerfile) installs the
 [workspace requirements](../README.md#workspace-requirements) (Node 24 + pnpm on
 PATH, bash/coreutils) and replays the recipe at build time: same files, same
 commands, same absolute path.
@@ -73,7 +73,7 @@ Rules that make or break the pre-bake:
 
 ## Step 2 — main.tf: get the cache into the home volume
 
-[`examples/template/main.tf`](../examples/template/main.tf) is Coder's example
+[`examples/template/main.tf`](https://github.com/coder/ai-sdk/blob/main/packages/sandbox/examples/template/main.tf) is Coder's example
 Docker template minus the IDE modules, with three ai-sdk-specific choices:
 
 - **The workspace image is the pre-baked one** (`variable "image"`). Push it to

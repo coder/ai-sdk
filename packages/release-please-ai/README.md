@@ -40,9 +40,12 @@ Node 22, which is a breaking change.
   …
 ```
 
-Only the summary paragraph and **Highlights** are AI-written. Headers,
-sections, links, and the breaking-change list are release-please's standard
-output, so there is nothing for the model to get factually wrong.
+Only the summary paragraph and **Highlights** (including the PR number each
+highlight links to) are AI-written, and they can be wrong: the prompt tells the
+model not to invent changes or PR numbers, but nothing checks its output against
+the commits. Headers, sections, per-commit links, and the breaking-change list
+are release-please's standard output; the model's text is inserted beneath the
+version header and cannot change them.
 
 **A release is never blocked on the model.** If it can't run (no API key, a
 network/API error, or nothing noteworthy in the release), the generator returns

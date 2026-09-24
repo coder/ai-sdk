@@ -34,7 +34,7 @@ client‑side loop without re‑implementing the loop.
 
 ## Agent vs. provider — which package?
 
-|                   | `@coder/ai-sdk-agent` (this package)                                                                                                                | [`@coder/ai-sdk-provider`](../provider)                                                                                |
+|                   | `@coder/ai-sdk-agent` (this package)                                                                                                                | [`@coder/ai-sdk-provider`](https://github.com/coder/ai-sdk/tree/main/packages/provider)                                |
 | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | What runs         | Coder's server‑side agent: tool loop, built‑in tools, MCP servers, workspace‑scoped file/shell tools, sub‑agents, and compaction, on the deployment | Plain model calls through Coder's AI Gateway. A normal AI SDK provider: `generateText`, `streamText`, `generateObject` |
 | Server state      | Each `CoderAgent` is one server chat ("session"), bound to at most one workspace                                                                    | No chat, no workspace; natively cancelable                                                                             |
@@ -91,7 +91,7 @@ the rest of the AI SDK.
 
 ## Examples
 
-Runnable scripts in [`examples/`](./examples) run against a real deployment via
+Runnable scripts in [`examples/`](https://github.com/coder/ai-sdk/tree/main/packages/agent/examples) run against a real deployment via
 `tsx`:
 
 ```bash
@@ -107,7 +107,7 @@ pnpm example:structured   # typed structured output via the structured_output to
 ```
 
 Each example creates a new chat and archives it when done; none touches
-workspaces. Details: [`examples/README.md`](./examples/README.md).
+workspaces. Details: [`examples/README.md`](https://github.com/coder/ai-sdk/blob/main/packages/agent/examples/README.md).
 
 ## Custom tools
 
@@ -200,7 +200,7 @@ This needs a `workspaceFiles` adapter. The agent core stays dependency‑free, s
 whoever holds a workspace connection supplies a few‑line adapter:
 
 ```ts
-const agent = new CoderAgent({ /* … */ workspaceId: ws.id, workspaceFiles });
+const agent = new CoderAgent({ organizationId, workspaceId: ws.id, workspaceFiles });
 const { path } = await agent.uploadToWorkspace({
   content: await openAsBlob("assets.zip"),
   path: "assets.zip",
@@ -215,7 +215,7 @@ constrain what the model **says** to a JSON schema. A `responseFormat` /
 `experimental_output` request emits a warning and is best‑effort at most.
 
 - **Pure text‑in / JSON‑out, no server‑side tools** → use
-  [`@coder/ai-sdk-provider`](../provider) with `generateObject` /
+  [`@coder/ai-sdk-provider`](https://github.com/coder/ai-sdk/tree/main/packages/provider) with `generateObject` /
   `Output.object` (schema‑constrained; requires AI Gateway on the deployment).
 - **The answer must come out of an agent run** (server‑side tools, MCP, a
   workspace) → have the model submit its answer by _calling a tool_ whose
@@ -224,7 +224,7 @@ constrain what the model **says** to a JSON schema. A `responseFormat` /
 
 The tool pattern needs four rules to stay robust (validate client‑side, never
 stop on the call, and more). Guide: [docs/structured-output.md](./docs/structured-output.md).
-Copyable helper: [`examples/06-structured-output.ts`](./examples/06-structured-output.ts).
+Copyable helper: [`examples/06-structured-output.ts`](https://github.com/coder/ai-sdk/blob/main/packages/agent/examples/06-structured-output.ts).
 
 ## Sessions
 
@@ -423,7 +423,7 @@ const agent = new CoderAgent({ client, organizationId });
 | `planMode`                        | enable plan mode (`"plan"`)                                                                                        |
 | `stopWhen`                        | AI SDK stop condition(s); default `stepCountIs(64)`                                                                |
 | `maxRetries`                      | default `0` — SDK retries can duplicate server‑side turns; override with care                                      |
-| `requestTimeoutMs`                | per‑turn time budget (ms); interrupts the run and rejects (`kind: "timeout"`) instead of hanging                   |
+| `requestTimeoutMs`                | per‑segment time budget (ms), not per call; interrupts the run and rejects (`kind: "timeout"`) instead of hanging  |
 | `onTransportEvent`                | observability hook for typed transport events (see [Observability](#observability))                                |
 | `settleDeadlineMs`                | overall deadline for bounded cleanup (`archive()` 409 retries, disposal); default 15 000                           |
 | `settleRetryDelayMs`              | pause between `archive()` retries while the chat settles; default 1000                                             |
@@ -545,7 +545,7 @@ and the call rejects with a retryable `CoderChatError` (`kind: "timeout"`)
 instead of hanging:
 
 ```ts
-const agent = new CoderAgent({ /* … */ requestTimeoutMs: 120_000 });
+const agent = new CoderAgent({ organizationId, requestTimeoutMs: 120_000 });
 ```
 
 A segment is one model round‑trip, until it settles or pauses for a client tool.
@@ -637,7 +637,7 @@ The agent is an **async disposable**, so cleanup can ride scope exit instead of 
 `finally` you have to remember:
 
 ```ts
-await using agent = new CoderAgent({/* … */});
+await using agent = new CoderAgent({ organizationId });
 const { text } = await agent.generate({ prompt: "…" });
 // agent.interrupt() + agent.archive() run automatically when the scope exits.
 ```

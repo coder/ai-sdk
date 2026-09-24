@@ -587,7 +587,10 @@ const chargeCard = (chatId: () => string) =>
 // checker — defer it through a box assigned right after.
 let self: { chatId?: string } | undefined;
 const agent = new CoderAgent({
-  /* …base options as in runTurn… */
+  baseUrl: process.env.CODER_URL!,
+  token: process.env.CODER_SESSION_TOKEN!,
+  organizationId: process.env.CODER_ORG_ID!,
+  // …plus chatId, requestTimeoutMs, etc. as in runTurn
   tools: { charge_card: chargeCard(() => self!.chatId!) },
 });
 self = agent;
@@ -882,6 +885,6 @@ for (const call of filed.reverse()) {
   [Workspaces & quota](./workspaces-and-quota.md).
 - Steps that don't need server‑side tools (plan / extract / synthesize) are
   cheaper and natively structured through
-  [`@coder/ai-sdk-provider`](../../provider) + `generateObject` — no chat, no
+  [`@coder/ai-sdk-provider`](https://github.com/coder/ai-sdk/tree/main/packages/provider) + `generateObject` — no chat, no
   workspace, no cleanup.
 - Archive in the final step / failure handler — never per step.

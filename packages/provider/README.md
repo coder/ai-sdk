@@ -25,17 +25,19 @@ const { text } = await generateText({
 });
 ```
 
-**Why:** developers authenticate with their Coder token and never handle raw
-provider keys. AI Gateway authenticates each request against a Coder identity,
-injects the centrally managed keys for the upstream providers (Anthropic,
-OpenAI, Bedrock, Copilot, …), and audits usage per user. The deployment decides
+**Why:** in centralized mode (the default), developers authenticate with their
+Coder token and never handle raw provider keys. AI Gateway authenticates each
+request against a Coder identity, injects the centrally managed keys for the
+upstream providers (Anthropic, OpenAI, Bedrock, Copilot, …), and audits usage
+per user. In bring-your-own-key mode, developers supply their own upstream key
+instead (see [Authentication](#authentication)). The deployment decides
 which models and providers are available.
 
 > [!TIP]
 > This package is for **plain model calls**: `generateText`, `streamText`, and
 > `generateObject` (schema-constrained structured output). For Coder's
 > **server-side agent** (multi-step tool loop, built-in tools, MCP servers,
-> workspace file/shell tools), use [`@coder/ai-sdk-agent`](../agent). They
+> workspace file/shell tools), use [`@coder/ai-sdk-agent`](https://github.com/coder/ai-sdk/tree/main/packages/agent). They
 > compose: provider for pure text/JSON steps, Agent for tool-driven ones.
 
 ## Install
@@ -183,7 +185,7 @@ audit capture, required permissions, and a security FAQ.
 Key points:
 
 - **Client vs. gateway.** What this package puts on the wire is verifiable in
-  [`src/provider.ts`](./src/provider.ts). Key custody, audit capture, and
+  [`src/provider.ts`](https://github.com/coder/ai-sdk/blob/main/packages/provider/src/provider.ts). Key custody, audit capture, and
   retention are enforced server-side by your Coder deployment.
 - **One destination.** The package only initiates requests to your `baseURL`.
   It never contacts upstream vendors directly and adds no telemetry.
@@ -205,8 +207,8 @@ Key points:
 
 ## Examples
 
-Runnable scripts live in [`examples/`](./examples); see its
-[README](./examples/README.md) for setup.
+Runnable scripts live in [`examples/`](https://github.com/coder/ai-sdk/tree/main/packages/provider/examples); see its
+[README](https://github.com/coder/ai-sdk/blob/main/packages/provider/examples/README.md) for setup.
 
 ```bash
 pnpm example:generate    # non-streaming generateText

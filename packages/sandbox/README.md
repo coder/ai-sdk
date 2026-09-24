@@ -52,7 +52,7 @@ try {
 }
 ```
 
-Runnable version: [`examples/claude-code.ts`](./examples/claude-code.ts).
+Runnable version: [`examples/claude-code.ts`](https://github.com/coder/ai-sdk/blob/main/packages/sandbox/examples/claude-code.ts).
 
 ### Native transport
 
@@ -247,7 +247,7 @@ try {
 ```
 
 Runnable version: `CODER_WORKSPACE=my-dev-ws npx tsx examples/claude-code-tui.ts`
-([source](./examples/claude-code-tui.ts); exit with Esc or Ctrl+C).
+([source](https://github.com/coder/ai-sdk/blob/main/packages/sandbox/examples/claude-code-tui.ts); exit with Esc or Ctrl+C).
 
 ## Workspace requirements
 
@@ -271,7 +271,7 @@ Pre-bake the adapter's bootstrap into the workspace image so sessions start
 with zero runtime install latency. The
 [template authoring guide](./docs/template-authoring.md) covers the Dockerfile,
 `main.tf`, sizing, and verification. A validated pair lives in
-[`examples/template/`](./examples/template/).
+[`examples/template/`](https://github.com/coder/ai-sdk/tree/main/packages/sandbox/examples/template).
 
 ## Settings
 
@@ -422,7 +422,7 @@ with tool use (`scripts/e2e-claude.ts`).
 
 ## Development
 
-Setup and repo-wide gates are in [CONTRIBUTING.md](../../CONTRIBUTING.md).
+Setup and repo-wide gates are in [CONTRIBUTING.md](https://github.com/coder/ai-sdk/blob/main/CONTRIBUTING.md).
 Package-specific commands, run from `packages/sandbox`:
 
 ```bash

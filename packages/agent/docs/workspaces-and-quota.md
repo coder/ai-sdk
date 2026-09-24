@@ -15,7 +15,7 @@ bound, a turn can sit unscheduled and never settle.
   as `workspace_id` on chat creation; message and update requests carry no
   workspace field. To move work to another workspace, start a new agent/chat.
 - **This SDK never provisions workspaces.** Pass an existing one. Provision it
-  with [`@coder/ai-sdk-sandbox`](../../sandbox)'s `ensureCoderWorkspace`, the
+  with [`@coder/ai-sdk-sandbox`](https://github.com/coder/ai-sdk/tree/main/packages/sandbox)'s `ensureCoderWorkspace`, the
   CLI, or the v2 API.
 - **A chat created without `workspaceId` can still be workspace‑backed.**
   Deployments may assign one server‑side. The SDK reads the created chat's
@@ -67,7 +67,7 @@ Practical sizing:
    filesystem carries one session's artifacts (and secrets) into the next.
    Provision per tenant, or securely reset a workspace before reassigning it.
 4. **Send steps that don't need server‑side tools to the
-   [provider](../../provider)** — it never touches a workspace.
+   [provider](https://github.com/coder/ai-sdk/tree/main/packages/provider)** — it never touches a workspace.
 
 ## Autostop & cleanup
 
@@ -78,11 +78,11 @@ Manage two lifetimes separately:
   resources.
 - **Workspaces:** rely on template‑level scheduling, not manual hygiene.
 
-| Template setting                | What to do                                                                                                                                                                                                                                                                                                        |
-| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Autostop TTL**                | Long enough to survive a normal session (including idle gaps between turns), short enough that a leaked workspace stops burning running‑cost within hours. Without autostop, a leaked workspace pins its full quota until someone notices. [Sandbox](../../sandbox): `stopAfter: "8h"` sets `ttl_ms` at creation. |
-| **Activity bump** (default 1 h) | Extends a running workspace's deadline when Coder detects sessions. Check [what counts as activity](https://coder.com/docs/user-guides/workspace-scheduling) before assuming server‑side tool use keeps a workspace alive.                                                                                        |
-| **Dormancy / failure cleanup**  | Reaps abandoned and repeatedly‑failing workspaces automatically ([template scheduling](https://coder.com/docs/admin/templates/managing-templates/schedule)).                                                                                                                                                      |
+| Template setting                | What to do                                                                                                                                                                                                                                                                                                                                                     |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Autostop TTL**                | Long enough to survive a normal session (including idle gaps between turns), short enough that a leaked workspace stops burning running‑cost within hours. Without autostop, a leaked workspace pins its full quota until someone notices. [Sandbox](https://github.com/coder/ai-sdk/tree/main/packages/sandbox): `stopAfter: "8h"` sets `ttl_ms` at creation. |
+| **Activity bump** (default 1 h) | Extends a running workspace's deadline when Coder detects sessions. Check [what counts as activity](https://coder.com/docs/user-guides/workspace-scheduling) before assuming server‑side tool use keeps a workspace alive.                                                                                                                                     |
+| **Dormancy / failure cleanup**  | Reaps abandoned and repeatedly‑failing workspaces automatically ([template scheduling](https://coder.com/docs/admin/templates/managing-templates/schedule)).                                                                                                                                                                                                   |
 
 **Stopping is not enough.** A _stopped_ workspace typically still consumes its
 persistent resources' `daily_cost` (disks, volumes), so a scratch fleet that

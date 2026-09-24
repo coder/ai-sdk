@@ -6,10 +6,10 @@ what the model **says** to a JSON schema: a `responseFormat` /
 
 Pick by what the step needs:
 
-| The step…                                                                       | Use                                                                                                                                            |
-| ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| is pure text‑in / JSON‑out, with no server‑side tools                           | [`@coder/ai-sdk-provider`](../../provider) with `generateObject` / `Output.object` — schema‑constrained; requires AI Gateway on the deployment |
-| must produce its answer from an agent run (server‑side tools, MCP, a workspace) | the **`structured_output` tool pattern** below                                                                                                 |
+| The step…                                                                       | Use                                                                                                                                                                                         |
+| ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| is pure text‑in / JSON‑out, with no server‑side tools                           | [`@coder/ai-sdk-provider`](https://github.com/coder/ai-sdk/tree/main/packages/provider) with `generateObject` / `Output.object` — schema‑constrained; requires AI Gateway on the deployment |
+| must produce its answer from an agent run (server‑side tools, MCP, a workspace) | the **`structured_output` tool pattern** below                                                                                                                                              |
 
 ## The `structured_output` tool pattern
 
@@ -26,7 +26,7 @@ import { z } from "zod";
 const Answer = z.object({ severity: z.enum(["critical", "major", "minor"]), summary: z.string() });
 
 const agent = new CoderAgent({
-  /* … */
+  organizationId: "your-org-uuid", // connection defaults to CODER_URL + CODER_SESSION_TOKEN
   instructions: "… Submit your final answer by calling the structured_output tool exactly once.",
   tools: {
     structured_output: tool({
@@ -122,7 +122,7 @@ under a short deadline instead of giving up.
 
 ## Copyable helper
 
-[`examples/06-structured-output.ts`](../examples/06-structured-output.ts)
+[`examples/06-structured-output.ts`](https://github.com/coder/ai-sdk/blob/main/packages/agent/examples/06-structured-output.ts)
 packages all four rules into a small helper:
 
 - `structuredOutput(schema)` returns `agentOpts` to spread into the constructor,

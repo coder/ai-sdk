@@ -102,6 +102,13 @@ const rejectUnsupported = (options: LanguageModelV4CallOptions): void => {
       throw invalid(`Coder Agents choose "${key}" server-side; it cannot be set per call`, key);
     }
   }
+  // chatd has no tool-choice control; only the default "auto" is honest.
+  if (options.toolChoice !== undefined && options.toolChoice.type !== "auto") {
+    throw invalid(
+      `Coder Agents only support the "auto" tool choice, got "${options.toolChoice.type}"`,
+      "toolChoice",
+    );
+  }
   const namespaces = Object.keys(options.providerOptions ?? {});
   if (namespaces.length > 0) {
     throw invalid(
@@ -122,6 +129,11 @@ class AgentSession implements LanguageModelV4 {
   readonly supportedUrls = {};
   readonly #model: ChatdModel;
   #busy = false;
+  /**
+   * The tools registered with the chat. chatd receives client tools only when
+   * the chat is created, so later calls must send the same toolkit.
+   */
+  #tools: string | undefined;
 
   constructor(settings: AgentModelSettings) {
     const env = globalThis.process?.env;
@@ -207,6 +219,20 @@ class AgentSession implements LanguageModelV4 {
       throw invalid("a call is already in flight on this Coder Agents session", "prompt");
     }
     rejectUnsupported(options);
+    this.#checkTools(options);
     this.#busy = true;
+  }
+
+  #checkTools(options: LanguageModelV4CallOptions): void {
+    const tools = JSON.stringify(options.tools ?? []);
+    if (this.#model.chatId === undefined || this.#tools === undefined) {
+      // This call creates (or first attaches to) the chat and registers them.
+      this.#tools = tools;
+    } else if (tools !== this.#tools) {
+      throw invalid(
+        "the toolkit cannot change after the chat is created: chatd registers client tools only then",
+        "tools",
+      );
+    }
   }
 }

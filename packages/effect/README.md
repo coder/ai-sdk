@@ -86,6 +86,9 @@ agent loop runs server-side; the layer adapts it to Effect.
   calls, and the next call sends the results back to the same chat. chatd's
   server-side tools are reported in the finish part's
   `metadata.coder.serverToolCalls`.
+  chatd registers client tools only when the chat is created, so the toolkit
+  cannot change afterwards, and only the `auto` tool choice is supported.
+  Other cases fail with `MalformedInput`.
 - **Interruption.** Interrupting the fiber aborts the call. The agent then
   interrupts the chat's run server-side, exactly once.
 - **Scope.** Closing the layer's scope disposes the model and closes its

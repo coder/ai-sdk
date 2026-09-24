@@ -439,5 +439,38 @@ describe("CoderAgentModel", () => {
       ),
     );
     expect(unknownOption._tag).toBe("MalformedInput");
+
+    const Ping = Tool.make("ping", { success: Schema.String });
+    const toolkit = Toolkit.make(Ping);
+    const toolChoice = failure(
+      await run(
+        new FakeClient([]),
+        LanguageModel.generateText({ prompt: "hi", toolkit, toolChoice: "none" }).pipe(
+          Effect.provide(toolkit.toLayer({ ping: () => Effect.succeed("pong") })),
+        ),
+      ),
+    );
+    expect(toolChoice._tag).toBe("MalformedInput");
+    expect(toolChoice.description).toContain("tool choice");
+  });
+
+  it("rejects a toolkit change after the chat is created", async () => {
+    const Ping = Tool.make("ping", { success: Schema.String });
+    const toolkit = Toolkit.make(Ping);
+    const fake = new FakeClient([simpleTurn(2, "one")]);
+
+    const exit = await run(
+      fake,
+      Effect.gen(function* () {
+        yield* LanguageModel.generateText({ prompt: "one", toolkit });
+        return yield* LanguageModel.generateText({ prompt: "two" });
+      }).pipe(Effect.provide(toolkit.toLayer({ ping: () => Effect.succeed("pong") }))),
+    );
+
+    const error = failure(exit);
+    expect(error._tag).toBe("MalformedInput");
+    expect(error.description).toContain("toolkit cannot change");
+    expect(fake.created).toHaveLength(1);
+    expect(fake.messages).toEqual([]);
   });
 });

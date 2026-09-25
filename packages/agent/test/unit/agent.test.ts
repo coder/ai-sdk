@@ -3276,6 +3276,38 @@ describe("queued submissions (#114)", () => {
     expect(result.steps[0]?.providerMetadata).toBeUndefined();
   });
 
+  it("anchors exactly on its own queued_message_id: an identical-content twin is not attributed (#119)", async () => {
+    // Stamped promotions (coder/coder#29859), no queue_update at all: the
+    // twin (entry 5) has byte-identical content, ours is entry 7 (the fake's
+    // queue entry). Without the stamp the gate could never confirm here.
+    const stamped = (id: number, queuedMessageId: number): ChatStreamEvent => {
+      const ev = msg(id, "user", [{ type: "text", text: "hi again" }]);
+      if (ev.message) ev.message.queued_message_id = queuedMessageId;
+      return ev;
+    };
+    const fake = new QueuedChatClient([
+      [
+        stamped(41, 5),
+        msg(42, "assistant", [{ type: "text", text: "Twin answer." }], { output_tokens: 999 }),
+        stamped(43, 7),
+        status("running"),
+        textPart("Fresh answer."),
+        msg(44, "assistant", [{ type: "text", text: "Fresh answer." }], { output_tokens: 10 }),
+        status("waiting"),
+      ],
+    ]);
+    const agent = new CoderAgent({
+      client: fake as unknown as CoderChatClient,
+      organizationId: "org-1",
+      chatId: "chat-1",
+    });
+
+    const result = await agent.generate({ prompt: "hi again" });
+
+    expect(result.text).toBe("Fresh answer.");
+    expect(result.usage.outputTokens).toBe(10);
+  });
+
   it("withdraws the queue entry on timeout instead of interrupting the concurrent run", async () => {
     const interrupted: string[] = [];
     const deleted: Array<[string, number]> = [];

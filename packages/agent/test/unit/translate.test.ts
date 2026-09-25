@@ -1408,6 +1408,173 @@ describe("TurnTranslator — queued-submission gate wire shapes", () => {
   });
 });
 
+describe("TurnTranslator — exact queued anchoring by queued_message_id (#119)", () => {
+  const prompt: ChatMessagePart[] = [{ type: "text", text: "hi again" }];
+  /**
+   * A user-message snapshot promoted from queue entry `queuedMessageId`. The
+   * wire field is `omitempty`: without a stamp the key is omitted, never
+   * `null`/`0` — mirroring older servers and direct sends.
+   */
+  const promoted = (id: number, queuedMessageId?: number): ChatStreamEvent => {
+    const ev = msg(id, "user", prompt);
+    if (queuedMessageId !== undefined && ev.message) ev.message.queued_message_id = queuedMessageId;
+    return ev;
+  };
+  const gated = (queuedSubmission: { id?: number; content?: ChatMessagePart[] }) =>
+    new TurnTranslator({ dynamicToolNames: new Set(), turnCursor: 40, queuedSubmission });
+  const ingestAll = (t: TurnTranslator, events: ChatStreamEvent[]) => {
+    const parts = [] as ReturnType<TurnTranslator["ingest"]>;
+    for (const ev of events) parts.push(...t.ingest(ev));
+    return parts;
+  };
+  const outputTokens = (parts: ReturnType<TurnTranslator["ingest"]>) => {
+    const finish = parts.at(-1);
+    if (finish?.type !== "finish") throw new Error("expected finish part");
+    return finish.usage.outputTokens.total;
+  };
+
+  it("anchors on its own stamp without waiting for a confirming queue_update", () => {
+    const t = gated({ id: 7, content: prompt });
+    const parts = ingestAll(t, [
+      promoted(42, 7),
+      msg(43, "assistant", [{ type: "text", text: "MINE" }], { output_tokens: 3 }),
+      status("waiting"),
+    ]);
+    expect(t.awaitingQueuedSubmission).toBe(false);
+    expect(t.turnCursor).toBe(42);
+    // A late queue update (whatever it lists) no longer matters.
+    parts.push(...ingestAll(t, [{ type: "queue_update", chat_id: "c" }]), ...t.finish());
+    expect(t.queuedSubmissionDeadEnd).toBeUndefined();
+    expect(textBlocks(parts)).toEqual(["MINE"]);
+    expect(outputTokens(parts)).toBe(3);
+  });
+
+  it("rejects an identical-content twin stamped with another entry's id", () => {
+    const t = gated({ id: 7, content: prompt });
+    ingestAll(t, [
+      promoted(41, 5), // byte-identical prompt, another client's entry
+      msg(42, "assistant", [{ type: "text", text: "THEIRS" }], { output_tokens: 999 }),
+      status("waiting"),
+    ]);
+    // Never a candidate: an empty queue now means our entry vanished without
+    // materializing (the heuristic would have anchored on the twin here).
+    expect(t.awaitingQueuedSubmission).toBe(true);
+    ingestAll(t, [{ type: "queue_update", chat_id: "c" }]);
+    expect(t.queuedSubmissionDeadEnd).toMatchObject({ kind: "queued_submission_lost" });
+  });
+
+  it("a reconnect replay spanning both twins' promotions attributes each twin to its own turn", () => {
+    // Two clients queued the same prompt (entries 5 and 7); a reconnect
+    // replays both promotions and both runs, followed by ONE connect-time
+    // queue_update — the window the content heuristic cannot disambiguate.
+    const wire: ChatStreamEvent[] = [
+      promoted(41, 5),
+      msg(42, "assistant", [{ type: "text", text: "THEIRS" }], { output_tokens: 11 }),
+      promoted(43, 7),
+      msg(44, "assistant", [{ type: "text", text: "MINE" }], { output_tokens: 3 }),
+      { type: "queue_update", chat_id: "c" },
+      status("waiting"),
+    ];
+    const first = gated({ id: 5, content: prompt });
+    const second = gated({ id: 7, content: prompt });
+    const firstParts = ingestAll(first, wire).concat(first.finish());
+    const secondParts = ingestAll(second, wire).concat(second.finish());
+
+    // The first twin anchors at 41 and settles at the second's promotion.
+    expect(first.turnCursor).toBe(41);
+    expect(first.settledAtPromotionBoundary).toBe(true);
+    expect(textBlocks(firstParts)).toEqual(["THEIRS"]);
+    expect(outputTokens(firstParts)).toBe(11);
+    // The second twin anchors at 43 and attributes only its own run.
+    expect(second.turnCursor).toBe(43);
+    expect(second.settledAtPromotionBoundary).toBe(false);
+    expect(textBlocks(secondParts)).toEqual(["MINE"]);
+    expect(outputTokens(secondParts)).toBe(3);
+  });
+
+  it("a stamped match supersedes an unstamped heuristic candidate and drops its buffer", () => {
+    // Mixed history (e.g. across a server upgrade): an earlier identical
+    // entry promoted without a stamp, then ours with one.
+    const t = gated({ id: 7, content: prompt });
+    const parts = ingestAll(t, [
+      promoted(41), // unstamped → heuristic candidate
+      msg(42, "assistant", [{ type: "text", text: "THEIRS" }], { output_tokens: 999 }), // buffered
+      promoted(43, 7),
+      msg(44, "assistant", [{ type: "text", text: "MINE" }], { output_tokens: 3 }),
+      status("waiting"),
+    ]);
+    parts.push(...t.finish());
+    expect(t.turnCursor).toBe(43);
+    expect(textBlocks(parts)).toEqual(["MINE"]);
+    expect(outputTokens(parts)).toBe(3);
+  });
+
+  it("keeps the heuristic for unstamped snapshots: another entry's stamp is buffered, not a candidate", () => {
+    const t = gated({ id: 7, content: prompt });
+    const parts = ingestAll(t, [
+      promoted(41), // ours, from a server that did not stamp it
+      msg(42, "assistant", [{ type: "text", text: "MINE" }], { output_tokens: 3 }),
+      promoted(43, 9), // the next entry's promotion, identical content
+      { type: "queue_update", chat_id: "c" }, // confirms the candidate
+    ]);
+    parts.push(...t.finish());
+    expect(t.turnCursor).toBe(41);
+    // The drain attributes our run and settles at the stamped promotion.
+    expect(t.settledAtPromotionBoundary).toBe(true);
+    expect(textBlocks(parts)).toEqual(["MINE"]);
+  });
+
+  it("falls back to the heuristic when the submission response carried no entry id", () => {
+    const t = gated({ content: prompt });
+    ingestAll(t, [promoted(41, 5)]);
+    // Nothing to compare the stamp with: first content match anchors, as before.
+    expect(t.awaitingQueuedSubmission).toBe(false);
+    expect(t.turnCursor).toBe(41);
+  });
+
+  it("treats an out-of-contract null stamp as absent (heuristic), not as a mismatch", () => {
+    const t = gated({ id: 7, content: prompt });
+    const ev = msg(42, "user", prompt);
+    (ev.message as unknown as Record<string, unknown>).queued_message_id = null;
+    ingestAll(t, [ev, { type: "queue_update", chat_id: "c" }]);
+    expect(t.awaitingQueuedSubmission).toBe(false);
+    expect(t.turnCursor).toBe(42);
+  });
+
+  it("redial and history_reset replays after an exact anchor re-emit nothing; a revision yields its suffix", () => {
+    const t = gated({ id: 7, content: prompt });
+    const parts = ingestAll(t, [
+      promoted(41, 5),
+      msg(42, "assistant", [{ type: "text", text: "THEIRS" }], { output_tokens: 999 }),
+      promoted(43, 7),
+      msg(44, "assistant", [{ type: "text", text: "Mine" }], { output_tokens: 3 }),
+    ]);
+    // A redial reuses the ORIGINAL cursor (40) and replays everything, and a
+    // history_reset re-sends the full history: both twins' stamps included.
+    const replay: ChatStreamEvent[] = [
+      promoted(41, 5),
+      msg(42, "assistant", [{ type: "text", text: "THEIRS" }], { output_tokens: 999 }),
+      promoted(43, 7),
+      msg(44, "assistant", [{ type: "text", text: "Mine" }], { output_tokens: 3 }),
+    ];
+    parts.push(...ingestAll(t, replay));
+    parts.push(...ingestAll(t, [{ type: "history_reset", chat_id: "c" }, ...replay]));
+    // A same-id revision appending to our message still reconciles through
+    // the emitted-content ledger.
+    parts.push(
+      ...ingestAll(t, [
+        msg(44, "assistant", [{ type: "text", text: "Mine, revised" }], { output_tokens: 5 }),
+        status("waiting"),
+      ]),
+      ...t.finish(),
+    );
+    expect(t.turnCursor).toBe(43);
+    expect(t.settledAtPromotionBoundary).toBe(false);
+    expect(textBlocks(parts).join("")).toBe("Mine, revised");
+    expect(outputTokens(parts)).toBe(5);
+  });
+});
+
 describe("TurnTranslator — promotion settle boundary (#120)", () => {
   const ingestAll = (t: TurnTranslator, events: ChatStreamEvent[]) => {
     const parts = [] as ReturnType<TurnTranslator["ingest"]>;

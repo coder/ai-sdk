@@ -126,6 +126,14 @@ waiting. It attributes nothing of the live run's output to itself — its window
 opens only when its own queued prompt materializes. If it times out first, it
 withdraws its queued prompt rather than leaving it to run unattended.
 
+Recognizing "its own queued prompt" is exact on servers that record the link:
+Coder stamps each message promoted from the queue with its queue entry's id
+(`queued_message_id`, added in coder/coder#29859), so even two jobs queuing
+byte‑identical prompts each get their own run. Older servers send no stamp, and
+the SDK falls back to matching the prompt's content in queue order. There, two
+byte‑identical prompts queued concurrently can be swapped if one stream
+reconnect spans both promotions.
+
 The live run's turn is guarded symmetrically. The server starts the queued
 prompt's run **without ever emitting a terminal settle for the finished one**,
 so the SDK settles the finishing turn the moment the promoted prompt appears on

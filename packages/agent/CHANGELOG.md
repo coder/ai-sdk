@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.12.0](https://github.com/coder/ai-sdk/compare/agent-v0.11.9...agent-v0.12.0) (2026-09-25)
+
+Queued submissions are now anchored by their queued_message_id, improving how the agent tracks and correlates queued messages.
+
+### Highlights
+
+- Queued submissions are now anchored using queued_message_id for more reliable message correlation. ([#248](https://github.com/coder/ai-sdk/pull/248))
+
+### Features
+
+* **agent:** anchor queued submissions by queued_message_id ([#248](https://github.com/coder/ai-sdk/issues/248)) ([1354e6d](https://github.com/coder/ai-sdk/commit/1354e6d09805854ceb4fd79fa4c2a2764d6b294c))
+
 ## [0.11.9](https://github.com/coder/ai-sdk/compare/agent-v0.11.8...agent-v0.11.9) (2026-09-25)
 
 A maintenance release with internal changes only. No user-facing API or behavior changes are documented.

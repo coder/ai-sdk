@@ -287,7 +287,7 @@ against their concrete API shapes.
 | `@ai-sdk/provider`       | `4.0.18` | `LanguageModelV4` spec types (same pin as `@coder/ai-sdk-provider`)                                                     |
 | `@coder/ai-sdk-provider` | `0.4.22` | `createCoder`, `CoderProviderSettings` (published release, not `workspace:*`)                                           |
 | `@coder/ai-sdk-sandbox`  | `0.4.25` | `ensureCoderWorkspace`, `createCoderWorkspace`, `CoderTransport`                                                        |
-| `@coder/ai-sdk-agent`    | `0.11.9` | `CoderLanguageModel` (+ `chatId`, `lastSeenMessageId`, dispose), `CoderChatClient`, `classifyTurnAction`, error classes |
+| `@coder/ai-sdk-agent`    | `0.12.0` | `CoderLanguageModel` (+ `chatId`, `lastSeenMessageId`, dispose), `CoderChatClient`, `classifyTurnAction`, error classes |
 
 The spike depends on the _published_ `@coder/ai-sdk-*` releases rather than
 `workspace:*`, so repo-wide `typecheck`/`test` need no cross-package build

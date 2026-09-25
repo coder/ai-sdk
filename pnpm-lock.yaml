@@ -66,8 +66,8 @@ importers:
         specifier: 4.0.18
         version: 4.0.18
       '@coder/ai-sdk-agent':
-        specifier: 0.11.9
-        version: 0.11.9(ai@7.0.113(zod@4.6.5))(zod@4.6.5)
+        specifier: 0.12.0
+        version: 0.12.0(ai@7.0.113(zod@4.6.5))(zod@4.6.5)
       '@coder/ai-sdk-provider':
         specifier: 0.4.22
         version: 0.4.22(ai@7.0.113(zod@4.6.5))(zod@4.6.5)
@@ -346,8 +346,8 @@ packages:
   '@braidai/lang@1.1.2':
     resolution: {integrity: sha512-qBcknbBufNHlui137Hft8xauQMTZDKdophmLFv05r2eNmdIv/MlPuP4TdUknHG68UdWLgVZwgxVe735HzJNIwA==}
 
-  '@coder/ai-sdk-agent@0.11.9':
-    resolution: {integrity: sha512-oz03ADLz9bIiem2r58jA/UroQn00ABbxP4Cwja00BxDPZCGDDPR8h6KJ1DFN2rdppzshjem95eLYL1NifOvjuQ==}
+  '@coder/ai-sdk-agent@0.12.0':
+    resolution: {integrity: sha512-BrFckJDfIWw1REuEQz18CjZEza6Lb++Rn0g1fWWrqdQMaB6tr5LiqB6ByKtsY/CGvA3v8IlgJwRxqWjA45pnzg==}
     engines: {node: '>=22'}
     peerDependencies:
       ai: ^7.0.0
@@ -2588,7 +2588,7 @@ snapshots:
 
   '@braidai/lang@1.1.2': {}
 
-  '@coder/ai-sdk-agent@0.11.9(ai@7.0.113(zod@4.6.5))(zod@4.6.5)':
+  '@coder/ai-sdk-agent@0.12.0(ai@7.0.113(zod@4.6.5))(zod@4.6.5)':
     dependencies:
       '@ai-sdk/provider': 4.0.18
       ai: 7.0.113(zod@4.6.5)

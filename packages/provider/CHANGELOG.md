@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.4.22](https://github.com/coder/ai-sdk/compare/provider-v0.4.21...provider-v0.4.22) (2026-09-25)
+
+A maintenance release with internal changes and no documented user-facing modifications.
+
 ## [0.4.21](https://github.com/coder/ai-sdk/compare/provider-v0.4.20...provider-v0.4.21) (2026-09-24)
 
 Documentation-only release that rewrites the README files for readability, splits lengthy guides into a dedicated docs/ directory, and corrects inaccuracies uncovered during the rewrite.

@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.11.9](https://github.com/coder/ai-sdk/compare/agent-v0.11.8...agent-v0.11.9) (2026-09-25)
+
+A maintenance release with internal changes only. No user-facing API or behavior changes are documented.
+
 ## [0.11.8](https://github.com/coder/ai-sdk/compare/agent-v0.11.7...agent-v0.11.8) (2026-09-24)
 
 Documentation-only update that rewrites the package READMEs for improved readability, moves lengthy guides into a dedicated docs/ directory, and corrects inaccuracies discovered during the rewrite.

@@ -230,6 +230,13 @@ export interface ChatMessage {
   role: ChatMessageRole;
   content?: ChatMessagePart[];
   usage?: ChatMessageUsage;
+  /**
+   * The id of the queue entry ({@link ChatQueuedMessage.id}) this user
+   * message was promoted from. Set only on messages promoted out of the chat's
+   * queue (coder/coder#29859); omitted for direct sends, edits and synthetic
+   * rows, and by older servers that don't record it — absent means unknown.
+   */
+  queued_message_id?: number;
 }
 
 export interface ChatErrorPayload {

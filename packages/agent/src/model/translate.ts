@@ -144,9 +144,21 @@ function canonicalJson(value: unknown): string {
  * NOTHING to this turn; it only scans for the turn's own user-message
  * snapshot, whose id then becomes the effective turn cursor.
  *
- * Correlation protocol (chatd has no wire-level queue-entry ↔ message id
- * link; the queue is strictly FIFO and both the queue entry and the
- * materialized message expose the same server-side content encoding):
+ * EXACT correlation (issue #119): chatd stamps a user message promoted out of
+ * the queue with the entry's id as `queued_message_id` (coder/coder#29859),
+ * on live events and on `after_id`/`history_reset` replays alike. When a
+ * user snapshot past the cursor carries the stamp and the submission response
+ * gave us the entry's id, the stamp decides alone: equal ⇒ it is this turn's
+ * own message (anchor there, no `queue_update` confirmation needed); different
+ * ⇒ it is another entry's promotion and is never a candidate, even with
+ * byte-identical content — which closes the twin window described below.
+ * Capability is detected per message by the stamp's presence, never by server
+ * version.
+ *
+ * HEURISTIC fallback, used for every user snapshot WITHOUT the stamp (older
+ * servers, which never write it) or when the submission response carried no
+ * entry id. The queue is strictly FIFO and both the queue entry and the
+ * materialized message expose the same server-side content encoding:
  * - a `message` snapshot with role `user`, id past the cursor, and content
  *   structurally equal to the queue entry's becomes the CANDIDATE anchor;
  * - the `queue_update` that chatd emits after every queue change confirms
@@ -163,12 +175,16 @@ function canonicalJson(value: unknown): string {
  * auto-promote the queue after an error settle, so an `error` event while
  * gated means the entry is stuck behind a dead chat; our entry vanishing from
  * `queue_update` without a candidate means it was deleted externally (or its
- * materialized form could not be correlated). Residual ambiguity — identical
- * concurrent submissions promoted within one replay window — needs a wire
- * correlation from chatd and is tracked as a follow-up.
+ * materialized form could not be correlated). The heuristic's residual
+ * ambiguity — byte-identical concurrent submissions promoted within one
+ * replay window, whose per-promotion `queue_update`s collapse into one — is
+ * what the exact stamp resolves; unstamped servers keep it.
  */
 interface QueuedSubmissionGate {
-  /** The queue-entry id from the submission response, when the wire sent one. */
+  /**
+   * The queue-entry id from the submission response, when the wire sent one:
+   * the exact-anchor key and the heuristic's confirmation key.
+   */
   queuedId: number | undefined;
   /** Canonical content of the queue entry; undefined matches any user message. */
   expected: string | undefined;
@@ -201,7 +217,8 @@ export interface TurnTranslatorOptions {
    * correlation protocol. `id`/`content` come from the response's
    * `queued_message`; either may be absent on unexpected wire shapes, which
    * degrades matching (no confirmation / match-any) but never widens
-   * attribution beyond the first observed user message.
+   * attribution beyond the first observed user message. Without `id`, exact
+   * `queued_message_id` anchoring is unavailable and the heuristic applies.
    */
   queuedSubmission?: { id?: number; content?: readonly ChatMessagePart[] };
 }
@@ -666,7 +683,19 @@ export class TurnTranslator {
         // must advance past them whether or not this turn ever anchors.
         if (message.id > this.#maxMessageId) this.#maxMessageId = message.id;
         if (message.id <= this.#turnCursor) break; // pre-turn replay
-        if (message.role === "user" && this.#matchesQueuedContent(gate, message)) {
+        const exact = this.#exactQueuedMatch(gate, message);
+        // Our own promotion, by the server's stamp: anchor now. Anchoring
+        // drops the gate, so a heuristic candidate (and its buffer) from an
+        // unstamped snapshot is discarded with it — the stamp proves that
+        // candidate was not ours.
+        if (exact === true) return this.#anchorQueuedTurn(message.id);
+        // `exact === false`: another entry's promotion, never a candidate
+        // however its content compares; it only falls through to buffering.
+        if (
+          exact === undefined &&
+          message.role === "user" &&
+          this.#matchesQueuedContent(gate, message)
+        ) {
           // Without a queue-entry id there is nothing to confirm against
           // (older wire shapes): anchor on the first match directly.
           if (gate.queuedId === undefined) return this.#anchorQueuedTurn(message.id);
@@ -747,6 +776,20 @@ export class TurnTranslator {
     return [];
   }
 
+  /**
+   * The EXACT verdict for a snapshot (#119): `true`/`false` when it is a
+   * user message stamped with `queued_message_id` and the submission response
+   * gave us the entry id to compare; `undefined` (no exact evidence — use the
+   * heuristic) otherwise. Only a numeric stamp counts, so an out-of-contract
+   * `null` degrades to the heuristic instead of rejecting our own message.
+   */
+  #exactQueuedMatch(gate: QueuedSubmissionGate, message: ChatMessage): boolean | undefined {
+    const stamp = message.queued_message_id;
+    if (message.role !== "user" || typeof stamp !== "number") return undefined;
+    if (gate.queuedId === undefined) return undefined;
+    return stamp === gate.queuedId;
+  }
+
   /** Whether a user-message snapshot's content matches the queued entry's. */
   #matchesQueuedContent(gate: QueuedSubmissionGate, message: ChatMessage): boolean {
     if (gate.expected === undefined) return true;
@@ -759,6 +802,15 @@ export class TurnTranslator {
    * reuse the turn's ORIGINAL cursor) stay filtered by the advanced cursor.
    */
   #anchorQueuedTurn(anchorId: number): LanguageModelV4StreamPart[] {
+    // Both callers pass an id that already cleared the gated cursor filter
+    // (candidates are recorded only past it, and the cursor cannot move while
+    // gated); anything else is a bug here, and anchoring on it would re-open
+    // attribution for earlier turns' replays.
+    if (anchorId <= this.#turnCursor) {
+      throw new Error(
+        `TurnTranslator invariant: queued anchor ${anchorId} is not past cursor ${this.#turnCursor}`,
+      );
+    }
     this.#turnCursor = anchorId;
     this.#queuedGate = undefined;
     return [];

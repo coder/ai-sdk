@@ -285,9 +285,9 @@ against their concrete API shapes.
 | `effect`                 | `3.22.2` | `Effect`, `Layer`, `Stream`, `Schema`, `Context`, `Data`, `Option`, `Function.dual`                                     |
 | `@effect/ai`             | `0.37.0` | `LanguageModel.make` (`ProviderOptions` → encoded response parts), `AiError`, `Prompt`, `Response`, `Tool`              |
 | `@ai-sdk/provider`       | `4.0.18` | `LanguageModelV4` spec types (same pin as `@coder/ai-sdk-provider`)                                                     |
-| `@coder/ai-sdk-provider` | `0.4.22` | `createCoder`, `CoderProviderSettings` (published release, not `workspace:*`)                                           |
-| `@coder/ai-sdk-sandbox`  | `0.4.25` | `ensureCoderWorkspace`, `createCoderWorkspace`, `CoderTransport`                                                        |
-| `@coder/ai-sdk-agent`    | `0.12.0` | `CoderLanguageModel` (+ `chatId`, `lastSeenMessageId`, dispose), `CoderChatClient`, `classifyTurnAction`, error classes |
+| `@coder/ai-sdk-provider` | `0.4.23` | `createCoder`, `CoderProviderSettings` (published release, not `workspace:*`)                                           |
+| `@coder/ai-sdk-sandbox`  | `0.4.26` | `ensureCoderWorkspace`, `createCoderWorkspace`, `CoderTransport`                                                        |
+| `@coder/ai-sdk-agent`    | `0.12.1` | `CoderLanguageModel` (+ `chatId`, `lastSeenMessageId`, dispose), `CoderChatClient`, `classifyTurnAction`, error classes |
 
 The spike depends on the _published_ `@coder/ai-sdk-*` releases rather than
 `workspace:*`, so repo-wide `typecheck`/`test` need no cross-package build

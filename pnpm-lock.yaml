@@ -66,14 +66,14 @@ importers:
         specifier: 4.0.18
         version: 4.0.18
       '@coder/ai-sdk-agent':
-        specifier: 0.12.0
-        version: 0.12.0(ai@7.0.114(zod@4.6.5))(zod@4.6.5)
+        specifier: 0.12.1
+        version: 0.12.1(ai@7.0.114(zod@4.6.5))(zod@4.6.5)
       '@coder/ai-sdk-provider':
-        specifier: 0.4.22
-        version: 0.4.22(ai@7.0.114(zod@4.6.5))(zod@4.6.5)
+        specifier: 0.4.23
+        version: 0.4.23(ai@7.0.114(zod@4.6.5))(zod@4.6.5)
       '@coder/ai-sdk-sandbox':
-        specifier: 0.4.25
-        version: 0.4.25(@ai-sdk/harness@1.0.124(ws@8.21.3)(zod@4.6.5))(@ai-sdk/provider-utils@5.0.47(zod@4.6.5))
+        specifier: 0.4.26
+        version: 0.4.26(@ai-sdk/harness@1.0.124(ws@8.21.3)(zod@4.6.5))(@ai-sdk/provider-utils@5.0.47(zod@4.6.5))
       '@effect/ai':
         specifier: 0.37.0
         version: 0.37.0(@effect/experimental@0.61.1(@effect/platform@0.97.2(effect@3.22.2))(effect@3.22.2))(@effect/platform@0.97.2(effect@3.22.2))(@effect/rpc@0.76.2(@effect/platform@0.97.2(effect@3.22.2))(effect@3.22.2))(effect@3.22.2)
@@ -346,8 +346,8 @@ packages:
   '@braidai/lang@1.1.2':
     resolution: {integrity: sha512-qBcknbBufNHlui137Hft8xauQMTZDKdophmLFv05r2eNmdIv/MlPuP4TdUknHG68UdWLgVZwgxVe735HzJNIwA==}
 
-  '@coder/ai-sdk-agent@0.12.0':
-    resolution: {integrity: sha512-BrFckJDfIWw1REuEQz18CjZEza6Lb++Rn0g1fWWrqdQMaB6tr5LiqB6ByKtsY/CGvA3v8IlgJwRxqWjA45pnzg==}
+  '@coder/ai-sdk-agent@0.12.1':
+    resolution: {integrity: sha512-mjIxCnzwhoyQ4RvpuqZ+AuWodIWFHYaCpRtU5vGwIcNYN4dlPJsF807SoSBvTXS+naL0U4kXuNyTrXq/N0CcEg==}
     engines: {node: '>=22'}
     peerDependencies:
       ai: ^7.0.0
@@ -356,8 +356,8 @@ packages:
       zod:
         optional: true
 
-  '@coder/ai-sdk-provider@0.4.22':
-    resolution: {integrity: sha512-rM3/zyQjhyyKzKfVcTsEPmSnRSZMBFgHMnls5X+tx6y4KzJD2lABYta+Vgzt2LI5HPcZlw5NqAFwMSTUcjRpTg==}
+  '@coder/ai-sdk-provider@0.4.23':
+    resolution: {integrity: sha512-JKVeEi064Xn8R9zy2M0TpBY0tiePBR5lp4KC57Cz/prcijmlvxJT+aSCCrn1wTg2R70r4iACb2Z9T898uoyd1w==}
     engines: {node: '>=22'}
     peerDependencies:
       ai: ^7.0.0
@@ -366,8 +366,8 @@ packages:
       zod:
         optional: true
 
-  '@coder/ai-sdk-sandbox@0.4.25':
-    resolution: {integrity: sha512-no/UQxekNZAP59yfdiu0BNnQYIOcyAXhjCHz7oP9ukEvsvzE/QvDaWtV8Ne3xKUZUQ72u8vujKvuOT0fZKxHsQ==}
+  '@coder/ai-sdk-sandbox@0.4.26':
+    resolution: {integrity: sha512-usbX8azRPIzyo6BaD+Dyl0UXyvs6EEgpuI6HVcfd4QGCRiI+Ujzh/khdDTsAx7YdTvSFl1LBRbVgz50bSYLPnQ==}
     engines: {node: '>=22'}
     peerDependencies:
       '@ai-sdk/harness': ^1.0.0
@@ -2588,7 +2588,7 @@ snapshots:
 
   '@braidai/lang@1.1.2': {}
 
-  '@coder/ai-sdk-agent@0.12.0(ai@7.0.114(zod@4.6.5))(zod@4.6.5)':
+  '@coder/ai-sdk-agent@0.12.1(ai@7.0.114(zod@4.6.5))(zod@4.6.5)':
     dependencies:
       '@ai-sdk/provider': 4.0.18
       ai: 7.0.114(zod@4.6.5)
@@ -2599,7 +2599,7 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  '@coder/ai-sdk-provider@0.4.22(ai@7.0.114(zod@4.6.5))(zod@4.6.5)':
+  '@coder/ai-sdk-provider@0.4.23(ai@7.0.114(zod@4.6.5))(zod@4.6.5)':
     dependencies:
       '@ai-sdk/anthropic': 4.0.63(zod@4.6.5)
       '@ai-sdk/openai-compatible': 3.0.55(zod@4.6.5)
@@ -2608,7 +2608,7 @@ snapshots:
     optionalDependencies:
       zod: 4.6.5
 
-  '@coder/ai-sdk-sandbox@0.4.25(@ai-sdk/harness@1.0.124(ws@8.21.3)(zod@4.6.5))(@ai-sdk/provider-utils@5.0.47(zod@4.6.5))':
+  '@coder/ai-sdk-sandbox@0.4.26(@ai-sdk/harness@1.0.124(ws@8.21.3)(zod@4.6.5))(@ai-sdk/provider-utils@5.0.47(zod@4.6.5))':
     dependencies:
       '@ai-sdk/harness': 1.0.124(ws@8.21.3)(zod@4.6.5)
       '@ai-sdk/provider-utils': 5.0.47(zod@4.6.5)

@@ -61,14 +61,14 @@
     "ws": "^8.21.3"
   },
   "devDependencies": {
-    "@ai-sdk/react": "4.0.117",
+    "@ai-sdk/react": "4.0.119",
     "@types/node": "^26.6.2",
     "@types/ws": "^8.18.1",
-    "ai": "^7.0.114",
+    "ai": "^7.0.116",
     "tsup": "^8.5.1",
     "tsx": "^4.23.15",
     "typescript": "^6.0.3",
-    "vitest": "^5.0.1",
+    "vitest": "^5.0.2",
     "zod": "4.6.5"
   },
   "peerDependencies": {

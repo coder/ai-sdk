@@ -39,7 +39,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install node and pnpm via mise
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
         env:
           # The action exports this token only after cached-binary self-update.
           MISE_GITHUB_TOKEN: ${{ github.token }}
@@ -79,7 +79,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install node and pnpm via mise
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
         env:
           MISE_GITHUB_TOKEN: ${{ github.token }}
         with:
@@ -101,7 +101,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install node and pnpm via mise
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
         env:
           MISE_GITHUB_TOKEN: ${{ github.token }}
         with:
@@ -123,7 +123,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install node and pnpm via mise
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
         env:
           MISE_GITHUB_TOKEN: ${{ github.token }}
         with:
@@ -148,7 +148,7 @@ jobs:
           ref: ${{ inputs.release_tag }}
           persist-credentials: false
       - name: Install node and pnpm via mise
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
         env:
           MISE_GITHUB_TOKEN: ${{ github.token }}
         with:

@@ -14,8 +14,8 @@
     "release": "tsx src/cli.ts"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^4.0.70",
-    "ai": "^7.0.124",
+    "@ai-sdk/anthropic": "^4.0.71",
+    "ai": "^7.0.126",
     "release-please": "~17.11.2",
     "zod": "4.6.5"
   },
@@ -23,7 +23,7 @@
     "@types/node": "^26.6.3",
     "tsx": "^4.23.15",
     "typescript": "^6.0.3",
-    "vitest": "^5.0.2"
+    "vitest": "^5.0.3"
   },
   "engines": {
     "node": ">=22"

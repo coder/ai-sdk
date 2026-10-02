@@ -43,9 +43,9 @@
   },
   "dependencies": {
     "@ai-sdk/provider": "4.0.21",
-    "@coder/ai-sdk-agent": "0.12.6",
-    "@coder/ai-sdk-provider": "0.4.28",
-    "@coder/ai-sdk-sandbox": "0.4.31",
+    "@coder/ai-sdk-agent": "0.12.7",
+    "@coder/ai-sdk-provider": "0.4.29",
+    "@coder/ai-sdk-sandbox": "0.4.32",
     "@effect/ai": "0.37.0",
     "effect": "3.22.2"
   },

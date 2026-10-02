@@ -1254,13 +1254,21 @@ describe("native workspace relay", () => {
 
 async function waitForFile(file: string): Promise<string> {
   const deadline = Date.now() + 5_000;
+  let appeared = false;
   for (;;) {
     try {
-      return await readFile(file, "utf8");
+      // Writers create/truncate the file before writing, so an empty read
+      // means the marker is not written yet. Every caller writes non-empty.
+      const contents = await readFile(file, "utf8");
+      if (contents !== "") return contents;
+      appeared = true;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
-    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${file}`);
+    if (Date.now() >= deadline) {
+      const state = appeared ? "stayed empty" : "never appeared";
+      throw new Error(`timed out waiting for ${file} (${state})`);
+    }
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }

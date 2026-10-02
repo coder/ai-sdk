@@ -61,10 +61,10 @@
     "ws": "^8.22.0"
   },
   "devDependencies": {
-    "@ai-sdk/react": "4.0.129",
+    "@ai-sdk/react": "4.0.130",
     "@types/node": "^26.6.3",
     "@types/ws": "^8.18.2",
-    "ai": "^7.0.126",
+    "ai": "^7.0.127",
     "tsup": "^8.5.1",
     "tsx": "^4.23.15",
     "typescript": "^6.0.3",

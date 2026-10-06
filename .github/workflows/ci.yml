@@ -42,12 +42,12 @@ jobs:
           persist-credentials: false
 
       - name: Set up mise
-        uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
-        # No step-level MISE_GITHUB_TOKEN here: the later `mise install` step
-        # needs a token, and the action exports its `github_token` input
-        # (default: the read-only workflow token) to later steps only when the
-        # variable is not already set. Before that export the action only fetches
-        # the mise binary and signed checksums with plain downloads.
+        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        # The action uses its `github_token` input (default: the read-only
+        # workflow token) and, since v5.1.1, does not export it to later steps
+        # (`persist_github_token` defaults to false). The later `mise install`
+        # step gets the token through its own step-level env instead, so
+        # `pnpm install` lifecycle scripts and tests never see it.
         with:
           # Avoid release-in-progress 404s; mirrors pnpm's minimumReleaseAge posture.
           minimum_release_age: 24h
@@ -56,6 +56,10 @@ jobs:
           install: false
 
       - name: Install node and pnpm via mise
+        env:
+          # mise calls the GitHub API to resolve tool releases. Scope the
+          # read-only token to this step only (avoids API rate limits).
+          MISE_GITHUB_TOKEN: ${{ github.token }}
         run: mise install node pnpm
 
       - name: Resolve pnpm store path
@@ -105,11 +109,11 @@ jobs:
           persist-credentials: false
 
       - name: Install tools via mise
-        uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         env:
           # The action installs the tools itself and no later step runs
-          # `mise install`, so keep the token in this step (pre-setting it skips
-          # the export).
+          # `mise install`, so the token stays in this step: v5.1.1 does not
+          # export it to later steps (`persist_github_token` defaults to false).
           MISE_GITHUB_TOKEN: ${{ github.token }}
         with:
           minimum_release_age: 24h

@@ -280,14 +280,14 @@ against their concrete API shapes.
 <details>
 <summary>Pinned versions and the API surface used</summary>
 
-| Dependency               | Version  | Surface used                                                                                                            |
-| ------------------------ | -------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `effect`                 | `3.22.2` | `Effect`, `Layer`, `Stream`, `Schema`, `Context`, `Data`, `Option`, `Function.dual`                                     |
-| `@effect/ai`             | `0.37.0` | `LanguageModel.make` (`ProviderOptions` → encoded response parts), `AiError`, `Prompt`, `Response`, `Tool`              |
-| `@ai-sdk/provider`       | `4.0.24` | `LanguageModelV4` spec types (same pin as `@coder/ai-sdk-provider`)                                                     |
-| `@coder/ai-sdk-provider` | `0.4.31` | `createCoder`, `CoderProviderSettings` (published release, not `workspace:*`)                                           |
-| `@coder/ai-sdk-sandbox`  | `0.4.34` | `ensureCoderWorkspace`, `createCoderWorkspace`, `CoderTransport`                                                        |
-| `@coder/ai-sdk-agent`    | `0.12.9` | `CoderLanguageModel` (+ `chatId`, `lastSeenMessageId`, dispose), `CoderChatClient`, `classifyTurnAction`, error classes |
+| Dependency               | Version   | Surface used                                                                                                            |
+| ------------------------ | --------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `effect`                 | `3.22.2`  | `Effect`, `Layer`, `Stream`, `Schema`, `Context`, `Data`, `Option`, `Function.dual`                                     |
+| `@effect/ai`             | `0.37.0`  | `LanguageModel.make` (`ProviderOptions` → encoded response parts), `AiError`, `Prompt`, `Response`, `Tool`              |
+| `@ai-sdk/provider`       | `4.0.25`  | `LanguageModelV4` spec types (same pin as `@coder/ai-sdk-provider`)                                                     |
+| `@coder/ai-sdk-provider` | `0.4.32`  | `createCoder`, `CoderProviderSettings` (published release, not `workspace:*`)                                           |
+| `@coder/ai-sdk-sandbox`  | `0.4.35`  | `ensureCoderWorkspace`, `createCoderWorkspace`, `CoderTransport`                                                        |
+| `@coder/ai-sdk-agent`    | `0.12.10` | `CoderLanguageModel` (+ `chatId`, `lastSeenMessageId`, dispose), `CoderChatClient`, `classifyTurnAction`, error classes |
 
 The spike depends on the _published_ `@coder/ai-sdk-*` releases rather than
 `workspace:*`, so repo-wide `typecheck`/`test` need no cross-package build

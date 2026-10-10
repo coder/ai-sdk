@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.4.33](https://github.com/coder/ai-sdk/compare/provider-v0.4.32...provider-v0.4.33) (2026-10-10)
+
+A maintenance release for the provider package with internal changes and no documented user-facing updates.
+
 ## [0.4.32](https://github.com/coder/ai-sdk/compare/provider-v0.4.31...provider-v0.4.32) (2026-10-09)
 
 A maintenance release with no documented user-facing changes.

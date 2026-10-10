@@ -65,9 +65,9 @@
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",
-    "@types/node": "^26.6.4",
+    "@types/node": "^26.6.5",
     "@vitest/coverage-v8": "^5.0.3",
-    "ai": "^7.0.136",
+    "ai": "^7.0.137",
     "publint": "^0.3.25",
     "tsup": "^8.5.1",
     "tsx": "^4.23.15",

@@ -15,12 +15,12 @@
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.78",
-    "ai": "^7.0.136",
+    "ai": "^7.0.137",
     "release-please": "~17.11.2",
     "zod": "4.6.5"
   },
   "devDependencies": {
-    "@types/node": "^26.6.4",
+    "@types/node": "^26.6.5",
     "tsx": "^4.23.15",
     "typescript": "^6.0.3",
     "vitest": "^5.0.3"

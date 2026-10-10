@@ -57,14 +57,14 @@
     "example:structured": "tsx examples/06-structured-output.ts"
   },
   "dependencies": {
-    "@ai-sdk/provider": "4.0.25",
+    "@ai-sdk/provider": "4.0.26",
     "ws": "^8.22.0"
   },
   "devDependencies": {
-    "@ai-sdk/react": "4.0.136",
+    "@ai-sdk/react": "4.0.139",
     "@types/node": "^26.6.4",
     "@types/ws": "^8.18.2",
-    "ai": "^7.0.133",
+    "ai": "^7.0.136",
     "tsup": "^8.5.1",
     "tsx": "^4.23.15",
     "typescript": "^6.0.3",

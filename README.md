@@ -16,8 +16,10 @@ models through your deployment's AI Gateway.
 | [`@coder/ai-sdk-sandbox`](./packages/sandbox)   | [![npm](https://img.shields.io/npm/v/@coder/ai-sdk-sandbox.svg)](https://www.npmjs.com/package/@coder/ai-sdk-sandbox)   | Run CLI coding agents (Claude Code, Codex) under the AI SDK v7 `HarnessAgent` in an isolated **Coder workspace**, with your tools, secrets, and network.                         |
 
 Each package ships on npm independently, with its own README.
-[`@coder/ai-sdk-effect`](./packages/effect) is an unpublished, experimental
-[Effect](https://effect.website) bridge ([#144](https://github.com/coder/ai-sdk/issues/144)).
+[`@coder/ai-sdk-effect`](./packages/effect) bridges the provider, agent, and
+sandbox packages to [Effect](https://effect.website) 4: `effect/ai`
+`LanguageModel` services, typed `AiError` failures, and scoped workspace
+`Layer`s.
 
 ### Which package?
 
@@ -26,6 +28,7 @@ Each package ships on npm independently, with its own README.
 | A **model**: text, streaming, or schema-constrained structured output     | `@coder/ai-sdk-provider` |
 | Coder's **server-side agent**: multi-step tool loop, MCP, workspace tools | `@coder/ai-sdk-agent`    |
 | A **CLI coding agent** (Claude Code, Codex) inside a workspace            | `@coder/ai-sdk-sandbox`  |
+| Any of the above from **Effect** code (`effect/ai`, `Layer`s)             | `@coder/ai-sdk-effect`   |
 
 ## Using them together
 

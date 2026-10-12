@@ -36,6 +36,12 @@
       "package-name": "@coder/ai-sdk-provider",
       "component": "provider",
       "exclude-paths": ["packages/provider/examples"]
+    },
+    "packages/effect": {
+      "package-name": "@coder/ai-sdk-effect",
+      "component": "effect",
+      "initial-version": "0.1.0",
+      "exclude-paths": ["packages/effect/examples"]
     }
   }
 }

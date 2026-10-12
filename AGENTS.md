@@ -8,26 +8,32 @@ this file covers what you need to operate the repo without tripping over it.
 
 - pnpm workspace (`packages/*`). Toolchain (Node, pnpm, actionlint, zizmor) is
   pinned in `mise.toml` and locked in `mise.lock` — use `mise install`.
-- Three independently versioned npm packages, all targeting Vercel AI SDK v7:
+- Four independently versioned npm packages. Three target Vercel AI SDK v7:
   `@coder/ai-sdk-agent`, `@coder/ai-sdk-provider`, `@coder/ai-sdk-sandbox`.
-- Two private packages: `packages/release-please-ai` — release-please run as a
-  library with AI-generated changelog notes; it drives the release workflow —
-  and `packages/effect` (`@coder/ai-sdk-effect`) — an experimental Effect
-  bridge spike (issue #144), unpublished and outside release-please until it
-  graduates.
+  The fourth, `@coder/ai-sdk-effect` (`packages/effect`), bridges them to
+  Effect 4 (`effect/ai`).
+- One private package: `packages/release-please-ai` — release-please run as a
+  library with AI-generated changelog notes; it drives the release workflow.
+- `packages/effect` depends on the other three via `workspace:^`. pnpm
+  publishes each as `^<sibling version in the released commit>`. If an effect
+  change needs an unreleased agent/provider/sandbox change, release that
+  package before merging the effect release PR, or the published range admits
+  a version without it.
 
 ## Validation gates
 
 Run before every push:
 
+- `pnpm -r build` first: effect's typecheck and tests resolve the other
+  packages' `dist/` through `workspace:^`.
 - `pnpm check` — oxfmt format check + oxlint + typecheck (the CI lint gate).
-- `pnpm -r build` and `pnpm -r test`.
+- `pnpm -r test`.
 - Live e2e (optional; needs a real deployment):
   `cd packages/agent && npx vitest run test/e2e` — self-skips unless
   `CODER_URL` and `CODER_SESSION_TOKEN` are set.
 
 CI additionally runs `pnpm publint` and `pnpm attw` (publish hygiene for
-sandbox + provider) and lints workflows with `actionlint` + `zizmor`.
+sandbox, provider, and effect) and lints workflows with `actionlint` + `zizmor`.
 
 Gotchas:
 

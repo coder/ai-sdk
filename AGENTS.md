@@ -90,6 +90,11 @@ owns `CHANGELOG.md` (excluded from oxfmt) — never hand-edit it.
 
 - Release-please ignores `packages/*/examples` because examples are unpublished,
   so commits that only touch a package's examples do not cut a release for it.
+- `bootstrap-sha` in `release-please-config.json` bounds the commit scan while
+  a component has no release yet (effect before `effect-v0.1.0`). Without it,
+  release-please scans the whole history, and GitHub's GraphQL API fails that
+  scan with "Something went wrong while executing your query". Once every
+  component has a release, release-please ignores the setting.
 
 Known quirks when several release PRs are open:
 

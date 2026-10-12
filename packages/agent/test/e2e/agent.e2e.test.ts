@@ -85,14 +85,20 @@ suite("CoderAgent e2e (live Coder)", () => {
       instructions: "Be concise.",
     });
     const result = await agent.stream({ prompt: "Name three primary colors, comma-separated." });
-    if (agent.chatId) cleanup.push(agent.chatId);
 
     let streamed = "";
     let chunks = 0;
-    for await (const delta of result.textStream) {
-      streamed += delta;
-      chunks++;
+    try {
+      for await (const delta of result.textStream) {
+        streamed += delta;
+        chunks++;
+      }
+    } finally {
+      // The model creates the chat after stream() returns, so chatId is not
+      // set yet at that point. Read it once the stream has run.
+      if (agent.chatId) cleanup.push(agent.chatId);
     }
+    expect(agent.chatId).toBeDefined();
     expect(streamed.length).toBeGreaterThan(0);
     expect(await result.text).toBe(streamed);
     expect(chunks).toBeGreaterThanOrEqual(1);

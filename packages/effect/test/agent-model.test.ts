@@ -215,6 +215,10 @@ describe("CoderAgentModel", () => {
     const finish = parts.at(-1);
     expect(finish?.type === "finish" && finish.reason).toBe("stop");
     expect(finish?.type === "finish" && finish.usage.inputTokens.total).toBe(12);
+    // chatd's wire usage (snake_case) is the provider's raw usage.
+    expect(finish?.metadata).toEqual({
+      coder: { rawUsage: { input_tokens: 12, output_tokens: 4 } },
+    });
     expect(fake.created[0]?.system_prompt).toBe("Be brief.");
     expect(fake.interrupted).toEqual([]);
     expect(fake.openStreams).toBe(0);

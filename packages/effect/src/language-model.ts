@@ -19,6 +19,10 @@
  * `effect/ai`, whose tool parts are typed by the toolkit. They are moved to
  * the finish part's `metadata.coder.serverToolCalls` instead; streaming still
  * emits their `tool-params-start` / `tool-params-end` markers.
+ *
+ * `effect/ai`'s `Response.Usage` has no slot for the provider's raw usage
+ * (`LanguageModelV4Usage.raw`), so it travels in the finish part's
+ * `metadata.coder.rawUsage` (see {@link CoderFinishMetadata}).
  */
 import type {
   JSONValue,
@@ -61,6 +65,28 @@ const MODULE = "CoderLanguageModel";
 
 /** The model source: provider settings, or an already-constructed provider. */
 export type ProviderSource = CoderProviderSettings | { readonly provider: CoderProvider };
+
+/**
+ * What the bridge records under the finish part's `metadata.coder`, as plain
+ * JSON. Each key is present only when there is something to report, and the
+ * finish part has no `metadata.coder` when neither is:
+ *
+ * - `serverToolCalls`: provider-executed tool activity for tools outside the
+ *   call's toolkit (see the module docs), in call order.
+ * - `rawUsage`: the provider's raw usage (`LanguageModelV4Usage.raw`), present
+ *   only when the provider reports it. Keys whose value is `undefined` are
+ *   dropped.
+ */
+export type CoderFinishMetadata = {
+  readonly serverToolCalls?: ReadonlyArray<{
+    readonly id: string;
+    readonly name: string;
+    readonly params?: Schema.Json;
+    readonly result?: Schema.Json;
+    readonly isFailure?: boolean;
+  }>;
+  readonly rawUsage?: { readonly [key: string]: Schema.Json };
+};
 
 /**
  * Generation controls forwarded to the underlying model. Options given at
@@ -216,7 +242,7 @@ const generateText = (
           if (serverTools.absorb(content)) continue;
           parts.push(...contentToParts(content));
         }
-        parts.push(serverTools.attach(finishPart(result.finishReason, result.usage)));
+        parts.push(finishPart(result.finishReason, result.usage, serverTools));
         return parts;
       },
       catch: (error) => toAiError({ module: MODULE, method: "generateText", error }),
@@ -259,9 +285,7 @@ const streamText = (
           }
           try {
             if (serverTools.absorb(part)) return Stream.empty;
-            return Stream.fromIterable(
-              streamPartToParts(part).map((p) => (p.type === "finish" ? serverTools.attach(p) : p)),
-            );
+            return Stream.fromIterable(streamPartToParts(part, serverTools));
           } catch (error) {
             return Stream.fail(toAiError({ module: MODULE, method: "streamText", error }));
           }
@@ -590,6 +614,7 @@ const sharedContentToParts = (content: SharedContent): Array<SharedPartEncoded> 
 
 const streamPartToParts = (
   part: Exclude<LanguageModelV4StreamPart, { type: "error" }>,
+  serverTools: ServerToolCalls,
 ): Array<Response.StreamPartEncoded> => {
   switch (part.type) {
     case "text-start":
@@ -620,7 +645,7 @@ const streamPartToParts = (
     case "response-metadata":
       return [responseMetadataPart(part)];
     case "finish":
-      return [finishPart(part.finishReason, part.usage)];
+      return [finishPart(part.finishReason, part.usage, serverTools)];
     // `stream-start` (warnings) and `raw` chunks have no equivalent.
     case "stream-start":
     case "raw":
@@ -641,7 +666,7 @@ interface ServerToolCall {
 
 /**
  * Collects provider-executed tool activity for tools outside the call's
- * toolkit (see the module docs) and attaches it to the finish part.
+ * toolkit (see the module docs) for the finish part's metadata.
  */
 class ServerToolCalls {
   readonly #toolNames: ReadonlySet<string>;
@@ -669,13 +694,13 @@ class ServerToolCalls {
     return false;
   }
 
-  attach(finish: Response.FinishPartEncoded): Response.FinishPartEncoded {
-    if (this.#calls.size === 0) return finish;
+  /** The recorded calls as plain JSON, or `undefined` when there are none. */
+  toJson(): CoderFinishMetadata["serverToolCalls"] {
+    if (this.#calls.size === 0) return undefined;
     // Finish metadata must be plain JSON. Params come from `JSON.parse` and
     // results from the provider's JSON payload; the round trip drops the
     // `undefined` object values that the AI SDK's `JSONValue` allows.
-    const serverToolCalls: Schema.Json = JSON.parse(JSON.stringify([...this.#calls.values()]));
-    return { ...finish, metadata: { coder: { serverToolCalls } } };
+    return JSON.parse(JSON.stringify([...this.#calls.values()]));
   }
 
   #entry(id: string, name: string): ServerToolCall {
@@ -705,23 +730,34 @@ const responseMetadataPart = (metadata: {
   timestamp: metadata.timestamp?.toISOString(),
 });
 
+/** The finish part, with `metadata.coder` only when it has keys. */
 const finishPart = (
   finishReason: LanguageModelV4FinishReason,
   usage: LanguageModelV4Usage,
-): Response.FinishPartEncoded => ({
-  type: "finish",
-  reason: finishReason.unified,
-  usage: {
-    inputTokens: {
-      uncached: usage.inputTokens.noCache,
-      total: usage.inputTokens.total,
-      cacheRead: usage.inputTokens.cacheRead,
-      cacheWrite: usage.inputTokens.cacheWrite,
+  serverTools: ServerToolCalls,
+): Response.FinishPartEncoded => {
+  const part: Response.FinishPartEncoded = {
+    type: "finish",
+    reason: finishReason.unified,
+    usage: {
+      inputTokens: {
+        uncached: usage.inputTokens.noCache,
+        total: usage.inputTokens.total,
+        cacheRead: usage.inputTokens.cacheRead,
+        cacheWrite: usage.inputTokens.cacheWrite,
+      },
+      outputTokens: {
+        total: usage.outputTokens.total,
+        text: usage.outputTokens.text,
+        reasoning: usage.outputTokens.reasoning,
+      },
     },
-    outputTokens: {
-      total: usage.outputTokens.total,
-      text: usage.outputTokens.text,
-      reasoning: usage.outputTokens.reasoning,
-    },
-  },
-});
+  };
+  const coder: { -readonly [K in keyof CoderFinishMetadata]: CoderFinishMetadata[K] } = {};
+  const serverToolCalls = serverTools.toJson();
+  if (serverToolCalls !== undefined) coder.serverToolCalls = serverToolCalls;
+  // The raw usage is a `JSONObject`; the round trip drops `undefined` values.
+  if (usage.raw !== undefined) coder.rawUsage = JSON.parse(JSON.stringify(usage.raw));
+  if (Object.keys(coder).length === 0) return part;
+  return { ...part, metadata: { coder } };
+};

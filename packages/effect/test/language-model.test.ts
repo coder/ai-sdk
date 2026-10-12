@@ -23,6 +23,21 @@ const USAGE = {
   outputTokens: { total: 5, text: 5, reasoning: undefined },
 };
 
+// Provider-shaped raw usage. `undefined` values are allowed by the AI SDK's
+// `JSONObject` but are not JSON, so the finish metadata drops them.
+const RAW_USAGE = {
+  input_tokens: 8,
+  cache_read_tokens: 2,
+  total_cost_micros: 1234,
+  details: { tier: "standard", unset: undefined },
+};
+const RAW_USAGE_JSON = {
+  input_tokens: 8,
+  cache_read_tokens: 2,
+  total_cost_micros: 1234,
+  details: { tier: "standard" },
+};
+
 const fakeModel = (overrides: Partial<LanguageModelV4>): LanguageModelV4 => ({
   specificationVersion: "v4",
   provider: "coder",
@@ -77,6 +92,9 @@ describe("generateText", () => {
       cacheWrite: undefined,
     });
     expect(response.usage.outputTokens).toEqual({ total: 5, text: 5, reasoning: undefined });
+    // No raw usage from the provider: no `metadata.coder` on the finish part.
+    const finish = response.content.find((part) => part.type === "finish");
+    expect(finish?.metadata).toEqual({});
     expect(captured?.prompt).toEqual([
       { role: "user", content: [{ type: "text", text: "Say hello" }] },
     ]);
@@ -331,6 +349,47 @@ describe("generateText", () => {
     });
   });
 
+  it("carries the provider's raw usage as finish metadata.coder.rawUsage", async () => {
+    const model = fakeModel({
+      doGenerate: async () => ({
+        content: [
+          { type: "text", text: "Listed the files." },
+          {
+            type: "tool-call",
+            toolCallId: "srv_1",
+            toolName: "execute",
+            input: `{"command":"ls"}`,
+            providerExecuted: true,
+          },
+          { type: "tool-result", toolCallId: "srv_1", toolName: "execute", result: "a.txt" },
+        ],
+        finishReason: { unified: "stop", raw: undefined },
+        usage: { ...USAGE, raw: RAW_USAGE },
+        warnings: [],
+      }),
+    });
+
+    const response = await Effect.runPromise(
+      Effect.flatMap(service(model), (m) => m.generateText({ prompt: "ls" })),
+    );
+
+    const finish = response.content.find((part) => part.type === "finish");
+    expect(finish?.metadata).toEqual({
+      coder: {
+        rawUsage: RAW_USAGE_JSON,
+        serverToolCalls: [
+          {
+            id: "srv_1",
+            name: "execute",
+            params: { command: "ls" },
+            result: "a.txt",
+            isFailure: false,
+          },
+        ],
+      },
+    });
+  });
+
   describe("tool choice", () => {
     const GetWeather = Tool.make("get_weather", {
       parameters: Schema.Struct({ city: Schema.String }),
@@ -441,6 +500,7 @@ describe("generateText", () => {
     expect(classifyError(auth)).toBe("auth");
 
     expect(classifyError(failure(await run(429)))).toBe("rate-limit");
+    expect(classifyError(failure(await run(402)))).toBe("quota");
 
     const network = failure(await run(undefined));
     expect(network.reason._tag).toBe("NetworkError");
@@ -572,6 +632,33 @@ describe("streamText", () => {
       },
     });
   });
+
+  it.each([
+    ["present", { ...USAGE, raw: RAW_USAGE }, { coder: { rawUsage: RAW_USAGE_JSON } }],
+    ["absent", USAGE, {}],
+  ] as const)(
+    "carries raw usage on the finish part only when %s",
+    async (_label, usage, metadata) => {
+      const model = fakeModel({
+        doStream: async () => ({
+          stream: streamOf([
+            { type: "text-start", id: "t1" },
+            { type: "text-delta", id: "t1", delta: "Hi" },
+            { type: "text-end", id: "t1" },
+            { type: "finish", finishReason: { unified: "stop", raw: "stop" }, usage },
+          ]),
+        }),
+      });
+
+      const parts = await Effect.runPromise(
+        Effect.flatMap(service(model), (m) => Stream.runCollect(m.streamText({ prompt: "hi" }))),
+      );
+
+      const finish = parts.at(-1);
+      expect(finish?.type).toBe("finish");
+      expect(finish?.metadata).toEqual(metadata);
+    },
+  );
 
   it("fails the stream with a typed AiError on error parts", async () => {
     const model = fakeModel({

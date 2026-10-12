@@ -89,6 +89,30 @@ const deterministic = LanguageModel.generateText({ prompt: "Name a color." }).pi
 `CoderLanguageModel.fromModel` (the bridge core) adapts any AI SDK
 `LanguageModelV4`; unit tests use it to run without HTTP.
 
+### Usage metadata
+
+The finish part's `usage` holds the normalized token counts. `effect/ai`'s
+`Response.Usage` has no field for the provider's raw usage
+(`LanguageModelV4Usage.raw`), so the bridge puts it in the finish part's
+`metadata.coder.rawUsage` as plain JSON. The key is present only when the
+provider reports raw usage. For the Coder Agents model, it is chatd's wire
+usage (snake_case fields such as `input_tokens` and `context_limit`). The
+`CoderFinishMetadata` type describes `metadata.coder`, and the same rule
+applies on the generate and stream paths.
+
+```ts
+import * as LanguageModel from "effect/ai/LanguageModel";
+import * as Effect from "effect/Effect";
+import type { CoderFinishMetadata } from "@coder/ai-sdk-effect";
+
+const rawUsage = Effect.gen(function* () {
+  const response = yield* LanguageModel.generateText({ prompt: "hello" });
+  const finish = response.content.find((part) => part.type === "finish");
+  const coder = finish?.metadata.coder as CoderFinishMetadata | undefined;
+  return coder?.rawUsage;
+});
+```
+
 ## `LanguageModel` over Coder Agents
 
 `CoderAgentModel.layer(settings)` implements `LanguageModel` on top of a Coder
@@ -152,7 +176,7 @@ program.pipe(
 ## Typed error taxonomy
 
 `classifyError` maps an `AiError`, a raw AI SDK error, or a raw
-`@coder/ai-sdk-agent` error to one of: `auth`, `rate-limit`,
+`@coder/ai-sdk-agent` error to one of: `auth`, `rate-limit`, `quota`,
 `provider-unavailable`, `malformed-response`, `transport`, `timeout`,
 `unknown`. `isTransient` composes with `Effect.retry`:
 
@@ -180,6 +204,10 @@ instead of adding its own error classes:
 - A `RateLimitError` from an AI Gateway response sets `retryAfter` from a
   valid `Retry-After` header (delay-seconds, or an HTTP-date). Read it as
   `error.retryAfter`, for example to pick a retry delay.
+- HTTP 402 means the account's quota or billing limit is exhausted. It maps
+  to `QuotaExhaustedError` and the `quota` classification, which is not
+  transient: a retry cannot succeed until someone raises the limit. HTTP 429
+  stays a transient `rate-limit`.
 - The reason's `metadata.coder` records the classification and, when the
   source error has them, the HTTP `status`, the Coder Agents `retryable`
   verdict, the chat error's `kind` and `provider`, and the stream's `chatId`.
@@ -196,7 +224,8 @@ instead of adding its own error classes:
 | Source error                                                      | `AiError` reason                                                 | `classifyError`                   | `isTransient` | Reason `isRetryable`            |
 | ----------------------------------------------------------------- | ---------------------------------------------------------------- | --------------------------------- | ------------- | ------------------------------- |
 | `APICallError` or `CoderApiError`, status 401 / 403               | `AuthenticationError` (`InvalidKey` / `InsufficientPermissions`) | `auth`                            | `false`       | `false`                         |
-| status 402 / 429                                                  | `RateLimitError`                                                 | `rate-limit`                      | `true`        | `true`                          |
+| status 402                                                        | `QuotaExhaustedError`                                            | `quota`                           | `false`       | `false`                         |
+| status 429                                                        | `RateLimitError` (`retryAfter` from `Retry-After`)               | `rate-limit`                      | `true`        | `true`                          |
 | status 5xx                                                        | `InternalProviderError`                                          | `provider-unavailable`            | `true`        | `true`                          |
 | status 400                                                        | `InvalidRequestError`                                            | `unknown`                         | `false`       | `false`                         |
 | any other status                                                  | `UnknownError`                                                   | `unknown`                         | `false`       | `false`                         |
@@ -306,6 +335,7 @@ no `effect/ai` equivalent are dropped.
 | Provider-defined tools (not expressible in `LanguageModelV4` call options)                                                                               | `InvalidRequestError`                                       |
 | Response parts of type `custom`, `reasoning-file`, `tool-approval-request`; file payloads that are not raw data (URL / provider-reference / inline-text) | Dropped                                                     |
 | Provider-executed tool calls and results for tools outside the call's toolkit (`effect/ai` types tool parts by toolkit)                                  | Moved to the finish part's `metadata.coder.serverToolCalls` |
+| Provider raw usage (`effect/ai`'s `Response.Usage` has no field for it)                                                                                  | Moved to the finish part's `metadata.coder.rawUsage`        |
 | Tool approval parts in the prompt (`effect/ai` resolves and strips them before the call)                                                                 | Not forwarded                                               |
 | `Prompt` provider options (per-part metadata)                                                                                                            | Not forwarded                                               |
 | `ProviderOptions.span` (telemetry)                                                                                                                       | Not wired into request headers                              |

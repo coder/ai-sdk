@@ -142,9 +142,13 @@ const turnOptions = (
     );
   }
   // chatd has no tool-choice control; only the default "auto" is honest.
-  if (options.toolChoice !== undefined && options.toolChoice.type !== "auto") {
+  // "none" without tools is how the bridge forwards a call with no toolkit:
+  // there are no client tools to suppress, so it asks for nothing.
+  const noTools = options.tools === undefined || options.tools.length === 0;
+  const choice = options.toolChoice?.type;
+  if (choice !== undefined && choice !== "auto" && !(choice === "none" && noTools)) {
     throw invalid(
-      `Coder Agents only support the "auto" tool choice, got "${options.toolChoice.type}"`,
+      `Coder Agents only support the "auto" tool choice, got "${choice}"`,
       "toolChoice",
     );
   }

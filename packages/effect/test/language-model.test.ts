@@ -18,6 +18,7 @@ import * as Stream from "effect/Stream";
 import { describe, expect, it } from "vitest";
 import { classifyError } from "../src/errors.js";
 import * as CoderLanguageModel from "../src/language-model.js";
+import { failure } from "./exit.js";
 
 const USAGE = {
   inputTokens: { total: 10, noCache: 8, cacheRead: 2, cacheWrite: undefined },
@@ -329,25 +330,69 @@ describe("generateText", () => {
     });
   });
 
-  it("fails with MalformedInput for the oneOf tool choice mode", async () => {
+  describe("tool choice", () => {
     const GetWeather = Tool.make("get_weather", {
       parameters: { city: Schema.String },
       success: Schema.Struct({ temperature: Schema.Number }),
     });
-    const toolkit = Toolkit.make(GetWeather);
-    const model = fakeModel({});
+    const GetTime = Tool.make("get_time", { success: Schema.String });
+    const toolkit = Toolkit.make(GetWeather, GetTime);
+    const handlers = toolkit.toLayer({
+      get_weather: () => Effect.succeed({ temperature: 0 }),
+      get_time: () => Effect.succeed("noon"),
+    });
+    const capture = () => {
+      const calls: Array<LanguageModelV4CallOptions> = [];
+      const model = fakeModel({
+        doGenerate: async (options) => {
+          calls.push(options);
+          return {
+            content: [{ type: "text", text: "ok" }],
+            finishReason: { unified: "stop", raw: undefined },
+            usage: USAGE,
+            warnings: [],
+          };
+        },
+      });
+      return { calls, model };
+    };
 
-    const exit = await Effect.runPromiseExit(
-      Effect.flatMap(service(model), (m) =>
-        m.generateText({ prompt: "weather?", toolkit, toolChoice: { oneOf: ["get_weather"] } }),
-      ).pipe(
-        Effect.provide(toolkit.toLayer({ get_weather: () => Effect.succeed({ temperature: 0 }) })),
-      ),
-    );
+    it("forwards the no-toolkit default even without tools", async () => {
+      const { calls, model } = capture();
+      await Effect.runPromise(
+        Effect.flatMap(service(model), (m) => m.generateText({ prompt: "x" })),
+      );
+      expect(calls[0]?.tools).toBeUndefined();
+      expect(calls[0]?.toolChoice).toEqual({ type: "none" });
+    });
 
-    expect(Exit.isFailure(exit)).toBe(true);
-    expect(String(exit)).toContain("MalformedInput");
-    expect(String(exit)).toContain("oneOf");
+    it("maps oneOf to its mode over the narrowed tools", async () => {
+      const { calls, model } = capture();
+      await Effect.runPromise(
+        Effect.flatMap(service(model), (m) =>
+          m.generateText({
+            prompt: "weather?",
+            toolkit,
+            toolChoice: { mode: "required", oneOf: ["get_weather"] },
+          }),
+        ).pipe(Effect.provide(handlers)),
+      );
+      expect(calls[0]?.tools?.map((tool) => tool.name)).toEqual(["get_weather"]);
+      expect(calls[0]?.toolChoice).toEqual({ type: "required" });
+    });
+
+    it("rejects a required tool call when no tool is left to call", async () => {
+      const { calls, model } = capture();
+      const exit = await Effect.runPromiseExit(
+        Effect.flatMap(service(model), (m) =>
+          m.generateText({ prompt: "x", toolkit, toolChoice: { mode: "required", oneOf: [] } }),
+        ).pipe(Effect.provide(handlers)),
+      );
+      const error = failure(exit);
+      expect(error._tag).toBe("MalformedInput");
+      expect(error.message).toContain("needs at least one tool");
+      expect(calls).toHaveLength(0);
+    });
   });
 
   it("fails with MalformedOutput when tool call arguments are not JSON", async () => {
@@ -391,24 +436,15 @@ describe("generateText", () => {
         Effect.flatMap(service(failWith(statusCode)), (m) => m.generateText({ prompt: "x" })),
       );
 
-    const auth = await run(401);
-    expect(Exit.isFailure(auth)).toBe(true);
-    if (Exit.isFailure(auth) && auth.cause._tag === "Fail") {
-      const error = auth.cause.error;
-      expect(error._tag).toBe("HttpResponseError");
-      expect(classifyError(error)).toBe("auth");
-    }
+    const auth = failure(await run(401));
+    expect(auth._tag).toBe("HttpResponseError");
+    expect(classifyError(auth)).toBe("auth");
 
-    const throttled = await run(429);
-    if (Exit.isFailure(throttled) && throttled.cause._tag === "Fail") {
-      expect(classifyError(throttled.cause.error)).toBe("rate-limit");
-    }
+    expect(classifyError(failure(await run(429)))).toBe("rate-limit");
 
-    const network = await run(undefined);
-    if (Exit.isFailure(network) && network.cause._tag === "Fail") {
-      expect(network.cause.error._tag).toBe("HttpRequestError");
-      expect(classifyError(network.cause.error)).toBe("transport");
-    }
+    const network = failure(await run(undefined));
+    expect(network._tag).toBe("HttpRequestError");
+    expect(classifyError(network)).toBe("transport");
   });
 });
 
@@ -563,11 +599,9 @@ describe("streamText", () => {
       Effect.flatMap(service(model), (m) => Stream.runCollect(m.streamText({ prompt: "hi" }))),
     );
 
-    expect(Exit.isFailure(exit)).toBe(true);
-    if (Exit.isFailure(exit) && exit.cause._tag === "Fail") {
-      expect(AiError.isAiError(exit.cause.error)).toBe(true);
-      expect(classifyError(exit.cause.error)).toBe("provider-unavailable");
-    }
+    const error = failure(exit);
+    expect(AiError.isAiError(error)).toBe(true);
+    expect(classifyError(error)).toBe("provider-unavailable");
   });
 
   it("aborts the underlying request when the consuming fiber is interrupted", async () => {

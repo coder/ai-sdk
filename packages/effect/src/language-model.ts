@@ -8,8 +8,8 @@
  * `CoderProviderSettings` or an existing `CoderProvider`.
  *
  * Spike limitations (fail loudly with `MalformedInput` rather than silently
- * degrade): provider-defined tools and the `oneOf` tool-choice mode are not
- * expressible in the `LanguageModelV4` call options. Response parts with no
+ * degrade): provider-defined tools are not expressible in the
+ * `LanguageModelV4` call options. Response parts with no
  * `@effect/ai` equivalent (custom parts, reasoning files, tool approval
  * requests, URL/reference/text file payloads) are dropped.
  *
@@ -292,8 +292,10 @@ const buildCallOptions = (
       const callOptions: LanguageModelV4CallOptions = { ...generation, prompt };
       if (options.tools.length > 0) {
         callOptions.tools = options.tools.map((tool) => toolToV4(tool, method));
-        callOptions.toolChoice = toolChoiceToV4(options.toolChoice, method);
       }
+      // Forwarded even without tools (`@effect/ai` then passes "none"), so the
+      // model sees exactly what the caller asked for.
+      callOptions.toolChoice = toolChoiceToV4(options, method);
       if (options.responseFormat.type === "json") {
         // SAFETY: effect's JsonSchema7 output is structurally a JSON Schema
         // draft-07 document; only the nominal type differs from `JSONSchema7`.
@@ -344,17 +346,31 @@ const toolToV4 = (tool: Tool.Any, method: string) => {
   return result;
 };
 
+/**
+ * `@effect/ai` has already narrowed `tools` to a `oneOf` subset, so `oneOf`
+ * maps to its `mode`. A choice that demands a tool call fails when there are
+ * no tools to call.
+ */
 const toolChoiceToV4 = (
-  toolChoice: LanguageModel.ProviderOptions["toolChoice"],
+  options: LanguageModel.ProviderOptions,
   method: string,
 ): LanguageModelV4ToolChoice => {
+  const { toolChoice } = options;
+  let result: LanguageModelV4ToolChoice;
   if (toolChoice === "auto" || toolChoice === "none" || toolChoice === "required") {
-    return { type: toolChoice };
+    result = { type: toolChoice };
+  } else if ("tool" in toolChoice) {
+    result = { type: "tool", toolName: toolChoice.tool };
+  } else {
+    result = { type: toolChoice.mode ?? "auto" };
   }
-  if ("tool" in toolChoice) {
-    return { type: "tool", toolName: toolChoice.tool };
+  if (options.tools.length === 0 && (result.type === "required" || result.type === "tool")) {
+    throw unsupported(
+      method,
+      `tool choice "${result.type}" needs at least one tool, but the call has none`,
+    );
   }
-  throw unsupported(method, `the "oneOf" tool choice mode cannot be expressed in a gateway call`);
+  return result;
 };
 
 const promptToV4 = (prompt: Prompt.Prompt): LanguageModelV4Prompt => {

@@ -24,6 +24,7 @@ import { describe, expect, it } from "vitest";
 import * as CoderAgentModel from "../src/agent-model.js";
 import * as CoderLanguageModelGen from "../src/language-model.js";
 import { classifyError, isTransient } from "../src/errors.js";
+import { failure, success } from "./exit.js";
 
 const CHAT = "chat-1";
 
@@ -161,11 +162,6 @@ const run = <A, E>(
     ),
   );
 
-const failure = <A, E>(exit: Exit.Exit<A, E>): E => {
-  if (Exit.isFailure(exit) && exit.cause._tag === "Fail") return exit.cause.error;
-  throw new Error(`expected a typed failure, got ${String(exit)}`);
-};
-
 const simpleTurn = (id: number, text: string) => [
   status("running"),
   delta({ type: "text", text }),
@@ -206,7 +202,7 @@ describe("CoderAgentModel", () => {
       ),
     );
 
-    const parts = Chunk.toReadonlyArray(Exit.getOrElse(exit, () => Chunk.empty()));
+    const parts = Chunk.toReadonlyArray(success(exit));
     expect(parts.map((p) => p.type)).toEqual([
       "reasoning-start",
       "reasoning-delta",
@@ -263,9 +259,7 @@ describe("CoderAgentModel", () => {
       ),
     );
 
-    const [first, second] = Exit.getOrElse(exit, () => {
-      throw new Error(String(exit));
-    });
+    const [first, second] = success(exit);
     expect(first.toolCalls.map((c) => [c.name, c.params])).toEqual([
       ["get_weather", { city: "Paris" }],
     ]);
@@ -300,7 +294,7 @@ describe("CoderAgentModel", () => {
     );
 
     // The paused socket survives the call and is closed by the layer's release.
-    expect(Exit.getOrElse(exit, () => -1)).toBe(1);
+    expect(success(exit)).toBe(1);
     expect(fake.openStreams).toBe(0);
     expect(fake.interrupted).toEqual([]);
   });
@@ -322,9 +316,7 @@ describe("CoderAgentModel", () => {
 
     const exit = await run(fake, LanguageModel.generateText({ prompt: "ls" }));
 
-    const response = Exit.getOrElse(exit, () => {
-      throw new Error(String(exit));
-    });
+    const response = success(exit);
     expect(response.text).toBe("Done.");
     const finish = response.content.find((p) => p.type === "finish");
     expect(finish?.metadata).toEqual({
@@ -364,7 +356,7 @@ describe("CoderAgentModel", () => {
       }),
     );
 
-    expect(Exit.getOrElse(exit, () => undefined)).toEqual({ interrupted: [CHAT], open: 0 });
+    expect(success(exit)).toEqual({ interrupted: [CHAT], open: 0 });
     expect(fake.interrupted).toEqual([CHAT]);
   });
 
@@ -585,7 +577,7 @@ describe("CoderAgentModel", () => {
       { chatId: CHAT },
     );
 
-    expect(Exit.getOrElse(exit, () => undefined)).toEqual(["Left", "ok"]);
+    expect(success(exit)).toEqual(["Left", "ok"]);
     expect(fake.submitted).toEqual([]);
   });
 });

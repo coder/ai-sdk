@@ -27,6 +27,10 @@ AI Gateway), `@coder/ai-sdk-agent` (Coder Agents), and `@coder/ai-sdk-sandbox`
   `CoderProvider`. Both auth modes (centralized and BYOK) work unchanged.
 - **Supported calls:** `generateText`, `generateObject`, and `streamText`.
   Structured outputs derive their JSON schema from the Effect Schema you pass.
+- **`toolChoice`:** forwarded on every call, including `"none"` when there is
+  no toolkit. A `oneOf` subset sends only those tools with its `mode`. A
+  choice that requires a tool call fails with `MalformedInput` when no tool
+  is left to call.
 - **`generation` (`GenerationOptions`):** `maxOutputTokens`, `temperature`,
   `topP`, `topK`, penalties, `stopSequences`, `seed`, `reasoning`,
   `providerOptions`. Set at construction time and forwarded on every call.
@@ -253,7 +257,7 @@ Unsupported _inputs_ fail loudly with `MalformedInput`; response parts with no
 
 | Limitation                                                                                                                                               | Behavior                                                    |
 | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| Provider-defined tools; the `oneOf` tool-choice mode (not expressible in `LanguageModelV4` call options)                                                 | `MalformedInput`                                            |
+| Provider-defined tools (not expressible in `LanguageModelV4` call options)                                                                               | `MalformedInput`                                            |
 | Response parts of type `custom`, `reasoning-file`, `tool-approval-request`; file payloads that are not raw data (URL / provider-reference / inline-text) | Dropped                                                     |
 | Provider-executed tool calls and results for tools outside the call's toolkit (`@effect/ai` types tool parts by toolkit)                                 | Moved to the finish part's `metadata.coder.serverToolCalls` |
 | `Prompt` provider options (per-part metadata)                                                                                                            | Not forwarded                                               |

@@ -6,7 +6,7 @@
  *   CODER_URL=https://coder.example.com CODER_SESSION_TOKEN=... \
  *   CODER_MODEL=gpt-5.1 pnpm example:generate
  */
-import * as LanguageModel from "@effect/ai/LanguageModel";
+import * as LanguageModel from "effect/ai/LanguageModel";
 import * as Effect from "effect/Effect";
 import { CoderLanguageModel } from "../src/index.js";
 

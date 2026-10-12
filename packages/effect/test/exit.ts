@@ -1,10 +1,12 @@
 import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
 
 /** The typed failure of `exit`; throws if it succeeded or failed otherwise. */
-export const failure = <A, E>(exit: Exit.Exit<A, E>): E => {
-  if (Exit.isFailure(exit) && exit.cause._tag === "Fail") return exit.cause.error;
-  throw new Error(`expected a typed failure, got ${String(exit)}`);
-};
+export const failure = <A, E>(exit: Exit.Exit<A, E>): E =>
+  Option.getOrThrowWith(
+    Exit.findErrorOption(exit),
+    () => new Error(`expected a typed failure, got ${String(exit)}`),
+  );
 
 /** The value of a successful `exit`; throws otherwise. */
 export const success = <A, E>(exit: Exit.Exit<A, E>): A => {

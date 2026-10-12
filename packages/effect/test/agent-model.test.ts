@@ -9,12 +9,11 @@ import type {
   SubmitToolResultsRequest,
 } from "@coder/ai-sdk-agent";
 import { CoderApiError } from "@coder/ai-sdk-agent";
-import * as AiError from "@effect/ai/AiError";
-import * as LanguageModel from "@effect/ai/LanguageModel";
-import * as Prompt from "@effect/ai/Prompt";
-import * as Tool from "@effect/ai/Tool";
-import * as Toolkit from "@effect/ai/Toolkit";
-import * as Chunk from "effect/Chunk";
+import * as AiError from "effect/ai/AiError";
+import * as LanguageModel from "effect/ai/LanguageModel";
+import * as Prompt from "effect/ai/Prompt";
+import * as Tool from "effect/ai/Tool";
+import * as Toolkit from "effect/ai/Toolkit";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -202,7 +201,7 @@ describe("CoderAgentModel", () => {
       ),
     );
 
-    const parts = Chunk.toReadonlyArray(success(exit));
+    const parts = success(exit);
     expect(parts.map((p) => p.type)).toEqual([
       "reasoning-start",
       "reasoning-delta",
@@ -215,7 +214,7 @@ describe("CoderAgentModel", () => {
     ]);
     const finish = parts.at(-1);
     expect(finish?.type === "finish" && finish.reason).toBe("stop");
-    expect(finish?.type === "finish" && finish.usage.inputTokens).toBe(12);
+    expect(finish?.type === "finish" && finish.usage.inputTokens.total).toBe(12);
     expect(fake.created[0]?.system_prompt).toBe("Be brief.");
     expect(fake.interrupted).toEqual([]);
     expect(fake.openStreams).toBe(0);
@@ -223,7 +222,7 @@ describe("CoderAgentModel", () => {
 
   it("resolves client tool calls with the toolkit and submits their results", async () => {
     const GetWeather = Tool.make("get_weather", {
-      parameters: { city: Schema.String },
+      parameters: Schema.Struct({ city: Schema.String }),
       success: Schema.Struct({ temperature: Schema.Number }),
     });
     const toolkit = Toolkit.make(GetWeather);
@@ -248,7 +247,7 @@ describe("CoderAgentModel", () => {
       fake,
       Effect.gen(function* () {
         const first = yield* LanguageModel.generateText({ prompt: "weather?", toolkit });
-        const prompt = Prompt.merge(
+        const prompt = Prompt.concat(
           Prompt.make("weather?"),
           Prompt.fromResponseParts(first.content),
         );
@@ -345,7 +344,7 @@ describe("CoderAgentModel", () => {
     const exit = await run(
       fake,
       Effect.gen(function* () {
-        const fiber = yield* Effect.fork(
+        const fiber = yield* Effect.forkChild(
           Stream.runCollect(LanguageModel.streamText({ prompt: "hi" })),
         );
         yield* Effect.promise(() => stalled);
@@ -391,7 +390,7 @@ describe("CoderAgentModel", () => {
     const streamed = failure(
       await run(chatFailure, Stream.runDrain(LanguageModel.streamText({ prompt: "hi" }))),
     );
-    expect(streamed._tag).toBe("UnknownError");
+    expect(streamed.reason._tag).toBe("InternalProviderError");
     expect(classifyError(streamed)).toBe("provider-unavailable");
     expect(isTransient(streamed)).toBe(true);
 
@@ -403,12 +402,12 @@ describe("CoderAgentModel", () => {
       message: "Forbidden",
     });
     const api = failure(await run(denied, LanguageModel.generateText({ prompt: "hi" })));
-    expect(api._tag).toBe("HttpResponseError");
+    expect(api.reason._tag).toBe("AuthenticationError");
     expect(classifyError(api)).toBe("auth");
     expect(isTransient(api)).toBe(false);
   });
 
-  it("rejects options chatd cannot honor with MalformedInput", async () => {
+  it("rejects options chatd cannot honor with InvalidRequestError", async () => {
     const sampling = failure(
       await run(
         new FakeClient([]),
@@ -417,8 +416,8 @@ describe("CoderAgentModel", () => {
         ),
       ),
     );
-    expect(sampling._tag).toBe("MalformedInput");
-    expect(sampling.description).toContain("temperature");
+    expect(sampling.reason._tag).toBe("InvalidRequestError");
+    expect(sampling.message).toContain("temperature");
 
     const unknownOption = failure(
       await run(
@@ -430,7 +429,7 @@ describe("CoderAgentModel", () => {
         ),
       ),
     );
-    expect(unknownOption._tag).toBe("MalformedInput");
+    expect(unknownOption.reason._tag).toBe("InvalidRequestError");
 
     const Ping = Tool.make("ping", { success: Schema.String });
     const toolkit = Toolkit.make(Ping);
@@ -442,8 +441,8 @@ describe("CoderAgentModel", () => {
         ),
       ),
     );
-    expect(toolChoice._tag).toBe("MalformedInput");
-    expect(toolChoice.description).toContain("tool choice");
+    expect(toolChoice.reason._tag).toBe("InvalidRequestError");
+    expect(toolChoice.message).toContain("tool choice");
 
     const structured = failure(
       await run(
@@ -451,8 +450,8 @@ describe("CoderAgentModel", () => {
         LanguageModel.generateObject({ prompt: "hi", schema: Schema.Struct({ a: Schema.String }) }),
       ),
     );
-    expect(structured._tag).toBe("MalformedInput");
-    expect(structured.description).toContain("structured output");
+    expect(structured.reason._tag).toBe("InvalidRequestError");
+    expect(structured.message).toContain("structured output");
   });
 
   it("rejects a toolkit change after the chat is created", async () => {
@@ -469,8 +468,8 @@ describe("CoderAgentModel", () => {
     );
 
     const error = failure(exit);
-    expect(error._tag).toBe("MalformedInput");
-    expect(error.description).toContain("toolkit cannot change");
+    expect(error.reason._tag).toBe("InvalidRequestError");
+    expect(error.message).toContain("toolkit cannot change");
     expect(fake.created).toHaveLength(1);
     expect(fake.messages).toEqual([]);
   });
@@ -536,7 +535,7 @@ describe("CoderAgentModel", () => {
         ),
       ),
     );
-    expect(error._tag).toBe("MalformedInput");
+    expect(error.reason._tag).toBe("InvalidRequestError");
     expect(fake.submitted).toEqual([]);
   });
 
@@ -565,7 +564,7 @@ describe("CoderAgentModel", () => {
     const exit = await run(
       fake,
       Effect.gen(function* () {
-        const rejected = yield* Effect.either(
+        const rejected = yield* Effect.result(
           LanguageModel.generateText({ prompt: resume, toolkit }).pipe(
             CoderAgentModel.withAgentOptions({ model: "big" }),
           ),
@@ -577,7 +576,7 @@ describe("CoderAgentModel", () => {
       { chatId: CHAT },
     );
 
-    expect(success(exit)).toEqual(["Left", "ok"]);
+    expect(success(exit)).toEqual(["Failure", "ok"]);
     expect(fake.submitted).toEqual([]);
   });
 });

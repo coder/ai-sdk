@@ -1,6 +1,6 @@
 import { APICallError, JSONParseError, TypeValidationError } from "@ai-sdk/provider";
 import { CoderApiError, CoderChatError, CoderStreamError } from "@coder/ai-sdk-agent";
-import * as AiError from "@effect/ai/AiError";
+import * as AiError from "effect/ai/AiError";
 import { describe, expect, it } from "vitest";
 import { classifyError, classifyStatus, isTransient, toAiError } from "../src/errors.js";
 
@@ -34,41 +34,59 @@ describe("toAiError", () => {
   const map = (error: unknown): AiError.AiError =>
     toAiError({ module: "Test", method: "call", error });
 
-  it("maps an HTTP status failure to HttpResponseError, preserving details", () => {
+  it("maps an HTTP status failure to its reason, preserving details", () => {
     const error = map(apiCallError(429));
-    expect(error._tag).toBe("HttpResponseError");
-    const response = error as AiError.HttpResponseError;
-    expect(response.response.status).toBe(429);
-    expect(response.response.headers).toEqual({ "x-request-id": "req_123" });
-    expect(response.body).toBe(`{"error":"failure"}`);
-    expect(response.description).toContain("classified: rate-limit");
-    expect(response.module).toBe("Test");
-    expect(response.method).toBe("call");
+    expect(error.module).toBe("Test");
+    expect(error.method).toBe("call");
+    const reason = error.reason as AiError.RateLimitError;
+    expect(reason._tag).toBe("RateLimitError");
+    expect(reason.http?.request.url).toContain("/chat/completions");
+    expect(reason.http?.response).toEqual({ status: 429, headers: { "x-request-id": "req_123" } });
+    expect(reason.http?.body).toBe(`{"error":"failure"}`);
+    expect(reason.metadata).toEqual({
+      coder: { classification: "rate-limit", status: 429, message: "gateway failure (429)" },
+    });
   });
 
-  it("maps a network failure (no status) to HttpRequestError", () => {
-    const error = map(apiCallError(undefined));
-    expect(error._tag).toBe("HttpRequestError");
-    expect((error as AiError.HttpRequestError).reason).toBe("Transport");
+  it.each([
+    [400, "InvalidRequestError"],
+    [401, "AuthenticationError"],
+    [402, "RateLimitError"],
+    [403, "AuthenticationError"],
+    [404, "UnknownError"],
+    [503, "InternalProviderError"],
+  ] as const)("maps HTTP %d to %s", (status, tag) => {
+    expect(map(apiCallError(status)).reason._tag).toBe(tag);
   });
 
-  it("maps parse/validation failures to MalformedOutput", () => {
+  it("maps a network failure (no status) to NetworkError", () => {
+    const reason = map(apiCallError(undefined)).reason as AiError.NetworkError;
+    expect(reason._tag).toBe("NetworkError");
+    expect(reason.reason).toBe("TransportError");
+  });
+
+  it("maps parse/validation failures to InvalidOutputError", () => {
     const parse = map(new JSONParseError({ text: "not json", cause: new Error("bad") }));
-    expect(parse._tag).toBe("MalformedOutput");
+    expect(parse.reason._tag).toBe("InvalidOutputError");
     const validation = map(new TypeValidationError({ value: 1, cause: new Error("bad") }));
-    expect(validation._tag).toBe("MalformedOutput");
+    expect(validation.reason._tag).toBe("InvalidOutputError");
   });
 
-  it("passes an existing AiError through unchanged", () => {
-    const original = new AiError.MalformedInput({ module: "Test", method: "call" });
+  it("passes an existing AiError through unchanged and wraps a bare reason", () => {
+    const original = AiError.make({
+      module: "Other",
+      method: "call",
+      reason: new AiError.InvalidRequestError({}),
+    });
     expect(map(original)).toBe(original);
+    const reason = new AiError.ContentPolicyError({ description: "blocked" });
+    expect(map(reason).reason).toBe(reason);
   });
 
-  it("maps anything else to UnknownError with the cause attached", () => {
-    const cause = new Error("boom");
-    const error = map(cause);
-    expect(error._tag).toBe("UnknownError");
-    expect((error as AiError.UnknownError).cause).toBe(cause);
+  it("maps anything else to UnknownError with the message", () => {
+    const error = map(new Error("boom"));
+    expect(error.reason._tag).toBe("UnknownError");
+    expect(error.message).toContain("boom");
   });
 });
 
@@ -103,7 +121,11 @@ describe("classifyError / isTransient", () => {
   });
 
   it("classifies malformed output as terminal", () => {
-    const malformed = new AiError.MalformedOutput({ module: "T", method: "m" });
+    const malformed = AiError.make({
+      module: "T",
+      method: "m",
+      reason: new AiError.InvalidOutputError({ description: "bad" }),
+    });
     expect(classifyError(malformed)).toBe("malformed-response");
     expect(isTransient(malformed)).toBe(false);
   });
@@ -120,7 +142,7 @@ describe("Coder Agents errors", () => {
       chatId: "c1",
     });
 
-  it("maps CoderApiError to HttpResponseError with its status", () => {
+  it("maps CoderApiError to a status reason with its request", () => {
     const error = map(
       new CoderApiError({
         status: 401,
@@ -130,12 +152,12 @@ describe("Coder Agents errors", () => {
         detail: "token expired",
       }),
     );
-    expect(error._tag).toBe("HttpResponseError");
-    const response = error as AiError.HttpResponseError;
-    expect(response.response.status).toBe(401);
-    expect(response.request.method).toBe("POST");
-    expect(response.request.url).toBe("/api/experimental/chats");
-    expect(response.body).toBe("token expired");
+    const reason = error.reason as AiError.AuthenticationError;
+    expect(reason._tag).toBe("AuthenticationError");
+    expect(reason.http?.response?.status).toBe(401);
+    expect(reason.http?.request.method).toBe("POST");
+    expect(reason.http?.request.url).toBe("/api/experimental/chats");
+    expect(reason.http?.body).toBe("token expired");
     expect(classifyError(error)).toBe("auth");
     expect(isTransient(error)).toBe(false);
   });
@@ -155,21 +177,27 @@ describe("Coder Agents errors", () => {
     for (const retryable of [true, false]) {
       const raw = streamError(retryable);
       const mapped = map(raw);
-      expect(mapped._tag).toBe("HttpRequestError");
-      expect((mapped as AiError.HttpRequestError).cause).toBe(raw);
+      const reason = mapped.reason as AiError.UnknownError;
+      expect(reason._tag).toBe("UnknownError");
+      expect(reason.metadata).toEqual({
+        coder: { classification: "transport", retryable, chatId: "c1" },
+      });
       expect(classifyError(mapped)).toBe("transport");
       expect(classifyError(raw)).toBe("transport");
       expect(isTransient(mapped)).toBe(retryable);
       expect(isTransient(raw)).toBe(retryable);
+      expect(mapped.isRetryable).toBe(false);
     }
   });
 
   it("classifies a turn timeout as a retryable timeout", () => {
     const raw = new CoderChatError({ message: "too slow", kind: "timeout", retryable: true });
     const mapped = map(raw);
-    expect(mapped._tag).toBe("UnknownError");
-    expect((mapped as AiError.UnknownError).cause).toBe(raw);
-    expect(mapped.description).toContain("classified: timeout");
+    const reason = mapped.reason as AiError.UnknownError;
+    expect(reason._tag).toBe("UnknownError");
+    expect(reason.metadata).toEqual({
+      coder: { classification: "timeout", retryable: true, kind: "timeout" },
+    });
     expect(classifyError(mapped)).toBe("timeout");
     expect(isTransient(mapped)).toBe(true);
   });
@@ -188,8 +216,31 @@ describe("Coder Agents errors", () => {
       expect(classifyError(map(raw))).toBe(reason);
       expect(isTransient(raw)).toBe(transient);
       expect(isTransient(map(raw))).toBe(transient);
+      // Effect's own retry flag never invites a retry the verdict ruled out.
+      if (!transient) expect(map(raw).isRetryable).toBe(false);
     },
   );
+
+  it("keeps the chat error's status, kind, and provider in metadata", () => {
+    const raw = new CoderChatError({
+      message: "upstream failed",
+      kind: "generic",
+      provider: "anthropic",
+      status_code: 529,
+      retryable: true,
+    });
+    const reason = map(raw).reason as AiError.InternalProviderError;
+    expect(reason._tag).toBe("InternalProviderError");
+    expect(reason.metadata).toEqual({
+      coder: {
+        classification: "provider-unavailable",
+        retryable: true,
+        status: 529,
+        kind: "generic",
+        provider: "anthropic",
+      },
+    });
+  });
 
   it("recognizes agent errors from another installed copy by name", () => {
     // Stand-ins for classes from a duplicate @coder/ai-sdk-agent install:

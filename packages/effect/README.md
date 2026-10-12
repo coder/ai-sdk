@@ -10,27 +10,28 @@ An [Effect](https://effect.website) bridge for `@coder/ai-sdk-provider` (Coder
 AI Gateway), `@coder/ai-sdk-agent` (Coder Agents), and `@coder/ai-sdk-sandbox`
 (workspace sandboxes):
 
-| Feature                                                                              | API                                                                      |
-| ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------ |
-| [`@effect/ai` `LanguageModel` over AI Gateway](#languagemodel-over-coder-ai-gateway) | `CoderLanguageModel.layer`, `CoderLanguageModel.fromModel`               |
-| [`@effect/ai` `LanguageModel` over Coder Agents](#languagemodel-over-coder-agents)   | `CoderAgentModel.layer`, `CoderAgentModel.withAgentOptions`              |
-| [Typed `AiError` failures](#typed-error-taxonomy)                                    | `classifyError`, `isTransient`                                           |
-| [Effect Schema → Vercel AI SDK schemas](#effect-schema--vercel-ai-sdk-schemas)       | `toAiSdkSchema`                                                          |
-| [Scoped workspace `Layer`s](#scoped-sandbox-layers)                                  | `acquireWorkspace` / `layerWorkspace`, `acquireSession` / `layerSession` |
+| Feature                                                                             | API                                                                      |
+| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| [`effect/ai` `LanguageModel` over AI Gateway](#languagemodel-over-coder-ai-gateway) | `CoderLanguageModel.layer`, `CoderLanguageModel.fromModel`               |
+| [`effect/ai` `LanguageModel` over Coder Agents](#languagemodel-over-coder-agents)   | `CoderAgentModel.layer`, `CoderAgentModel.withAgentOptions`              |
+| [Typed `AiError` failures](#typed-error-taxonomy)                                   | `classifyError`, `isTransient`                                           |
+| [Effect Schema → Vercel AI SDK schemas](#effect-schema--vercel-ai-sdk-schemas)      | `toAiSdkSchema`                                                          |
+| [Scoped workspace `Layer`s](#scoped-sandbox-layers)                                 | `acquireWorkspace` / `layerWorkspace`, `acquireSession` / `layerSession` |
 
 ## `LanguageModel` over Coder AI Gateway
 
-`CoderLanguageModel.layer(modelId, source, generation?)` implements `@effect/ai`'s
-`LanguageModel` service on top of the gateway.
+`CoderLanguageModel.layer(modelId, source, generation?)` implements Effect 4's
+`effect/ai` `LanguageModel` service on top of the gateway.
 
 - **`source`:** `CoderProviderSettings`, or `{ provider }` for an existing
   `CoderProvider`. Both auth modes (centralized and BYOK) work unchanged.
 - **Supported calls:** `generateText`, `generateObject`, and `streamText`.
-  Structured outputs derive their JSON schema from the Effect Schema you pass.
+  Tool parameters and structured outputs derive their JSON schema from the
+  Effect Schema you pass (see [JSON Schema dialect](#json-schema-dialect)).
 - **`toolChoice`:** forwarded on every call, including `"none"` when there is
   no toolkit. A `oneOf` subset sends only those tools with its `mode`. A
-  choice that requires a tool call fails with `MalformedInput` when no tool
-  is left to call.
+  choice that requires a tool call fails with `InvalidRequestError` when no
+  tool is left to call.
 - **`generation` (`GenerationOptions`):** `maxOutputTokens`, `temperature`,
   `topP`, `topK`, penalties, `stopSequences`, `seed`, `reasoning`,
   `providerOptions`. Set at construction time and forwarded on every call.
@@ -39,7 +40,7 @@ AI Gateway), `@coder/ai-sdk-agent` (Coder Agents), and `@coder/ai-sdk-sandbox`
   construction options; nested overrides merge, innermost first.
 
 ```ts
-import * as LanguageModel from "@effect/ai/LanguageModel";
+import * as LanguageModel from "effect/ai/LanguageModel";
 import * as Effect from "effect/Effect";
 import { CoderLanguageModel } from "@coder/ai-sdk-effect";
 
@@ -62,7 +63,7 @@ program.pipe(
 ```
 
 ```ts
-import * as LanguageModel from "@effect/ai/LanguageModel";
+import * as LanguageModel from "effect/ai/LanguageModel";
 import { CoderLanguageModel } from "@coder/ai-sdk-effect";
 
 const deterministic = LanguageModel.generateText({ prompt: "Name a color." }).pipe(
@@ -86,18 +87,18 @@ agent loop runs server-side; the layer adapts it to Effect.
 - **One chat per layer.** chatd keeps the history. Each call sends only the
   prompt's newest user message, or the results of client tools. System
   messages apply when the chat is created. Calls are single-flight.
-- **Tools.** Toolkit tools run client-side: `@effect/ai` resolves the tool
+- **Tools.** Toolkit tools run client-side: `effect/ai` resolves the tool
   calls, and the next call sends the results back to the same chat. chatd's
   server-side tools are reported in the finish part's
   `metadata.coder.serverToolCalls`.
   chatd registers client tools only when the chat is created, so the toolkit
   cannot change afterwards, and only the `auto` tool choice is supported.
-  Other cases fail with `MalformedInput`. `toolChoice` governs toolkit tools
+  Other cases fail with `InvalidRequestError`. `toolChoice` governs toolkit tools
   only; chatd's server-side tools come from `settings` (`workspaceId`,
   `mcpServerIds`). A chat resumed with `settings.chatId` keeps the client
   tools it was created with, and the layer cannot verify them: pass the same
   toolkit, and set `requestTimeoutMs`.
-- **Structured output.** `generateObject` fails with `MalformedInput`: chatd
+- **Structured output.** `generateObject` fails with `InvalidRequestError`: chatd
   enforces no schema. Use the AI Gateway model for structured output.
 - **Interruption.** Interrupting the fiber aborts the call. The agent then
   interrupts the chat's run server-side, exactly once.
@@ -110,10 +111,10 @@ agent loop runs server-side; the layer adapts it to Effect.
   progress.
 - **Generation options.** Sampling controls (`temperature`,
   `maxOutputTokens`, ...) and `providerOptions` other than `coder` fail with
-  `MalformedInput`, because chatd chooses them.
+  `InvalidRequestError`, because chatd chooses them.
 
 ```ts
-import * as LanguageModel from "@effect/ai/LanguageModel";
+import * as LanguageModel from "effect/ai/LanguageModel";
 import * as Effect from "effect/Effect";
 import { CoderAgentModel } from "@coder/ai-sdk-effect";
 
@@ -141,7 +142,7 @@ program.pipe(
 `unknown`. `isTransient` composes with `Effect.retry`:
 
 ```ts
-import * as LanguageModel from "@effect/ai/LanguageModel";
+import * as LanguageModel from "effect/ai/LanguageModel";
 import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
 import { isTransient } from "@coder/ai-sdk-effect";
@@ -155,33 +156,44 @@ const resilient = LanguageModel.generateText({ prompt: "hello" }).pipe(
 );
 ```
 
+`effect/ai` fails with one `AiError` class whose `reason` is one of a closed
+set of tagged classes, so the bridge maps every failure onto those reasons
+instead of adding its own error classes:
+
+- HTTP failures keep the request method and URL, the response status and
+  headers, and the body in the reason's `http` field.
+- The reason's `metadata.coder` records the classification and, when the
+  source error has them, the HTTP `status`, the Coder Agents `retryable`
+  verdict, the chat error's `kind` and `provider`, and the stream's `chatId`.
+- An explicit Coder Agents verdict decides `isTransient`. The agent sets
+  `CoderStreamError.isRetryable` to `false` when replaying the prompt would
+  repeat server-side effects.
+- A `false` verdict turns a reason that Effect calls retryable into an
+  `UnknownError`, so the reason's own `isRetryable` never invites that retry.
+- Fiber interruption stays Effect interruption. It never becomes an `AiError`.
+
 <details>
-<summary>Why there are no Coder-specific error classes</summary>
+<summary>How source errors map to <code>AiError</code> reasons</summary>
 
-`@effect/ai`'s `AiError` is a **closed union**, so the bridge cannot add its
-own error classes to the `LanguageModel` failure channel (a delta from the
-tracking issue's sketch). Failures are mapped losslessly into that union
-(`HttpResponseError` keeps status, headers, and body), and `classifyError`
-recovers the Coder-oriented taxonomy.
+| Source error                                                      | `AiError` reason                                                 | `classifyError`                   | `isTransient` | Reason `isRetryable`            |
+| ----------------------------------------------------------------- | ---------------------------------------------------------------- | --------------------------------- | ------------- | ------------------------------- |
+| `APICallError` or `CoderApiError`, status 401 / 403               | `AuthenticationError` (`InvalidKey` / `InsufficientPermissions`) | `auth`                            | `false`       | `false`                         |
+| status 402 / 429                                                  | `RateLimitError`                                                 | `rate-limit`                      | `true`        | `true`                          |
+| status 5xx                                                        | `InternalProviderError`                                          | `provider-unavailable`            | `true`        | `true`                          |
+| status 400                                                        | `InvalidRequestError`                                            | `unknown`                         | `false`       | `false`                         |
+| any other status                                                  | `UnknownError`                                                   | `unknown`                         | `false`       | `false`                         |
+| `APICallError` without a status (network failure)                 | `NetworkError` (`TransportError`)                                | `transport`                       | `true`        | `true`                          |
+| `CoderStreamError`                                                | `UnknownError`                                                   | `transport`                       | `isRetryable` | `false`                         |
+| `CoderChatError` with `kind: "timeout"`                           | `UnknownError`                                                   | `timeout`                         | `retryable`   | `false`                         |
+| `CoderChatError` with `kind: "stream_closed"`                     | `UnknownError`                                                   | `transport`                       | `retryable`   | `false`                         |
+| any other `CoderChatError`                                        | from `statusCode` as above, else `UnknownError`                  | from `statusCode`, else `unknown` | `retryable`   | `false` if `retryable` is false |
+| `JSONParseError`, `TypeValidationError`, `EmptyResponseBodyError` | `InvalidOutputError`                                             | `malformed-response`              | `false`       | `true` (Effect's view)          |
+| `NoSuchModelError`, `InvalidArgumentError`                        | `InvalidRequestError`                                            | `unknown`                         | `false`       | `false`                         |
+| anything else                                                     | `UnknownError`                                                   | `unknown`                         | `false`       | `false`                         |
 
-</details>
-
-<details>
-<summary>How <code>@coder/ai-sdk-agent</code> errors map</summary>
-
-| Agent error                                   | `AiError`                             | Reason                                     | `isTransient`   |
-| --------------------------------------------- | ------------------------------------- | ------------------------------------------ | --------------- |
-| `CoderApiError`                               | `HttpResponseError` (status, path)    | from the status, like gateway errors       | from the reason |
-| `CoderStreamError`                            | `HttpRequestError` (error as `cause`) | `transport`                                | `isRetryable`   |
-| `CoderChatError` with `kind: "timeout"`       | `UnknownError` (error as `cause`)     | `timeout`                                  | `retryable`     |
-| `CoderChatError` with `kind: "stream_closed"` | `UnknownError` (error as `cause`)     | `transport`                                | `retryable`     |
-| Any other `CoderChatError`                    | `UnknownError` (error as `cause`)     | from `statusCode` if present, or `unknown` | `retryable`     |
-
-An explicit verdict wins over the reason. The agent sets
-`CoderStreamError.isRetryable` to `false` when replaying the prompt would
-repeat server-side effects, so such a failure is not transient even though
-its reason is `transport`. Fiber interruption stays Effect interruption; it
-never becomes an `AiError`.
+`classifyError` reads `metadata.coder.classification`. For an `AiError` that
+`effect/ai` raised itself (no `metadata.coder`), it classifies by the reason
+tag, and `isTransient` follows the classification.
 
 </details>
 
@@ -206,14 +218,30 @@ const getWeather = tool({
 <summary>Why a bare Effect standard schema fails</summary>
 
 AI SDK v7 accepts Standard Schema V1 values, but deriving the wire JSON schema
-requires the optional `~standard.jsonSchema` converter. `Schema.standardSchemaV1`
+requires the optional `~standard.jsonSchema` converter. `Schema.toStandardSchemaV1`
 does not emit it, so passing a bare Effect standard schema throws
 `Standard schema vendor 'effect' does not support JSON Schema conversion`.
 
 `toAiSdkSchema` derives the JSON schema from the Effect Schema (the same
-derivation `@effect/ai` uses), and validation decodes through it.
+derivation `effect/ai` uses), and validation decodes through it.
 
 </details>
+
+### JSON Schema dialect
+
+Effect 4 derives JSON Schema draft 2020-12. The AI SDK's `JSONSchema7` type is
+draft-07, so the bridge converts every schema it sends (tool parameters,
+structured outputs, `toJsonSchema`, `toAiSdkSchema`) with Effect's
+`JsonSchema.toDocumentDraft07`. The conversion moves `$defs` to `definitions`
+and rewrites tuples to array `items`. It throws on keywords draft-07 cannot
+express.
+
+Two effects of Effect 4's derivation show on the wire:
+
+- Objects set `additionalProperties: true`, which matches the decoder's
+  default of ignoring extra keys.
+- `Schema.Number` also accepts the strings `"Infinity"`, `"-Infinity"`, and
+  `"NaN"`. Use `Schema.Finite` (or `Schema.Int`) for plain JSON numbers.
 
 ## Scoped sandbox `Layer`s
 
@@ -252,14 +280,15 @@ program.pipe(
 
 ## Spike caveats
 
-Unsupported _inputs_ fail loudly with `MalformedInput`; response parts with no
-`@effect/ai` equivalent are dropped.
+Unsupported _inputs_ fail loudly with `InvalidRequestError`; response parts with
+no `effect/ai` equivalent are dropped.
 
 | Limitation                                                                                                                                               | Behavior                                                    |
 | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| Provider-defined tools (not expressible in `LanguageModelV4` call options)                                                                               | `MalformedInput`                                            |
+| Provider-defined tools (not expressible in `LanguageModelV4` call options)                                                                               | `InvalidRequestError`                                       |
 | Response parts of type `custom`, `reasoning-file`, `tool-approval-request`; file payloads that are not raw data (URL / provider-reference / inline-text) | Dropped                                                     |
-| Provider-executed tool calls and results for tools outside the call's toolkit (`@effect/ai` types tool parts by toolkit)                                 | Moved to the finish part's `metadata.coder.serverToolCalls` |
+| Provider-executed tool calls and results for tools outside the call's toolkit (`effect/ai` types tool parts by toolkit)                                  | Moved to the finish part's `metadata.coder.serverToolCalls` |
+| Tool approval parts in the prompt (`effect/ai` resolves and strips them before the call)                                                                 | Not forwarded                                               |
 | `Prompt` provider options (per-part metadata)                                                                                                            | Not forwarded                                               |
 | `ProviderOptions.span` (telemetry)                                                                                                                       | Not wired into request headers                              |
 
@@ -271,23 +300,23 @@ workspace is rolled back best-effort per the teardown policy.
 <details>
 <summary>Phase 2 (not in this package yet)</summary>
 
-- Publishing decision: versioning, `peerDependency` policy on
-  `effect`/`@effect/ai`, release-please wiring, `workspace:*` deps.
+- Publishing decision: versioning, `peerDependency` policy on `effect`,
+  release-please wiring, `workspace:*` deps.
 
 </details>
 
 ## Pinned surface
 
-Effect's AI packages move fast, so the spike pins exact versions and codes
-against their concrete API shapes.
+Effect's AI modules (`effect/ai/*`) are marked unstable, so the spike pins
+exact versions and codes against their concrete API shapes.
 
 <details>
 <summary>Pinned versions and the API surface used</summary>
 
 | Dependency               | Version   | Surface used                                                                                                            |
 | ------------------------ | --------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `effect`                 | `3.22.2`  | `Effect`, `Layer`, `Stream`, `Schema`, `Context`, `Data`, `Option`, `Function.dual`                                     |
-| `@effect/ai`             | `0.37.0`  | `LanguageModel.make` (`ProviderOptions` → encoded response parts), `AiError`, `Prompt`, `Response`, `Tool`              |
+| `effect`                 | `4.0.3`   | `Effect`, `Layer`, `Stream`, `Schema`, `JsonSchema`, `Result`, `Context`, `Data`, `Option`, `Function.dual`             |
+| `effect` (`effect/ai/*`) | `4.0.3`   | `LanguageModel.make` (`ProviderOptions` → encoded response parts), `AiError`, `Prompt`, `Response`, `Tool`              |
 | `@ai-sdk/provider`       | `4.0.26`  | `LanguageModelV4` spec types (same pin as `@coder/ai-sdk-provider`)                                                     |
 | `@coder/ai-sdk-provider` | `0.4.34`  | `createCoder`, `CoderProviderSettings` (published release, not `workspace:*`)                                           |
 | `@coder/ai-sdk-sandbox`  | `0.4.37`  | `ensureCoderWorkspace`, `createCoderWorkspace`, `CoderTransport`                                                        |

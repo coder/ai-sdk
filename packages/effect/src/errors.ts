@@ -1,20 +1,20 @@
 /**
- * Error mapping between the AI SDK's provider errors and `@effect/ai`'s
- * `AiError` hierarchy.
+ * Error mapping between the AI SDK's provider errors and Effect 4's
+ * `effect/ai` `AiError`.
  *
- * `@effect/ai`'s `AiError.AiError` is a *closed* union (`HttpRequestError |
- * HttpResponseError | MalformedInput | MalformedOutput | UnknownError`), and
- * `LanguageModel.make` implementations must fail with exactly those types.
- * This module therefore maps AI SDK errors *into* that union without losing
- * information (status code, headers, response body are preserved), and exposes
- * {@link classifyError} / {@link classifyStatus} to recover the Coder-oriented
- * failure taxonomy (auth, rate limit / quota, provider unavailable, malformed
- * response, ...) from either side — useful with `Effect.retry` policies.
+ * `AiError` is a single class whose `reason` is one of a closed set of tagged
+ * reason classes (`AuthenticationError`, `RateLimitError`, `NetworkError`,
+ * ...), and `LanguageModel.make` implementations must fail with it. This
+ * module maps AI SDK and Coder Agents errors *into* that shape without losing
+ * information: HTTP status, response headers and body travel in the reason's
+ * `http` context, and the Coder-oriented classification plus any explicit
+ * Coder Agents retry verdict travel in the reason's `metadata.coder` (see
+ * {@link CoderErrorMetadata}). {@link classifyError} / {@link isTransient}
+ * read them back, which is useful with `Effect.retry` policies.
  *
- * Coder Agents (`@coder/ai-sdk-agent`) errors map into the same union:
- * `CoderApiError` becomes an `HttpResponseError` carrying its status, while
- * `CoderStreamError` and `CoderChatError` keep the original error as `cause`
- * so that {@link isTransient} can honor their explicit retryable verdicts.
+ * A reason's built-in `isRetryable` never says `true` where
+ * {@link isTransient} says `false`, except for `InvalidOutputError` (Effect
+ * treats malformed output as retryable; this bridge treats it as terminal).
  */
 import {
   AISDKError,
@@ -31,8 +31,9 @@ import {
   CoderChatError,
   CoderStreamError,
 } from "@coder/ai-sdk-agent";
-import * as AiError from "@effect/ai/AiError";
+import * as AiError from "effect/ai/AiError";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 /**
  * Coder-oriented classification of a gateway/model call failure.
@@ -55,6 +56,40 @@ export type ErrorReason =
   | "transport"
   | "timeout"
   | "unknown";
+
+/**
+ * What {@link toAiError} records under a reason's `metadata.coder`. Optional
+ * keys are present only when the source error carried them:
+ *
+ * - `retryable`: the explicit retry verdict of a Coder Agents error.
+ * - `status`: the HTTP status, also for failures without a request context.
+ * - `kind` / `provider`: from `CoderChatError`.
+ * - `chatId`: from `CoderStreamError`.
+ * - `message`: the source error's message, on reasons without a
+ *   `description` field (`RateLimitError`).
+ */
+const CoderErrorMetadata = Schema.Struct({
+  classification: Schema.Literals([
+    "auth",
+    "rate-limit",
+    "provider-unavailable",
+    "malformed-response",
+    "transport",
+    "timeout",
+    "unknown",
+  ]),
+  retryable: Schema.optionalKey(Schema.Boolean),
+  status: Schema.optionalKey(Schema.Int),
+  kind: Schema.optionalKey(Schema.String),
+  provider: Schema.optionalKey(Schema.String),
+  chatId: Schema.optionalKey(Schema.String),
+  message: Schema.optionalKey(Schema.String),
+});
+
+/** The shape of a reason's `metadata.coder`; see `toAiError`. */
+export type CoderErrorMetadata = typeof CoderErrorMetadata.Type;
+
+const decodeCoderMetadata = Schema.decodeUnknownOption(CoderErrorMetadata);
 
 /** Classify an HTTP status code into an {@link ErrorReason}. */
 export const classifyStatus = (status: number): ErrorReason => {
@@ -86,68 +121,61 @@ const isCoderStreamError = (error: Error): error is CoderStreamError =>
   error instanceof CoderStreamError ||
   (APICallError.isInstance(error) && error.name === "CoderStreamError");
 
-/** A Coder Agents error that {@link toAiError} preserved as an `AiError`'s cause. */
-const agentCause = (error: AiError.AiError): CoderChatError | CoderStreamError | undefined => {
-  if (error._tag === "HttpResponseError") return undefined;
-  const cause = error.cause;
-  if (!(cause instanceof Error)) return undefined;
-  if (isCoderChatError(cause) || isCoderStreamError(cause)) return cause;
-  return undefined;
-};
+/** The `metadata.coder` that {@link toAiError} recorded, if any. */
+const coderMetadata = (error: AiError.AiError): Option.Option<CoderErrorMetadata> =>
+  "metadata" in error.reason ? decodeCoderMetadata(error.reason.metadata.coder) : Option.none();
 
-const classifyAiError = (error: AiError.AiError): ErrorReason => {
-  const cause = agentCause(error);
-  if (cause !== undefined && isCoderChatError(cause)) return classifyChatError(cause);
-  switch (error._tag) {
-    case "HttpResponseError":
-      return error.reason === "StatusCode"
-        ? classifyStatus(error.response.status)
-        : "malformed-response";
-    case "HttpRequestError":
+/** Classification of an `AiError` that carries no `metadata.coder`. */
+const classifyReason = (reason: AiError.AiErrorReason): ErrorReason => {
+  switch (reason._tag) {
+    case "AuthenticationError":
+      return "auth";
+    case "RateLimitError":
+    case "QuotaExhaustedError":
+      return "rate-limit";
+    case "InternalProviderError":
+      return "provider-unavailable";
+    case "NetworkError":
       return "transport";
-    case "MalformedOutput":
+    case "InvalidOutputError":
+    case "StructuredOutputError":
       return "malformed-response";
-    case "MalformedInput":
-    case "UnknownError":
-      return "unknown";
   }
+  const status = "http" in reason ? reason.http?.response?.status : undefined;
+  return status === undefined ? "unknown" : classifyStatus(status);
 };
 
 /** Errors accepted by {@link classifyError} and {@link isTransient}. */
 export type ClassifiableError = AiError.AiError | AISDKError | CoderAgentError;
 
-/**
- * Classify an error into an {@link ErrorReason}: either an `@effect/ai`
- * `AiError` produced by this bridge, or a raw AI SDK / Coder Agents error
- * (which is first mapped with {@link toAiError}).
- */
-export const classifyError = (error: ClassifiableError): ErrorReason => {
-  if (AiError.isAiError(error)) return classifyAiError(error);
-  return classifyAiError(toAiError({ module: "CoderAiError", method: "classifyError", error }));
-};
+const asAiError = (error: ClassifiableError): AiError.AiError =>
+  AiError.isAiError(error)
+    ? error
+    : toAiError({ module: "CoderAiError", method: "classifyError", error });
 
 /**
- * The explicit retry verdict of a Coder Agents error, if the failure carries
- * one. `CoderStreamError.isRetryable` is downgraded to `false` by the agent
- * when replaying the prompt would duplicate server-side effects;
- * `CoderChatError.retryable` is chatd's (or the agent's) own verdict.
+ * Classify an error into an {@link ErrorReason}: either an `AiError` (from
+ * this bridge or from `effect/ai` itself), or a raw AI SDK / Coder Agents
+ * error (which is first mapped with {@link toAiError}).
  */
-const retryVerdict = (error: ClassifiableError): boolean | undefined => {
-  const source = AiError.isAiError(error) ? agentCause(error) : error;
-  if (!(source instanceof Error)) return undefined;
-  if (isCoderStreamError(source)) return source.isRetryable;
-  if (isCoderChatError(source)) return source.retryable;
-  return undefined;
+export const classifyError = (error: ClassifiableError): ErrorReason => {
+  const aiError = asAiError(error);
+  return Option.match(coderMetadata(aiError), {
+    onNone: () => classifyReason(aiError.reason),
+    onSome: (coder) => coder.classification,
+  });
 };
 
 /**
  * Whether a failure is worth retrying. An explicit verdict carried by a
- * Coder Agents error wins; otherwise throttling, upstream outages, network
- * errors, and turn timeouts are transient, while auth and malformed-response
- * failures are terminal.
+ * Coder Agents error wins (`CoderStreamError.isRetryable` is downgraded to
+ * `false` by the agent when replaying the prompt would duplicate server-side
+ * effects; `CoderChatError.retryable` is chatd's own verdict). Otherwise
+ * throttling, upstream outages, network errors, and turn timeouts are
+ * transient, while auth and malformed-response failures are terminal.
  */
 export const isTransient = (error: ClassifiableError): boolean => {
-  const verdict = retryVerdict(error);
+  const verdict = Option.getOrUndefined(coderMetadata(asAiError(error)))?.retryable;
   if (verdict !== undefined) return verdict;
   const reason = classifyError(error);
   return (
@@ -158,31 +186,160 @@ export const isTransient = (error: ClassifiableError): boolean => {
   );
 };
 
-const HTTP_METHODS = ["GET", "POST", "PATCH", "PUT", "DELETE", "HEAD", "OPTIONS"] as const;
-type HttpMethod = (typeof HTTP_METHODS)[number];
+type HttpContext = typeof AiError.HttpContext.Type;
+type HttpMethod = HttpContext["request"]["method"];
+const HTTP_METHODS: ReadonlyArray<HttpMethod> = [
+  "GET",
+  "POST",
+  "PATCH",
+  "PUT",
+  "DELETE",
+  "HEAD",
+  "OPTIONS",
+  "TRACE",
+  "QUERY",
+];
 
-/** `AiError` request details require a literal method; default to POST. */
-const toHttpMethod = (method: string): HttpMethod => {
-  const upper = method.toUpperCase();
-  const match = HTTP_METHODS.find((m) => m === upper);
-  return match ?? "POST";
-};
-
-const requestDetails = (url: string, method: string = "POST") => {
-  const urlParams: Array<readonly [string, string]> = [];
-  const headers: Record<string, string> = {};
+const httpContext = (options: {
+  readonly url: string;
+  readonly method?: string;
+  readonly status?: number;
+  readonly headers?: Record<string, string>;
+  readonly body?: string;
+}): HttpContext => {
+  const upper = (options.method ?? "POST").toUpperCase();
+  const { status } = options;
   return {
-    method: toHttpMethod(method),
-    url,
-    urlParams,
-    hash: Option.none<string>(),
-    headers,
+    // `HttpRequestDetails` requires a literal method; default to POST.
+    request: {
+      method: HTTP_METHODS.find((m) => m === upper) ?? "POST",
+      url: options.url,
+      urlParams: [],
+      headers: {},
+    },
+    response: status === undefined ? undefined : { status, headers: options.headers ?? {} },
+    body: options.body,
   };
 };
 
 /**
- * Map an arbitrary error thrown by an AI SDK model call into `@effect/ai`'s
- * `AiError` union, preserving HTTP details where available.
+ * The reason class for a classification. A `false` Coder Agents verdict on a
+ * reason that Effect considers retryable downgrades it to `UnknownError`, so
+ * `isRetryable` never invites a retry the agent ruled out.
+ */
+const reasonFor = (
+  coder: CoderErrorMetadata,
+  description: string,
+  http: HttpContext | undefined,
+): AiError.AiErrorReason => {
+  const common = { description, http, metadata: { coder: { ...coder } } };
+  let reason: AiError.AiErrorReason;
+  switch (coder.classification) {
+    case "auth":
+      reason = new AiError.AuthenticationError({
+        ...common,
+        kind: coder.status === 403 ? "InsufficientPermissions" : "InvalidKey",
+      });
+      break;
+    case "rate-limit":
+      reason = new AiError.RateLimitError({
+        http,
+        metadata: { coder: { ...coder, message: description } },
+      });
+      break;
+    case "provider-unavailable":
+      reason = new AiError.InternalProviderError(common);
+      break;
+    default:
+      reason =
+        coder.status === 400
+          ? new AiError.InvalidRequestError(common)
+          : new AiError.UnknownError(common);
+  }
+  if (coder.retryable === false && reason.isRetryable) {
+    return new AiError.UnknownError(common);
+  }
+  return reason;
+};
+
+type MutableMetadata = { -readonly [K in keyof CoderErrorMetadata]: CoderErrorMetadata[K] };
+
+/** The chat error's metadata, with only the keys it carries (plain JSON). */
+const chatMetadata = (error: CoderChatError): CoderErrorMetadata => {
+  const coder: MutableMetadata = {
+    classification: classifyChatError(error),
+    retryable: error.retryable,
+  };
+  if (error.statusCode !== undefined) coder.status = error.statusCode;
+  if (error.kind !== undefined) coder.kind = error.kind;
+  if (error.provider !== undefined) coder.provider = error.provider;
+  return coder;
+};
+
+const toReason = (error: Error): AiError.AiErrorReason => {
+  if (isCoderApiError(error)) {
+    const classification = classifyStatus(error.status);
+    const http = httpContext({
+      url: error.path,
+      method: error.method,
+      status: error.status,
+      body: error.detail,
+    });
+    return reasonFor({ classification, status: error.status }, error.message, http);
+  }
+  if (isCoderChatError(error)) {
+    return reasonFor(chatMetadata(error), error.message, undefined);
+  }
+  if (isCoderStreamError(error)) {
+    const coder: MutableMetadata = { classification: "transport", retryable: error.isRetryable };
+    if (error.chatId !== undefined) coder.chatId = error.chatId;
+    return new AiError.UnknownError({
+      description: error.message,
+      http: httpContext({ url: error.url }),
+      metadata: { coder: { ...coder } },
+    });
+  }
+  if (APICallError.isInstance(error)) {
+    if (error.statusCode === undefined) {
+      return new AiError.NetworkError({
+        reason: "TransportError",
+        request: httpContext({ url: error.url }).request,
+        description: error.message,
+      });
+    }
+    const http = httpContext({
+      url: error.url,
+      status: error.statusCode,
+      headers: error.responseHeaders,
+      body: error.responseBody,
+    });
+    const classification = classifyStatus(error.statusCode);
+    return reasonFor({ classification, status: error.statusCode }, error.message, http);
+  }
+  if (
+    JSONParseError.isInstance(error) ||
+    TypeValidationError.isInstance(error) ||
+    EmptyResponseBodyError.isInstance(error)
+  ) {
+    return new AiError.InvalidOutputError({ description: error.message });
+  }
+  if (InvalidArgumentError.isInstance(error)) {
+    return new AiError.InvalidRequestError({
+      parameter: error.argument,
+      description: error.message,
+    });
+  }
+  if (NoSuchModelError.isInstance(error)) {
+    return new AiError.InvalidRequestError({ parameter: "modelId", description: error.message });
+  }
+  return new AiError.UnknownError({ description: error.message });
+};
+
+/**
+ * Map an arbitrary error thrown by an AI SDK model call into an `AiError`,
+ * preserving HTTP details and Coder Agents verdicts (see the module docs).
+ * An existing `AiError` passes through unchanged; a bare `AiError` reason is
+ * wrapped with the given `module` and `method`.
  */
 export const toAiError = (options: {
   readonly module: string;
@@ -191,75 +348,13 @@ export const toAiError = (options: {
 }): AiError.AiError => {
   const { module, method, error } = options;
   if (AiError.isAiError(error)) return error;
-  if (error instanceof Error && isCoderApiError(error)) {
-    return new AiError.HttpResponseError({
-      module,
-      method,
-      reason: "StatusCode",
-      request: requestDetails(error.path, error.method),
-      response: { status: error.status, headers: {} },
-      body: error.detail,
-      description: `${error.message} (classified: ${classifyStatus(error.status)})`,
-    });
+  let reason: AiError.AiErrorReason;
+  if (AiError.isAiErrorReason(error)) {
+    reason = error;
+  } else if (error instanceof Error) {
+    reason = toReason(error);
+  } else {
+    reason = new AiError.UnknownError({ description: String(error) });
   }
-  if (error instanceof Error && isCoderChatError(error)) {
-    return new AiError.UnknownError({
-      module,
-      method,
-      description: `${error.message} (classified: ${classifyChatError(error)})`,
-      cause: error,
-    });
-  }
-  // CoderStreamError is an APICallError without a status: it maps to a
-  // Transport HttpRequestError below, keeping the error as `cause`.
-  if (APICallError.isInstance(error)) {
-    if (error.statusCode === undefined) {
-      return new AiError.HttpRequestError({
-        module,
-        method,
-        reason: "Transport",
-        request: requestDetails(error.url),
-        description: error.message,
-        cause: error,
-      });
-    }
-    return new AiError.HttpResponseError({
-      module,
-      method,
-      reason: "StatusCode",
-      request: requestDetails(error.url),
-      response: {
-        status: error.statusCode,
-        headers: error.responseHeaders ?? {},
-      },
-      body: error.responseBody,
-      description: `${error.message} (classified: ${classifyStatus(error.statusCode)})`,
-    });
-  }
-  if (
-    JSONParseError.isInstance(error) ||
-    TypeValidationError.isInstance(error) ||
-    EmptyResponseBodyError.isInstance(error)
-  ) {
-    return new AiError.MalformedOutput({
-      module,
-      method,
-      description: error.message,
-      cause: error,
-    });
-  }
-  if (NoSuchModelError.isInstance(error) || InvalidArgumentError.isInstance(error)) {
-    return new AiError.MalformedInput({
-      module,
-      method,
-      description: error.message,
-      cause: error,
-    });
-  }
-  return new AiError.UnknownError({
-    module,
-    method,
-    description: error instanceof Error ? error.message : String(error),
-    cause: error,
-  });
+  return AiError.make({ module, method, reason });
 };

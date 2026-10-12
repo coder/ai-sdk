@@ -46,15 +46,11 @@
     "@coder/ai-sdk-agent": "0.12.12",
     "@coder/ai-sdk-provider": "0.4.34",
     "@coder/ai-sdk-sandbox": "0.4.37",
-    "@effect/ai": "0.37.0",
-    "effect": "3.22.2"
+    "effect": "4.0.3"
   },
   "devDependencies": {
     "@ai-sdk/harness": "^1.0.137",
     "@ai-sdk/provider-utils": "^5.0.53",
-    "@effect/experimental": "0.61.1",
-    "@effect/platform": "0.97.2",
-    "@effect/rpc": "0.76.2",
     "@types/node": "^26.6.3",
     "@vitest/coverage-v8": "^5.0.3",
     "ai": "^7.0.126",

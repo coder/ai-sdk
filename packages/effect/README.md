@@ -1,10 +1,8 @@
 # @coder/ai-sdk-effect
 
-> [!WARNING]
-> **Experimental spike: not published to npm.** Phase 1 of
-> [coder/ai-sdk#144](https://github.com/coder/ai-sdk/issues/144). The package
-> is `private: true` and excluded from release-please. Its API will change
-> without notice until the spike review concludes.
+[![CI](https://github.com/coder/ai-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/coder/ai-sdk/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/@coder/ai-sdk-effect.svg)](https://www.npmjs.com/package/@coder/ai-sdk-effect)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
 An [Effect](https://effect.website) bridge for `@coder/ai-sdk-provider` (Coder
 AI Gateway), `@coder/ai-sdk-agent` (Coder Agents), and `@coder/ai-sdk-sandbox`
@@ -17,6 +15,23 @@ AI Gateway), `@coder/ai-sdk-agent` (Coder Agents), and `@coder/ai-sdk-sandbox`
 | [Typed `AiError` failures](#typed-error-taxonomy)                                   | `classifyError`, `isTransient`                                           |
 | [Effect Schema → Vercel AI SDK schemas](#effect-schema--vercel-ai-sdk-schemas)      | `toAiSdkSchema`                                                          |
 | [Scoped workspace `Layer`s](#scoped-sandbox-layers)                                 | `acquireWorkspace` / `layerWorkspace`, `acquireSession` / `layerSession` |
+
+## Install
+
+```bash
+pnpm add @coder/ai-sdk-effect effect@~4.0.0 ai@^7
+```
+
+Requires Node ≥ 22, `effect` 4.0.x, and `ai` v7. The package depends on
+`@coder/ai-sdk-provider`, `@coder/ai-sdk-agent`, and `@coder/ai-sdk-sandbox`,
+so you do not install them separately.
+
+> [!IMPORTANT]
+> **Stability.** Effect 4 marks its AI modules (`effect/ai/*`) as unstable,
+> and unstable Effect APIs can break in a minor release. The `effect` peer
+> range is therefore patch-only (`~4.0.0`). Support for a new `effect` minor
+> comes in a new release of this package. This package is pre-1.0, and its own
+> API can also change between minor versions.
 
 ## `LanguageModel` over Coder AI Gateway
 
@@ -162,6 +177,9 @@ instead of adding its own error classes:
 
 - HTTP failures keep the request method and URL, the response status and
   headers, and the body in the reason's `http` field.
+- A `RateLimitError` from an AI Gateway response sets `retryAfter` from a
+  valid `Retry-After` header (delay-seconds, or an HTTP-date). Read it as
+  `error.retryAfter`, for example to pick a retry delay.
 - The reason's `metadata.coder` records the classification and, when the
   source error has them, the HTTP `status`, the Coder Agents `retryable`
   verdict, the chat error's `kind` and `provider`, and the stream's `chatId`.
@@ -278,7 +296,7 @@ program.pipe(
 );
 ```
 
-## Spike caveats
+## Limitations
 
 Unsupported _inputs_ fail loudly with `InvalidRequestError`; response parts with
 no `effect/ai` equivalent are dropped.
@@ -297,35 +315,24 @@ semantics): a slow `ensureCoderWorkspace` cannot be cancelled mid-flight. If an
 acquisition creates a workspace and then fails (e.g. readiness timeout), the
 workspace is rolled back best-effort per the teardown policy.
 
-<details>
-<summary>Phase 2 (not in this package yet)</summary>
-
-- Publishing decision: versioning, `peerDependency` policy on `effect`,
-  release-please wiring, `workspace:*` deps.
-
-</details>
-
-## Pinned surface
-
-Effect's AI modules (`effect/ai/*`) are marked unstable, so the spike pins
-exact versions and codes against their concrete API shapes.
+## Dependencies and the API surface used
 
 <details>
-<summary>Pinned versions and the API surface used</summary>
+<summary>Version ranges and the API surface the bridge codes against</summary>
 
-| Dependency               | Version   | Surface used                                                                                                            |
-| ------------------------ | --------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `effect`                 | `4.0.3`   | `Effect`, `Layer`, `Stream`, `Schema`, `JsonSchema`, `Result`, `Context`, `Data`, `Option`, `Function.dual`             |
-| `effect` (`effect/ai/*`) | `4.0.3`   | `LanguageModel.make` (`ProviderOptions` → encoded response parts), `AiError`, `Prompt`, `Response`, `Tool`              |
-| `@ai-sdk/provider`       | `4.0.26`  | `LanguageModelV4` spec types (same pin as `@coder/ai-sdk-provider`)                                                     |
-| `@coder/ai-sdk-provider` | `0.4.34`  | `createCoder`, `CoderProviderSettings` (published release, not `workspace:*`)                                           |
-| `@coder/ai-sdk-sandbox`  | `0.4.37`  | `ensureCoderWorkspace`, `createCoderWorkspace`, `CoderTransport`                                                        |
-| `@coder/ai-sdk-agent`    | `0.12.12` | `CoderLanguageModel` (+ `chatId`, `lastSeenMessageId`, dispose), `CoderChatClient`, `classifyTurnAction`, error classes |
+| Dependency               | Range                                        | Surface used                                                                                                            |
+| ------------------------ | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `effect` (peer)          | `~4.0.0`                                     | `Effect`, `Layer`, `Stream`, `Schema`, `JsonSchema`, `Result`, `Context`, `Data`, `Option`, `Function.dual`             |
+| `effect` (`effect/ai/*`) | `~4.0.0`                                     | `LanguageModel.make` (`ProviderOptions` → encoded response parts), `AiError`, `Prompt`, `Response`, `Tool`              |
+| `ai` (peer)              | `^7.0.0`                                     | `jsonSchema` (for `toAiSdkSchema`)                                                                                      |
+| `@ai-sdk/provider`       | exact (same pin as `@coder/ai-sdk-provider`) | `LanguageModelV4` spec types                                                                                            |
+| `@coder/ai-sdk-provider` | `^` its current release                      | `createCoder`, `CoderProviderSettings`                                                                                  |
+| `@coder/ai-sdk-sandbox`  | `^` its current release                      | `ensureCoderWorkspace`, `createCoderWorkspace`, `CoderTransport`                                                        |
+| `@coder/ai-sdk-agent`    | `^` its current release                      | `CoderLanguageModel` (+ `chatId`, `lastSeenMessageId`, dispose), `CoderChatClient`, `classifyTurnAction`, error classes |
 
-The spike depends on the _published_ `@coder/ai-sdk-*` releases rather than
-`workspace:*`, so repo-wide `typecheck`/`test` need no cross-package build
-ordering. Switching to `workspace:*` is part of the Phase 2 publishing
-decision.
+In this repository the `@coder/ai-sdk-*` dependencies are `workspace:^`. pnpm
+replaces each one with `^<version>` when it publishes, where `<version>` is
+the sibling package's version in the released commit.
 
 </details>
 

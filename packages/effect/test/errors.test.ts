@@ -1,7 +1,8 @@
 import { APICallError, JSONParseError, TypeValidationError } from "@ai-sdk/provider";
 import { CoderApiError, CoderChatError, CoderStreamError } from "@coder/ai-sdk-agent";
 import * as AiError from "effect/ai/AiError";
-import { describe, expect, it } from "vitest";
+import * as Duration from "effect/Duration";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { classifyError, classifyStatus, isTransient, toAiError } from "../src/errors.js";
 
 const apiCallError = (statusCode?: number): APICallError =>
@@ -57,6 +58,50 @@ describe("toAiError", () => {
     [503, "InternalProviderError"],
   ] as const)("maps HTTP %d to %s", (status, tag) => {
     expect(map(apiCallError(status)).reason._tag).toBe(tag);
+  });
+
+  describe("RateLimitError.retryAfter", () => {
+    const throttled = (headers: Record<string, string>): AiError.AiError =>
+      map(
+        new APICallError({
+          message: "slow down",
+          url: "https://coder.example.com/api/v2/aibridge/openai/v1/chat/completions",
+          requestBodyValues: {},
+          statusCode: 429,
+          responseHeaders: headers,
+        }),
+      );
+    const retryAfterMillis = (headers: Record<string, string>): number | undefined => {
+      const { retryAfter } = throttled(headers);
+      return retryAfter === undefined ? undefined : Duration.toMillis(retryAfter);
+    };
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("reads delay-seconds from the retry-after header", () => {
+      expect(retryAfterMillis({ "retry-after": "120" })).toBe(120_000);
+    });
+
+    it("reads an HTTP-date relative to now, with any header-name case", () => {
+      vi.useFakeTimers({ now: Date.parse("2026-10-12T12:00:00Z") });
+      expect(retryAfterMillis({ "Retry-After": "Mon, 12 Oct 2026 12:00:30 GMT" })).toBe(30_000);
+    });
+
+    it("treats an HTTP-date in the past as retry now", () => {
+      vi.useFakeTimers({ now: Date.parse("2026-10-12T12:00:00Z") });
+      expect(retryAfterMillis({ "retry-after": "Mon, 12 Oct 2026 11:00:00 GMT" })).toBe(0);
+    });
+
+    it.each([
+      ["missing", {}],
+      ["not a number or date", { "retry-after": "soon" }],
+      ["fractional seconds", { "retry-after": "1.5" }],
+      ["negative seconds", { "retry-after": "-5" }],
+    ])("leaves retryAfter unset when the header is %s", (_label, headers) => {
+      expect(retryAfterMillis(headers)).toBeUndefined();
+    });
   });
 
   it("maps a network failure (no status) to NetworkError", () => {

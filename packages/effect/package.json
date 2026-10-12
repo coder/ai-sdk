@@ -1,8 +1,17 @@
 {
   "name": "@coder/ai-sdk-effect",
   "version": "0.0.0",
-  "private": true,
-  "description": "Experimental Effect bridge for the Coder AI SDK packages (Phase 1 spike, not published).",
+  "description": "Effect bridge for Coder's Vercel AI SDK packages: effect/ai LanguageModel services over Coder AI Gateway and Coder Agents, typed AiError classification, Effect Schema to AI SDK schemas, and scoped Coder workspace Layers.",
+  "keywords": [
+    "ai",
+    "ai-sdk",
+    "coder",
+    "coder-agents",
+    "effect",
+    "effect-ai",
+    "llm",
+    "vercel-ai-sdk"
+  ],
   "homepage": "https://github.com/coder/ai-sdk/tree/main/packages/effect#readme",
   "bugs": {
     "url": "https://github.com/coder/ai-sdk/issues"
@@ -31,29 +40,36 @@
       "default": "./dist/index.js"
     }
   },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "attw": "attw --pack --ignore-rules cjs-resolves-to-esm",
     "example:generate": "tsx examples/01-generate.ts",
     "example:structured": "tsx examples/02-structured.ts",
     "example:sandbox": "tsx examples/03-sandbox.ts"
   },
   "dependencies": {
     "@ai-sdk/provider": "4.0.26",
-    "@coder/ai-sdk-agent": "0.12.12",
-    "@coder/ai-sdk-provider": "0.4.34",
-    "@coder/ai-sdk-sandbox": "0.4.37",
-    "effect": "4.0.3"
+    "@coder/ai-sdk-agent": "workspace:^",
+    "@coder/ai-sdk-provider": "workspace:^",
+    "@coder/ai-sdk-sandbox": "workspace:^"
   },
   "devDependencies": {
     "@ai-sdk/harness": "^1.0.137",
     "@ai-sdk/provider-utils": "^5.0.53",
+    "@arethetypeswrong/cli": "^0.18.5",
     "@types/node": "^26.6.3",
     "@vitest/coverage-v8": "^5.0.3",
     "ai": "^7.0.126",
+    "effect": "4.0.3",
+    "publint": "^0.3.25",
     "tsup": "^8.5.1",
     "tsx": "^4.23.15",
     "typescript": "^6.0.3",
@@ -61,7 +77,8 @@
     "zod": "4.6.5"
   },
   "peerDependencies": {
-    "ai": "^7.0.0"
+    "ai": "^7.0.0",
+    "effect": "~4.0.0"
   },
   "engines": {
     "node": ">=22"

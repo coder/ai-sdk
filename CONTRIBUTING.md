@@ -23,11 +23,16 @@ pnpm install     # install workspace dependencies
 Run everything from the repo root:
 
 ```bash
+pnpm build       # build every package (run first: see below)
 pnpm check       # the CI gate: format check + lint + typecheck
 pnpm test        # run tests
-pnpm build       # build every package
 pnpm format      # auto-format with oxfmt
 ```
+
+`@coder/ai-sdk-effect` depends on the other packages via `workspace:^`, so its
+typecheck and tests read their built `dist/`. Run `pnpm build` before
+`pnpm check` and `pnpm test` on a fresh checkout and after changing another
+package.
 
 Lint and format ([oxc](https://oxc.rs): `oxlint` + `oxfmt`) cover the whole
 tree at once. Typecheck, test, and build fan out to each package; target one

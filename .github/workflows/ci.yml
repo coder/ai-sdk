@@ -82,21 +82,24 @@ jobs:
       - name: Check formatting
         run: pnpm format:check
 
+      # Build before typecheck and test: @coder/ai-sdk-effect depends on the
+      # other packages via `workspace:^`, so its types and tests resolve their
+      # dist/ output. `pnpm -r build` runs in dependency order.
+      - name: Build
+        run: pnpm build
+
       - name: Typecheck
         run: pnpm typecheck
 
       - name: Test
         run: pnpm test
 
-      - name: Build
-        run: pnpm build
-
-      # ESM-only publish gates — sandbox + provider (the root scripts --filter them).
-      # Run after build so dist/ exists.
-      - name: Publint (sandbox, provider)
+      # ESM-only publish gates — sandbox, provider, effect (the root scripts
+      # --filter them). Run after build so dist/ exists.
+      - name: Publint (sandbox, provider, effect)
         run: pnpm publint
 
-      - name: Are the types wrong? (sandbox, provider)
+      - name: Are the types wrong? (sandbox, provider, effect)
         run: pnpm attw
 
   lint-workflows:

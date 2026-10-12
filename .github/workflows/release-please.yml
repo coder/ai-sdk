@@ -34,6 +34,7 @@ jobs:
       sandbox_released: ${{ steps.release.outputs['packages/sandbox--release_created'] }}
       agent_released: ${{ steps.release.outputs['packages/agent--release_created'] }}
       provider_released: ${{ steps.release.outputs['packages/provider--release_created'] }}
+      effect_released: ${{ steps.release.outputs['packages/effect--release_created'] }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -138,9 +139,36 @@ jobs:
       - name: Publish @coder/ai-sdk-provider
         run: pnpm --filter @coder/ai-sdk-provider publish --provenance --access public --no-git-checks
 
+  publish-effect:
+    needs: release-please
+    if: ${{ !cancelled() && needs.release-please.outputs.effect_released == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # checkout only
+      id-token: write # OIDC: trusted-publishing auth + provenance
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install node and pnpm via mise
+        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        env:
+          MISE_GITHUB_TOKEN: ${{ github.token }}
+        with:
+          minimum_release_age: 24h
+      - run: pnpm install --frozen-lockfile
+      # The trailing `...` also builds its workspace:^ dependencies (agent,
+      # provider, sandbox): the effect build's type declarations import theirs.
+      - run: pnpm --filter @coder/ai-sdk-effect... build
+      # pnpm rewrites each `workspace:^` dependency to `^<that package's version
+      # in this checkout>` in the published package.json.
+      - name: Publish @coder/ai-sdk-effect
+        run: pnpm --filter @coder/ai-sdk-effect publish --provenance --access public --no-git-checks
+
   # Manual recovery (workflow_dispatch): publish an already-tagged release whose
   # npm publish never ran. Builds the tag's checkout and refuses to run if the
-  # tag doesn't match the package.json version or the version is already on npm.
+  # tag is not on main, doesn't match the package.json version, or the version
+  # is already on npm.
   publish-recovery:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
@@ -150,8 +178,20 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.release_tag }}
+          # The tag namespace only: a branch with the same name never matches.
+          ref: refs/tags/${{ inputs.release_tag }}
+          fetch-depth: 0 # full history, so the next step can see origin/main
           persist-credentials: false
+      # Before any repository code runs (mise.toml, install scripts), require
+      # the tagged commit to be on main, where release-please creates tags.
+      - name: Verify the tag is a release on main
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "$RELEASE_TAG does not point to a commit on main" >&2
+            exit 1
+          fi
       - name: Install node and pnpm via mise
         uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         env:
@@ -167,6 +207,7 @@ jobs:
             sandbox-v*) name="@coder/ai-sdk-sandbox" path="packages/sandbox" ;;
             agent-v*) name="@coder/ai-sdk-agent" path="packages/agent" ;;
             provider-v*) name="@coder/ai-sdk-provider" path="packages/provider" ;;
+            effect-v*) name="@coder/ai-sdk-effect" path="packages/effect" ;;
             *) echo "unrecognized release tag: $RELEASE_TAG" >&2; exit 1 ;;
           esac
           version="${RELEASE_TAG#*-v}"
@@ -181,7 +222,8 @@ jobs:
           fi
           echo "name=$name" >> "$GITHUB_OUTPUT"
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter "$PACKAGE_NAME" build
+      # `...` also builds the package's workspace dependencies (effect needs them).
+      - run: pnpm --filter "$PACKAGE_NAME..." build
         env:
           PACKAGE_NAME: ${{ steps.pkg.outputs.name }}
       - name: Publish ${{ inputs.release_tag }}

@@ -32,6 +32,7 @@ import {
   CoderStreamError,
 } from "@coder/ai-sdk-agent";
 import * as AiError from "effect/ai/AiError";
+import * as Duration from "effect/Duration";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
@@ -67,6 +68,9 @@ export type ErrorReason =
  * - `chatId`: from `CoderStreamError`.
  * - `message`: the source error's message, on reasons without a
  *   `description` field (`RateLimitError`).
+ *
+ * A `RateLimitError` also sets `retryAfter` from the response's
+ * `Retry-After` header when it is valid.
  */
 const CoderErrorMetadata = Schema.Struct({
   classification: Schema.Literals([
@@ -222,6 +226,26 @@ const httpContext = (options: {
   };
 };
 
+const DELAY_SECONDS = /^\d+$/;
+// IMF-fixdate, the HTTP-date form senders must use (RFC 9110 §5.6.7).
+const IMF_FIXDATE = /^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$/;
+
+/**
+ * The `Retry-After` header (RFC 9110 §10.2.3): delay-seconds, or an
+ * HTTP-date. A date in the past means retry now. Any other value is ignored.
+ */
+const parseRetryAfter = (
+  headers: Record<string, string> | undefined,
+): Duration.Duration | undefined => {
+  const name = Object.keys(headers ?? {}).find((key) => key.toLowerCase() === "retry-after");
+  const value = name === undefined ? undefined : headers?.[name]?.trim();
+  if (value === undefined) return undefined;
+  if (DELAY_SECONDS.test(value)) return Duration.seconds(Number(value));
+  if (!IMF_FIXDATE.test(value)) return undefined;
+  const at = Date.parse(value);
+  return Number.isNaN(at) ? undefined : Duration.millis(Math.max(0, at - Date.now()));
+};
+
 /**
  * The reason class for a classification. A `false` Coder Agents verdict on a
  * reason that Effect considers retryable downgrades it to `UnknownError`, so
@@ -231,6 +255,7 @@ const reasonFor = (
   coder: CoderErrorMetadata,
   description: string,
   http: HttpContext | undefined,
+  retryAfter?: Duration.Duration,
 ): AiError.AiErrorReason => {
   const common = { description, http, metadata: { coder: { ...coder } } };
   let reason: AiError.AiErrorReason;
@@ -244,6 +269,7 @@ const reasonFor = (
     case "rate-limit":
       reason = new AiError.RateLimitError({
         http,
+        retryAfter,
         metadata: { coder: { ...coder, message: description } },
       });
       break;
@@ -314,7 +340,12 @@ const toReason = (error: Error): AiError.AiErrorReason => {
       body: error.responseBody,
     });
     const classification = classifyStatus(error.statusCode);
-    return reasonFor({ classification, status: error.statusCode }, error.message, http);
+    return reasonFor(
+      { classification, status: error.statusCode },
+      error.message,
+      http,
+      parseRetryAfter(error.responseHeaders),
+    );
   }
   if (
     JSONParseError.isInstance(error) ||

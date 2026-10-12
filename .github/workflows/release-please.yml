@@ -167,7 +167,8 @@ jobs:
 
   # Manual recovery (workflow_dispatch): publish an already-tagged release whose
   # npm publish never ran. Builds the tag's checkout and refuses to run if the
-  # tag doesn't match the package.json version or the version is already on npm.
+  # tag is not on main, doesn't match the package.json version, or the version
+  # is already on npm.
   publish-recovery:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
@@ -177,8 +178,20 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.release_tag }}
+          # The tag namespace only: a branch with the same name never matches.
+          ref: refs/tags/${{ inputs.release_tag }}
+          fetch-depth: 0 # full history, so the next step can see origin/main
           persist-credentials: false
+      # Before any repository code runs (mise.toml, install scripts), require
+      # the tagged commit to be on main, where release-please creates tags.
+      - name: Verify the tag is a release on main
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "$RELEASE_TAG does not point to a commit on main" >&2
+            exit 1
+          fi
       - name: Install node and pnpm via mise
         uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         env:

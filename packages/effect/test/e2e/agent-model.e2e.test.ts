@@ -3,10 +3,10 @@ import {
   type CoderTransportEvent,
   type TransportEventHandler,
 } from "@coder/ai-sdk-agent";
-import * as LanguageModel from "@effect/ai/LanguageModel";
-import * as Prompt from "@effect/ai/Prompt";
-import * as Tool from "@effect/ai/Tool";
-import * as Toolkit from "@effect/ai/Toolkit";
+import * as LanguageModel from "effect/ai/LanguageModel";
+import * as Prompt from "effect/ai/Prompt";
+import * as Tool from "effect/ai/Tool";
+import * as Toolkit from "effect/ai/Toolkit";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
@@ -105,12 +105,12 @@ suite("CoderAgentModel (live)", () => {
     // Inline only: chatd does not resolve `$ref` (neither the draft-07
     // `definitions` nor the 2020-12 `$defs` form), so a schema with an
     // `identifier` annotation would reach the model as a dangling reference.
-    const Delay = Schema.Struct({ minutes: Schema.Int }).annotations({
+    const Delay = Schema.Struct({ minutes: Schema.Int }).annotate({
       description: "How long to wait before the reminder",
     });
     const CreateReminder = Tool.make("create_reminder", {
       description: "Create a reminder for the user",
-      parameters: { title: Schema.String, delay: Delay },
+      parameters: Schema.Struct({ title: Schema.String, delay: Delay }),
       success: Schema.Struct({ id: Schema.String }),
     });
     const toolkit = Toolkit.make(CreateReminder);
@@ -124,7 +124,7 @@ suite("CoderAgentModel (live)", () => {
     const [first, second] = await Effect.runPromise(
       Effect.gen(function* () {
         const a = yield* LanguageModel.generateText({ prompt: text, toolkit });
-        const prompt = Prompt.merge(Prompt.make(text), Prompt.fromResponseParts(a.content));
+        const prompt = Prompt.concat(Prompt.make(text), Prompt.fromResponseParts(a.content));
         const b = yield* LanguageModel.generateText({ prompt, toolkit });
         return [a, b] as const;
       }).pipe(
@@ -151,7 +151,7 @@ suite("CoderAgentModel (live)", () => {
     await Effect.runPromise(
       Effect.gen(function* () {
         let deltas = 0;
-        const fiber = yield* Effect.fork(
+        const fiber = yield* Effect.forkChild(
           Stream.runForEach(
             LanguageModel.streamText({
               prompt: "Count slowly from 1 to 300, one number per line, with no other text.",

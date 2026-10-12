@@ -1,5 +1,5 @@
 /**
- * An `@effect/ai` `LanguageModel` over Coder Agents (chatd), backed by
+ * An Effect 4 `effect/ai` `LanguageModel` over Coder Agents (chatd), backed by
  * `@coder/ai-sdk-agent`'s `CoderLanguageModel`.
  *
  * The agent model is a `LanguageModelV4`, so it runs through the same bridge
@@ -22,7 +22,7 @@
  *
  * Sampling controls (`temperature`, `maxOutputTokens`, ...) are chosen by
  * chatd, so the agent model rejects them, and any `providerOptions` other
- * than `coder`, with `MalformedInput`.
+ * than `coder`, with an `InvalidRequestError` reason.
  */
 import {
   InvalidArgumentError,
@@ -36,8 +36,8 @@ import {
   CoderLanguageModel as ChatdModel,
   type ReasoningEffort,
 } from "@coder/ai-sdk-agent";
-import * as AiError from "@effect/ai/AiError";
-import * as LanguageModel from "@effect/ai/LanguageModel";
+import * as AiError from "effect/ai/AiError";
+import * as LanguageModel from "effect/ai/LanguageModel";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -81,17 +81,18 @@ export const withAgentOptions = (
  */
 export const make = (
   settings: AgentModelSettings,
-): Effect.Effect<LanguageModel.Service, AiError.AiError, Scope.Scope> =>
+): Effect.Effect<LanguageModel.LanguageModel, AiError.AiError, Scope.Scope> =>
   Effect.flatMap(
     Effect.acquireRelease(
       Effect.try({
         try: () => new AgentSession(settings),
         catch: (error) =>
-          new AiError.MalformedInput({
+          AiError.make({
             module: MODULE,
             method: "make",
-            description: error instanceof Error ? error.message : String(error),
-            cause: error,
+            reason: new AiError.InvalidRequestError({
+              description: error instanceof Error ? error.message : String(error),
+            }),
           }),
       }),
       (session) => Effect.promise(() => session.dispose()),
@@ -103,7 +104,7 @@ export const make = (
 export const layer = (
   settings: AgentModelSettings,
 ): Layer.Layer<LanguageModel.LanguageModel, AiError.AiError> =>
-  Layer.scoped(LanguageModel.LanguageModel, make(settings));
+  Layer.effect(LanguageModel.LanguageModel, make(settings));
 
 const MODULE = "CoderAgentModel";
 

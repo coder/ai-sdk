@@ -8,7 +8,7 @@
  *   CODER_URL=https://coder.example.com CODER_SESSION_TOKEN=... \
  *   CODER_MODEL=gpt-5.1 pnpm example:structured
  */
-import * as LanguageModel from "@effect/ai/LanguageModel";
+import * as LanguageModel from "effect/ai/LanguageModel";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { CoderLanguageModel } from "../src/index.js";
@@ -18,7 +18,7 @@ const modelId = process.env.CODER_MODEL ?? "gpt-5.1";
 const City = Schema.Struct({
   name: Schema.String,
   country: Schema.String,
-  population: Schema.Number,
+  population: Schema.Finite,
 });
 
 const program = Effect.gen(function* () {

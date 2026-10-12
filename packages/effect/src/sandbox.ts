@@ -43,10 +43,9 @@ export class CoderSandboxError extends Data.TaggedError("CoderSandboxError")<{
 // ---------------------------------------------------------------------------
 
 /** A ready Coder workspace acquired for the lifetime of the current scope. */
-export class CoderWorkspace extends Context.Tag("@coder/ai-sdk-effect/CoderWorkspace")<
-  CoderWorkspace,
-  EnsuredCoderWorkspace
->() {}
+export class CoderWorkspace extends Context.Service<CoderWorkspace, EnsuredCoderWorkspace>()(
+  "@coder/ai-sdk-effect/CoderWorkspace",
+) {}
 
 /**
  * What to do with the workspace when the scope closes:
@@ -208,17 +207,16 @@ const releaseWorkspace = (
 export const layerWorkspace = (
   options: AcquireWorkspaceOptions,
 ): Layer.Layer<CoderWorkspace, CoderSandboxError> =>
-  Layer.scoped(CoderWorkspace, acquireWorkspace(options));
+  Layer.effect(CoderWorkspace, acquireWorkspace(options));
 
 // ---------------------------------------------------------------------------
 // Session (createCoderWorkspace + createSession)
 // ---------------------------------------------------------------------------
 
 /** A live Coder workspace session acquired for the lifetime of the current scope. */
-export class CoderSession extends Context.Tag("@coder/ai-sdk-effect/CoderSession")<
-  CoderSession,
-  CoderWorkspaceSession
->() {}
+export class CoderSession extends Context.Service<CoderSession, CoderWorkspaceSession>()(
+  "@coder/ai-sdk-effect/CoderSession",
+) {}
 
 /**
  * What to do with the session when the scope closes. Both variants always
@@ -308,4 +306,4 @@ export const acquireSession = (
 export const layerSession = (
   options: AcquireSessionOptions,
 ): Layer.Layer<CoderSession, CoderSandboxError> =>
-  Layer.scoped(CoderSession, acquireSession(options));
+  Layer.effect(CoderSession, acquireSession(options));

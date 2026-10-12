@@ -2,6 +2,7 @@ export {
   classifyError,
   type ClassifiableError,
   classifyStatus,
+  type CoderErrorMetadata,
   type ErrorReason,
   isTransient,
   toAiError,

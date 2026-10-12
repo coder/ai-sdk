@@ -194,7 +194,7 @@ describe("acquireWorkspace", () => {
 
     await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.fork(
+        const fiber = yield* Effect.forkChild(
           Effect.scoped(
             Effect.andThen(
               acquireWorkspace({
@@ -286,7 +286,7 @@ describe("acquireSession", () => {
 
     await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.fork(
+        const fiber = yield* Effect.forkChild(
           Effect.scoped(
             Effect.andThen(
               acquireSession({ settings: settings(transport) }),

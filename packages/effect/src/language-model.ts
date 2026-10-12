@@ -1,26 +1,26 @@
 /**
- * An `@effect/ai` `LanguageModel` implemented on top of Coder AI Gateway via
- * `@coder/ai-sdk-provider`.
+ * An Effect 4 `effect/ai` `LanguageModel` implemented on top of Coder AI
+ * Gateway via `@coder/ai-sdk-provider`.
  *
  * The bridge core ({@link fromModel}) adapts *any* AI SDK
- * `LanguageModelV4` to `@effect/ai`'s `LanguageModel` service; {@link make} /
+ * `LanguageModelV4` to `effect/ai`'s `LanguageModel` service; {@link make} /
  * {@link layer} bind it to a Coder AI Gateway model resolved from
  * `CoderProviderSettings` or an existing `CoderProvider`.
  *
- * Spike limitations (fail loudly with `MalformedInput` rather than silently
- * degrade): provider-defined tools are not expressible in the
- * `LanguageModelV4` call options. Response parts with no
- * `@effect/ai` equivalent (custom parts, reasoning files, tool approval
- * requests, URL/reference/text file payloads) are dropped.
+ * Spike limitations (fail loudly with an `InvalidRequestError` reason rather
+ * than silently degrade): provider-defined tools are not expressible in the
+ * `LanguageModelV4` call options. Response parts with no `effect/ai`
+ * equivalent (custom parts, reasoning files, tool approval requests,
+ * URL/reference/text file payloads) are dropped, and so are tool approval
+ * parts in the prompt (`effect/ai` resolves and strips them before the call).
  *
  * Provider-executed tool calls and results for tools that are not in the
  * call's toolkit (e.g. Coder Agents' server-side tools) cannot be decoded by
- * `@effect/ai`, whose tool parts are typed by the toolkit. They are moved to
+ * `effect/ai`, whose tool parts are typed by the toolkit. They are moved to
  * the finish part's `metadata.coder.serverToolCalls` instead; streaming still
  * emits their `tool-params-start` / `tool-params-end` markers.
  */
 import type {
-  JSONSchema7,
   JSONValue,
   LanguageModelV4,
   LanguageModelV4CallOptions,
@@ -42,18 +42,20 @@ import {
   type CoderProviderSettings,
   createCoder,
 } from "@coder/ai-sdk-provider";
-import * as AiError from "@effect/ai/AiError";
-import * as LanguageModel from "@effect/ai/LanguageModel";
-import type * as Prompt from "@effect/ai/Prompt";
-import type * as Response from "@effect/ai/Response";
-import * as Tool from "@effect/ai/Tool";
+import * as AiError from "effect/ai/AiError";
+import * as LanguageModel from "effect/ai/LanguageModel";
+import type * as Prompt from "effect/ai/Prompt";
+import type * as Response from "effect/ai/Response";
+import * as Tool from "effect/ai/Tool";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import { dual } from "effect/Function";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import type * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { toAiError } from "./errors.js";
+import { toDraft07 } from "./schema.js";
 
 const MODULE = "CoderLanguageModel";
 
@@ -83,13 +85,12 @@ export type GenerationOptions = Pick<
  * Per-call generation overrides, read when a request starts and merged over
  * the construction-time {@link GenerationOptions} (per-call keys win; nested
  * objects such as `providerOptions` are replaced, not merged). Provide it with
- * {@link withGenerationOptions}, the same way `@effect/ai`'s own providers
- * expose their `Config` services.
+ * {@link withGenerationOptions}, the same way `effect/ai` providers expose
+ * their `Config` services.
  */
-export class GenerationConfig extends Context.Tag("@coder/ai-sdk-effect/GenerationConfig")<
-  GenerationConfig,
-  GenerationOptions
->() {}
+export class GenerationConfig extends Context.Service<GenerationConfig, GenerationOptions>()(
+  "@coder/ai-sdk-effect/GenerationConfig",
+) {}
 
 /**
  * Run `self` with per-call generation overrides. Nested calls merge, with the
@@ -141,7 +142,7 @@ const resolveGeneration = (generation: GenerationOptions): Effect.Effect<Generat
 export const fromModel = (
   model: LanguageModelV4,
   generation: GenerationOptions = {},
-): Effect.Effect<LanguageModel.Service> =>
+): Effect.Effect<LanguageModel.LanguageModel> =>
   LanguageModel.make({
     generateText: (options) => generateText(model, options, generation),
     streamText: (options) => streamText(model, options, generation),
@@ -164,7 +165,7 @@ export const make = (
   modelId: string,
   source: ProviderSource,
   generation: GenerationOptions = {},
-): Effect.Effect<LanguageModel.Service, AiError.AiError> =>
+): Effect.Effect<LanguageModel.LanguageModel, AiError.AiError> =>
   Effect.flatMap(
     Effect.try({
       try: () => {
@@ -172,12 +173,7 @@ export const make = (
         return provider.languageModel(modelId);
       },
       catch: (error) =>
-        new AiError.MalformedInput({
-          module: MODULE,
-          method: "make",
-          description: error instanceof Error ? error.message : String(error),
-          cause: error,
-        }),
+        invalidRequest("make", error instanceof Error ? error.message : String(error)),
     }),
     (model) => fromModel(model, generation),
   );
@@ -232,7 +228,7 @@ const streamText = (
   options: LanguageModel.ProviderOptions,
   generation: GenerationOptions,
 ): Stream.Stream<Response.StreamPartEncoded, AiError.AiError> =>
-  Stream.unwrapScoped(
+  Stream.unwrap(
     Effect.gen(function* () {
       const callOptions = yield* buildCallOptions(
         options,
@@ -275,11 +271,15 @@ const streamText = (
   );
 
 // ---------------------------------------------------------------------------
-// Request mapping: @effect/ai ProviderOptions -> LanguageModelV4CallOptions
+// Request mapping: effect/ai ProviderOptions -> LanguageModelV4CallOptions
 // ---------------------------------------------------------------------------
 
-const unsupported = (method: string, description: string): AiError.MalformedInput =>
-  new AiError.MalformedInput({ module: MODULE, method, description });
+const invalidRequest = (method: string, description: string, parameter?: string): AiError.AiError =>
+  AiError.make({
+    module: MODULE,
+    method,
+    reason: new AiError.InvalidRequestError({ parameter, description }),
+  });
 
 const buildCallOptions = (
   options: LanguageModel.ProviderOptions,
@@ -293,15 +293,14 @@ const buildCallOptions = (
       if (options.tools.length > 0) {
         callOptions.tools = options.tools.map((tool) => toolToV4(tool, method));
       }
-      // Forwarded even without tools (`@effect/ai` then passes "none"), so the
+      // Forwarded even without tools (`effect/ai` then passes "none"), so the
       // model sees exactly what the caller asked for.
       callOptions.toolChoice = toolChoiceToV4(options, method);
       if (options.responseFormat.type === "json") {
-        // SAFETY: effect's JsonSchema7 output is structurally a JSON Schema
-        // draft-07 document; only the nominal type differs from `JSONSchema7`.
-        const schema = Tool.getJsonSchemaFromSchemaAst(
-          options.responseFormat.schema.ast,
-        ) as JSONSchema7;
+        // The same transform `effect/ai` decodes the answer with.
+        const schema = toDraft07(
+          LanguageModel.defaultCodecTransformer(options.responseFormat.schema).jsonSchema,
+        );
         callOptions.responseFormat = {
           type: "json",
           name: options.responseFormat.objectName,
@@ -326,20 +325,18 @@ const buildCallOptions = (
 
 const toolToV4 = (tool: Tool.Any, method: string) => {
   if (Tool.isProviderDefined(tool)) {
-    throw unsupported(
+    throw invalidRequest(
       method,
       `provider-defined tool "${tool.name}" is not supported by the Coder AI Gateway bridge`,
+      "tools",
     );
   }
   const result: NonNullable<LanguageModelV4CallOptions["tools"]>[number] = {
     type: "function",
     name: tool.name,
-    // SAFETY: effect's JsonSchema7 output is structurally a JSON Schema
-    // draft-07 document; only the nominal type differs from `JSONSchema7`.
-    inputSchema: Tool.getJsonSchemaFromSchemaAst(tool.parametersSchema.ast) as JSONSchema7,
+    inputSchema: toDraft07(Tool.getJsonSchema(tool)),
   };
-  const description =
-    tool.description ?? Tool.getDescriptionFromSchemaAst(tool.parametersSchema.ast);
+  const description = Tool.getDescription(tool);
   if (description !== undefined) {
     result.description = description;
   }
@@ -347,7 +344,7 @@ const toolToV4 = (tool: Tool.Any, method: string) => {
 };
 
 /**
- * `@effect/ai` has already narrowed `tools` to a `oneOf` subset, so `oneOf`
+ * `effect/ai` has already narrowed `tools` to a `oneOf` subset, so `oneOf`
  * maps to its `mode`. A choice that demands a tool call fails when there are
  * no tools to call.
  */
@@ -365,9 +362,10 @@ const toolChoiceToV4 = (
     result = { type: toolChoice.mode ?? "auto" };
   }
   if (options.tools.length === 0 && (result.type === "required" || result.type === "tool")) {
-    throw unsupported(
+    throw invalidRequest(
       method,
       `tool choice "${result.type}" needs at least one tool, but the call has none`,
+      "toolChoice",
     );
   }
   return result;
@@ -421,6 +419,9 @@ const messageToV4 = (message: Prompt.Message): LanguageModelV4Message => {
           case "tool-result":
             content.push(toolResultToV4(part));
             break;
+          // Tool approvals are resolved by `effect/ai` (see module docs).
+          case "tool-approval-request":
+            break;
         }
       }
       return { role: "assistant", content };
@@ -428,7 +429,7 @@ const messageToV4 = (message: Prompt.Message): LanguageModelV4Message => {
     case "tool": {
       const content: Array<LanguageModelV4ToolResultPart> = [];
       for (const part of message.content) {
-        content.push(toolResultToV4(part));
+        if (part.type === "tool-result") content.push(toolResultToV4(part));
       }
       return { role: "tool", content };
     }
@@ -473,8 +474,11 @@ const toolResultToV4 = (part: Prompt.ToolResultPart): LanguageModelV4ToolResultP
 };
 
 // ---------------------------------------------------------------------------
-// Response mapping: V4 content/stream parts -> @effect/ai encoded parts
+// Response mapping: V4 content/stream parts -> effect/ai encoded parts
 // ---------------------------------------------------------------------------
+
+const invalidOutput = (method: string, description: string): AiError.AiError =>
+  AiError.make({ module: MODULE, method, reason: new AiError.InvalidOutputError({ description }) });
 
 /** Per the V4 spec, tool call arguments arrive as a stringified JSON object. */
 const toolCallPart = (content: {
@@ -487,12 +491,10 @@ const toolCallPart = (content: {
   try {
     params = content.input.trim() === "" ? {} : JSON.parse(content.input);
   } catch (cause) {
-    throw new AiError.MalformedOutput({
-      module: MODULE,
-      method: "toolCallPart",
-      description: `tool call arguments are not valid JSON: ${content.input}`,
-      cause,
-    });
+    throw invalidOutput(
+      "toolCallPart",
+      `tool call arguments are not valid JSON (${String(cause)}): ${content.input}`,
+    );
   }
   return {
     type: "tool-call",
@@ -578,7 +580,7 @@ const sharedContentToParts = (content: SharedContent): Array<SharedPartEncoded> 
           fileName: content.filename,
         },
       ];
-    // No @effect/ai representation exists for these; see module docs.
+    // Not mapped to `effect/ai` parts; see module docs.
     case "custom":
     case "reasoning-file":
     case "tool-approval-request":
@@ -649,7 +651,7 @@ class ServerToolCalls {
     this.#toolNames = new Set(options.tools.map((tool) => tool.name));
   }
 
-  /** Records `part` and returns `true` when it must not reach `@effect/ai`. */
+  /** Records `part` and returns `true` when it must not reach `effect/ai`. */
   absorb(part: LanguageModelV4Content | LanguageModelV4StreamPart): boolean {
     if (part.type === "tool-call") {
       if (part.providerExecuted !== true || this.#toolNames.has(part.toolName)) return false;
@@ -669,7 +671,11 @@ class ServerToolCalls {
 
   attach(finish: Response.FinishPartEncoded): Response.FinishPartEncoded {
     if (this.#calls.size === 0) return finish;
-    return { ...finish, metadata: { coder: { serverToolCalls: [...this.#calls.values()] } } };
+    // Finish metadata must be plain JSON. Params come from `JSON.parse` and
+    // results from the provider's JSON payload; the round trip drops the
+    // `undefined` object values that the AI SDK's `JSONValue` allows.
+    const serverToolCalls: Schema.Json = JSON.parse(JSON.stringify([...this.#calls.values()]));
+    return { ...finish, metadata: { coder: { serverToolCalls } } };
   }
 
   #entry(id: string, name: string): ServerToolCall {
@@ -679,11 +685,10 @@ class ServerToolCalls {
       this.#calls.set(id, call);
     }
     if (call.name !== name) {
-      throw new AiError.MalformedOutput({
-        module: MODULE,
-        method: "serverToolCall",
-        description: `tool call ${id} changed its tool name from "${call.name}" to "${name}"`,
-      });
+      throw invalidOutput(
+        "serverToolCall",
+        `tool call ${id} changed its tool name from "${call.name}" to "${name}"`,
+      );
     }
     return call;
   }
@@ -703,22 +708,20 @@ const responseMetadataPart = (metadata: {
 const finishPart = (
   finishReason: LanguageModelV4FinishReason,
   usage: LanguageModelV4Usage,
-): Response.FinishPartEncoded => {
-  const inputTokens = usage.inputTokens.total;
-  const outputTokens = usage.outputTokens.total;
-  let totalTokens: number | undefined;
-  if (inputTokens !== undefined && outputTokens !== undefined) {
-    totalTokens = inputTokens + outputTokens;
-  }
-  return {
-    type: "finish",
-    reason: finishReason.unified,
-    usage: {
-      inputTokens,
-      outputTokens,
-      totalTokens,
-      reasoningTokens: usage.outputTokens.reasoning,
-      cachedInputTokens: usage.inputTokens.cacheRead,
+): Response.FinishPartEncoded => ({
+  type: "finish",
+  reason: finishReason.unified,
+  usage: {
+    inputTokens: {
+      uncached: usage.inputTokens.noCache,
+      total: usage.inputTokens.total,
+      cacheRead: usage.inputTokens.cacheRead,
+      cacheWrite: usage.inputTokens.cacheWrite,
     },
-  };
-};
+    outputTokens: {
+      total: usage.outputTokens.total,
+      text: usage.outputTokens.text,
+      reasoning: usage.outputTokens.reasoning,
+    },
+  },
+});

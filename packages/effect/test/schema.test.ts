@@ -5,7 +5,7 @@ import { toAiSdkSchema, toJsonSchema } from "../src/schema.js";
 
 const Weather = Schema.Struct({
   city: Schema.String,
-  temperature: Schema.Number,
+  temperature: Schema.Finite,
 });
 
 describe("toJsonSchema", () => {
@@ -17,7 +17,39 @@ describe("toJsonSchema", () => {
         city: { type: "string" },
         temperature: { type: "number" },
       },
-      additionalProperties: false,
+      additionalProperties: true,
+    });
+  });
+
+  it("rewrites draft 2020-12 references and tuples as draft-07", () => {
+    const Point = Schema.Struct({ x: Schema.Finite }).annotate({ identifier: "Point" });
+    const Route = Schema.Struct({
+      from: Point,
+      to: Point,
+      leg: Schema.Tuple([Schema.String, Schema.Boolean]),
+    });
+    expect(toJsonSchema(Route)).toEqual({
+      type: "object",
+      required: ["from", "to", "leg"],
+      properties: {
+        from: { $ref: "#/definitions/Point" },
+        to: { $ref: "#/definitions/Point" },
+        leg: {
+          type: "array",
+          items: [{ type: "string" }, { type: "boolean" }],
+          minItems: 2,
+          maxItems: 2,
+        },
+      },
+      additionalProperties: true,
+      definitions: {
+        Point: {
+          type: "object",
+          required: ["x"],
+          properties: { x: { type: "number" } },
+          additionalProperties: true,
+        },
+      },
     });
   });
 });
@@ -32,7 +64,7 @@ describe("toAiSdkSchema", () => {
     // A transforming schema proves values are *decoded*, not just checked.
     const Transforming = Schema.Struct({
       city: Schema.String,
-      temperature: Schema.NumberFromString,
+      temperature: Schema.FiniteFromString,
     });
     const schema = toAiSdkSchema(Transforming);
     const result = await schema.validate?.({ city: "Berlin", temperature: "21" });
@@ -49,10 +81,10 @@ describe("toAiSdkSchema", () => {
   });
 
   it("exists because bare Effect standard schemas cannot produce JSON schema", () => {
-    // Pin the gap that motivates this bridge: `Schema.standardSchemaV1` emits
+    // Pin the gap that motivates this bridge: `Schema.toStandardSchemaV1` emits
     // no `~standard.jsonSchema` converter, so the AI SDK cannot derive the
     // wire schema from it. If this starts passing, the bridge can be retired.
-    const standard = asSchema(Schema.standardSchemaV1(Weather));
+    const standard = asSchema(Schema.toStandardSchemaV1(Weather));
     expect(() => standard.jsonSchema).toThrow(/does not support JSON Schema conversion/);
   });
 });

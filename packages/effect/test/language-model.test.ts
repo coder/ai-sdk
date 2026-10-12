@@ -4,14 +4,12 @@ import {
   type LanguageModelV4CallOptions,
   type LanguageModelV4StreamPart,
 } from "@ai-sdk/provider";
-import * as AiError from "@effect/ai/AiError";
-import type * as LanguageModel from "@effect/ai/LanguageModel";
-import type * as Prompt from "@effect/ai/Prompt";
-import * as Tool from "@effect/ai/Tool";
-import * as Toolkit from "@effect/ai/Toolkit";
-import * as Chunk from "effect/Chunk";
+import * as AiError from "effect/ai/AiError";
+import type * as LanguageModel from "effect/ai/LanguageModel";
+import type * as Prompt from "effect/ai/Prompt";
+import * as Tool from "effect/ai/Tool";
+import * as Toolkit from "effect/ai/Toolkit";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -39,7 +37,7 @@ const fakeModel = (overrides: Partial<LanguageModelV4>): LanguageModelV4 => ({
   ...overrides,
 });
 
-const service = (model: LanguageModelV4): Effect.Effect<LanguageModel.Service> =>
+const service = (model: LanguageModelV4): Effect.Effect<LanguageModel.LanguageModel> =>
   CoderLanguageModel.fromModel(model);
 
 const streamOf = (parts: ReadonlyArray<LanguageModelV4StreamPart>) =>
@@ -72,10 +70,13 @@ describe("generateText", () => {
 
     expect(response.text).toBe("Hello from the gateway");
     expect(response.finishReason).toBe("stop");
-    expect(response.usage.inputTokens).toBe(10);
-    expect(response.usage.outputTokens).toBe(5);
-    expect(response.usage.totalTokens).toBe(15);
-    expect(response.usage.cachedInputTokens).toBe(2);
+    expect(response.usage.inputTokens).toEqual({
+      uncached: 8,
+      total: 10,
+      cacheRead: 2,
+      cacheWrite: undefined,
+    });
+    expect(response.usage.outputTokens).toEqual({ total: 5, text: 5, reasoning: undefined });
     expect(captured?.prompt).toEqual([
       { role: "user", content: [{ type: "text", text: "Say hello" }] },
     ]);
@@ -162,7 +163,7 @@ describe("generateText", () => {
   it("sends tool definitions as JSON schema and resolves tool calls", async () => {
     const GetWeather = Tool.make("get_weather", {
       description: "Look up the current weather",
-      parameters: { city: Schema.String },
+      parameters: Schema.Struct({ city: Schema.String }),
       success: Schema.Struct({ temperature: Schema.Number }),
     });
     const toolkit = Toolkit.make(GetWeather);
@@ -206,7 +207,7 @@ describe("generateText", () => {
           type: "object",
           required: ["city"],
           properties: { city: { type: "string" } },
-          additionalProperties: false,
+          additionalProperties: true,
         },
       },
     ]);
@@ -332,7 +333,7 @@ describe("generateText", () => {
 
   describe("tool choice", () => {
     const GetWeather = Tool.make("get_weather", {
-      parameters: { city: Schema.String },
+      parameters: Schema.Struct({ city: Schema.String }),
       success: Schema.Struct({ temperature: Schema.Number }),
     });
     const GetTime = Tool.make("get_time", { success: Schema.String });
@@ -373,7 +374,7 @@ describe("generateText", () => {
           m.generateText({
             prompt: "weather?",
             toolkit,
-            toolChoice: { mode: "required", oneOf: ["get_weather"] },
+            toolChoice: { mode: "required", oneOf: ["get_weather" as const] },
           }),
         ).pipe(Effect.provide(handlers)),
       );
@@ -389,13 +390,13 @@ describe("generateText", () => {
         ).pipe(Effect.provide(handlers)),
       );
       const error = failure(exit);
-      expect(error._tag).toBe("MalformedInput");
+      expect(error.reason._tag).toBe("InvalidRequestError");
       expect(error.message).toContain("needs at least one tool");
       expect(calls).toHaveLength(0);
     });
   });
 
-  it("fails with MalformedOutput when tool call arguments are not JSON", async () => {
+  it("fails with InvalidOutputError when tool call arguments are not JSON", async () => {
     const model = fakeModel({
       doGenerate: async () => ({
         content: [
@@ -413,8 +414,7 @@ describe("generateText", () => {
       ),
     );
 
-    expect(Exit.isFailure(exit)).toBe(true);
-    expect(String(exit)).toContain("MalformedOutput");
+    expect(failure(exit).reason._tag).toBe("InvalidOutputError");
   });
 
   it("maps HTTP failures to the typed AiError taxonomy", async () => {
@@ -437,13 +437,13 @@ describe("generateText", () => {
       );
 
     const auth = failure(await run(401));
-    expect(auth._tag).toBe("HttpResponseError");
+    expect(auth.reason._tag).toBe("AuthenticationError");
     expect(classifyError(auth)).toBe("auth");
 
     expect(classifyError(failure(await run(429)))).toBe("rate-limit");
 
     const network = failure(await run(undefined));
-    expect(network._tag).toBe("HttpRequestError");
+    expect(network.reason._tag).toBe("NetworkError");
     expect(classifyError(network)).toBe("transport");
   });
 });
@@ -463,7 +463,7 @@ describe("generateObject", () => {
       },
     });
 
-    const Weather = Schema.Struct({ city: Schema.String, temperature: Schema.Number });
+    const Weather = Schema.Struct({ city: Schema.String, temperature: Schema.Finite });
     const response = await Effect.runPromise(
       Effect.flatMap(service(model), (m) =>
         m.generateObject({ prompt: "weather in berlin", schema: Weather, objectName: "weather" }),
@@ -478,7 +478,7 @@ describe("generateObject", () => {
         type: "object",
         required: ["city", "temperature"],
         properties: { city: { type: "string" }, temperature: { type: "number" } },
-        additionalProperties: false,
+        additionalProperties: true,
       },
     });
     // Schema-less JSON modes (e.g. OpenAI json_object) need the instruction.
@@ -492,7 +492,7 @@ describe("generateObject", () => {
 });
 
 describe("streamText", () => {
-  it("maps stream parts onto @effect/ai stream parts", async () => {
+  it("maps stream parts onto effect/ai stream parts", async () => {
     const model = fakeModel({
       doStream: async () => ({
         stream: streamOf([
@@ -511,7 +511,7 @@ describe("streamText", () => {
       Effect.flatMap(service(model), (m) => Stream.runCollect(m.streamText({ prompt: "hi" }))),
     );
 
-    const types = Chunk.toReadonlyArray(parts).map((part) => part.type);
+    const types = parts.map((part) => part.type);
     expect(types).toEqual([
       "response-metadata",
       "text-start",
@@ -520,9 +520,7 @@ describe("streamText", () => {
       "text-end",
       "finish",
     ]);
-    const text = Chunk.toReadonlyArray(parts)
-      .flatMap((part) => (part.type === "text-delta" ? [part.delta] : []))
-      .join("");
+    const text = parts.flatMap((part) => (part.type === "text-delta" ? [part.delta] : [])).join("");
     expect(text).toBe("Hello");
   });
 
@@ -551,10 +549,8 @@ describe("streamText", () => {
       }),
     });
 
-    const parts = Chunk.toReadonlyArray(
-      await Effect.runPromise(
-        Effect.flatMap(service(model), (m) => Stream.runCollect(m.streamText({ prompt: "hi" }))),
-      ),
+    const parts = await Effect.runPromise(
+      Effect.flatMap(service(model), (m) => Stream.runCollect(m.streamText({ prompt: "hi" }))),
     );
 
     expect(parts.map((part) => part.type)).toEqual([
@@ -621,7 +617,7 @@ describe("streamText", () => {
     await Effect.runPromise(
       Effect.gen(function* () {
         const m = yield* service(model);
-        const fiber = yield* Effect.fork(Stream.runCollect(m.streamText({ prompt: "hi" })));
+        const fiber = yield* Effect.forkChild(Stream.runCollect(m.streamText({ prompt: "hi" })));
         // Give the stream a chance to start and issue the request.
         yield* Effect.promise(
           () =>

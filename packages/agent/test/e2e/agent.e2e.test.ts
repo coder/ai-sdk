@@ -95,8 +95,13 @@ suite("CoderAgent e2e (live Coder)", () => {
       }
     } finally {
       // The model creates the chat after stream() returns, so chatId is not
-      // set yet at that point. Read it once the stream has run.
-      if (agent.chatId) cleanup.push(agent.chatId);
+      // set yet at that point. Read it once the stream has run. A failed
+      // stream clears chatId but keeps the chat in lastKnownChatId and
+      // strandedChatIds, so queue those too.
+      const ids = new Set(agent.strandedChatIds);
+      const id = agent.chatId ?? agent.lastKnownChatId;
+      if (id) ids.add(id);
+      cleanup.push(...ids);
     }
     expect(agent.chatId).toBeDefined();
     expect(streamed.length).toBeGreaterThan(0);

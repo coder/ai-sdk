@@ -4,8 +4,12 @@ import {
   type TransportEventHandler,
 } from "@coder/ai-sdk-agent";
 import * as LanguageModel from "@effect/ai/LanguageModel";
+import * as Prompt from "@effect/ai/Prompt";
+import * as Tool from "@effect/ai/Tool";
+import * as Toolkit from "@effect/ai/Toolkit";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import * as CoderAgentModel from "../../src/agent-model.js";
@@ -96,6 +100,51 @@ suite("CoderAgentModel (live)", () => {
     expect(settled).toHaveLength(2);
     expect(new Set(settled.map((e) => e.type === "segment:settle" && e.chatId)).size).toBe(1);
   }, 120_000);
+
+  it("runs a client tool with a nested JSON schema", async () => {
+    // Inline only: chatd does not resolve `$ref` (neither the draft-07
+    // `definitions` nor the 2020-12 `$defs` form), so a schema with an
+    // `identifier` annotation would reach the model as a dangling reference.
+    const Delay = Schema.Struct({ minutes: Schema.Int }).annotations({
+      description: "How long to wait before the reminder",
+    });
+    const CreateReminder = Tool.make("create_reminder", {
+      description: "Create a reminder for the user",
+      parameters: { title: Schema.String, delay: Delay },
+      success: Schema.Struct({ id: Schema.String }),
+    });
+    const toolkit = Toolkit.make(CreateReminder);
+    const calls: Array<{ readonly title: string; readonly delay: { readonly minutes: number } }> =
+      [];
+    const text =
+      "Use the create_reminder tool exactly once to remind me to stretch in 10 minutes. " +
+      "After it succeeds, reply with the reminder id only.";
+    const { onTransportEvent } = recorder();
+
+    const [first, second] = await Effect.runPromise(
+      Effect.gen(function* () {
+        const a = yield* LanguageModel.generateText({ prompt: text, toolkit });
+        const prompt = Prompt.merge(Prompt.make(text), Prompt.fromResponseParts(a.content));
+        const b = yield* LanguageModel.generateText({ prompt, toolkit });
+        return [a, b] as const;
+      }).pipe(
+        Effect.provide(
+          toolkit.toLayer({
+            create_reminder: (params) =>
+              Effect.sync(() => {
+                calls.push(params);
+                return { id: "rem-42" };
+              }),
+          }),
+        ),
+        Effect.provide(CoderAgentModel.layer(settings(onTransportEvent))),
+      ),
+    );
+
+    expect(first.toolCalls.map((call) => call.name)).toEqual(["create_reminder"]);
+    expect(calls).toEqual([{ title: expect.any(String), delay: { minutes: 10 } }]);
+    expect(second.text).toContain("rem-42");
+  }, 180_000);
 
   it("interrupts the chat exactly once when the stream fiber is interrupted", async () => {
     const { events, onTransportEvent } = recorder();

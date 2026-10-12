@@ -14,6 +14,7 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import { describe, expect, it } from "vitest";
 import { acquireSession, acquireWorkspace, CoderSandboxError } from "../src/sandbox.js";
+import { failure } from "./exit.js";
 
 const readyStatus = (name: string): WorkspaceStatus => ({
   id: "11111111-2222-3333-4444-555555555555",
@@ -183,11 +184,9 @@ describe("acquireWorkspace", () => {
     transport.failStatus = true;
 
     const exit = await Effect.runPromiseExit(scopedAcquire(transport));
-    expect(Exit.isFailure(exit)).toBe(true);
-    if (Exit.isFailure(exit) && exit.cause._tag === "Fail") {
-      expect(exit.cause.error).toBeInstanceOf(CoderSandboxError);
-      expect(exit.cause.error.phase).toBe("acquire");
-    }
+    const error = failure(exit);
+    expect(error).toBeInstanceOf(CoderSandboxError);
+    expect(error.phase).toBe("acquire");
   });
 
   it("releases the workspace when the fiber is interrupted after acquisition", async () => {

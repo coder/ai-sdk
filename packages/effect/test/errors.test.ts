@@ -19,7 +19,7 @@ describe("classifyStatus", () => {
   it.each([
     [401, "auth"],
     [403, "auth"],
-    [402, "rate-limit"],
+    [402, "quota"],
     [429, "rate-limit"],
     [500, "provider-unavailable"],
     [502, "provider-unavailable"],
@@ -52,12 +52,24 @@ describe("toAiError", () => {
   it.each([
     [400, "InvalidRequestError"],
     [401, "AuthenticationError"],
-    [402, "RateLimitError"],
+    [402, "QuotaExhaustedError"],
     [403, "AuthenticationError"],
     [404, "UnknownError"],
     [503, "InternalProviderError"],
   ] as const)("maps HTTP %d to %s", (status, tag) => {
     expect(map(apiCallError(status)).reason._tag).toBe(tag);
+  });
+
+  it("maps HTTP 402 to QuotaExhaustedError, preserving details", () => {
+    const error = map(apiCallError(402));
+    const reason = error.reason as AiError.QuotaExhaustedError;
+    expect(reason._tag).toBe("QuotaExhaustedError");
+    expect(reason.isRetryable).toBe(false);
+    expect(reason.http?.response).toEqual({ status: 402, headers: { "x-request-id": "req_123" } });
+    expect(reason.http?.body).toBe(`{"error":"failure"}`);
+    expect(reason.metadata).toEqual({
+      coder: { classification: "quota", status: 402, message: "gateway failure (402)" },
+    });
   });
 
   describe("RateLimitError.retryAfter", () => {
@@ -145,6 +157,10 @@ describe("classifyError / isTransient", () => {
     expect(classifyError(throttled)).toBe("rate-limit");
     expect(isTransient(throttled)).toBe(true);
 
+    const quota = toAiError({ module: "T", method: "m", error: apiCallError(402) });
+    expect(classifyError(quota)).toBe("quota");
+    expect(isTransient(quota)).toBe(false);
+
     const upstream = toAiError({ module: "T", method: "m", error: apiCallError(503) });
     expect(classifyError(upstream)).toBe("provider-unavailable");
     expect(isTransient(upstream)).toBe(true);
@@ -157,12 +173,32 @@ describe("classifyError / isTransient", () => {
   it("classifies raw AI SDK errors directly (documented contract)", () => {
     expect(classifyError(apiCallError(403))).toBe("auth");
     expect(classifyError(apiCallError(429))).toBe("rate-limit");
+    expect(classifyError(apiCallError(402))).toBe("quota");
     expect(classifyError(apiCallError(undefined))).toBe("transport");
     expect(classifyError(new JSONParseError({ text: "x", cause: new Error("y") }))).toBe(
       "malformed-response",
     );
     expect(isTransient(apiCallError(503))).toBe(true);
     expect(isTransient(apiCallError(401))).toBe(false);
+    expect(isTransient(apiCallError(402))).toBe(false);
+    expect(isTransient(apiCallError(429))).toBe(true);
+  });
+
+  it("classifies effect/ai's own quota and rate-limit reasons by tag", () => {
+    const quota = AiError.make({
+      module: "T",
+      method: "m",
+      reason: new AiError.QuotaExhaustedError({}),
+    });
+    expect(classifyError(quota)).toBe("quota");
+    expect(isTransient(quota)).toBe(false);
+    const throttled = AiError.make({
+      module: "T",
+      method: "m",
+      reason: new AiError.RateLimitError({}),
+    });
+    expect(classifyError(throttled)).toBe("rate-limit");
+    expect(isTransient(throttled)).toBe(true);
   });
 
   it("classifies malformed output as terminal", () => {
@@ -208,6 +244,7 @@ describe("Coder Agents errors", () => {
   });
 
   it.each([
+    [402, "quota", false],
     [429, "rate-limit", true],
     [503, "provider-unavailable", true],
     [409, "unknown", false],
@@ -250,6 +287,7 @@ describe("Coder Agents errors", () => {
   it.each([
     [{ kind: "stream_closed", retryable: true }, "transport", true],
     [{ status_code: 429, retryable: true }, "rate-limit", true],
+    [{ status_code: 402 }, "quota", false],
     [{ status_code: 503, retryable: false }, "provider-unavailable", false],
     [{ status_code: 401 }, "auth", false],
     [{ kind: "generic" }, "unknown", false],

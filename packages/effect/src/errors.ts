@@ -40,7 +40,9 @@ import * as Schema from "effect/Schema";
  * Coder-oriented classification of a gateway/model call failure.
  *
  * - `auth`: the credential was rejected (401/403) — Coder token or BYOK key.
- * - `rate-limit`: the gateway or upstream throttled or exhausted quota (402/429).
+ * - `rate-limit`: the gateway or upstream throttled the request (429).
+ * - `quota`: the account's quota or billing limit is exhausted (402). Not
+ *   transient: retrying cannot succeed until someone acts.
  * - `provider-unavailable`: the upstream or gateway failed server-side (5xx).
  * - `malformed-response`: the response could not be parsed or validated.
  * - `transport`: the request never produced an HTTP response (network error),
@@ -52,6 +54,7 @@ import * as Schema from "effect/Schema";
 export type ErrorReason =
   | "auth"
   | "rate-limit"
+  | "quota"
   | "provider-unavailable"
   | "malformed-response"
   | "transport"
@@ -67,7 +70,7 @@ export type ErrorReason =
  * - `kind` / `provider`: from `CoderChatError`.
  * - `chatId`: from `CoderStreamError`.
  * - `message`: the source error's message, on reasons without a
- *   `description` field (`RateLimitError`).
+ *   `description` field (`RateLimitError`, `QuotaExhaustedError`).
  *
  * A `RateLimitError` also sets `retryAfter` from the response's
  * `Retry-After` header when it is valid.
@@ -76,6 +79,7 @@ const CoderErrorMetadata = Schema.Struct({
   classification: Schema.Literals([
     "auth",
     "rate-limit",
+    "quota",
     "provider-unavailable",
     "malformed-response",
     "transport",
@@ -98,7 +102,8 @@ const decodeCoderMetadata = Schema.decodeUnknownOption(CoderErrorMetadata);
 /** Classify an HTTP status code into an {@link ErrorReason}. */
 export const classifyStatus = (status: number): ErrorReason => {
   if (status === 401 || status === 403) return "auth";
-  if (status === 402 || status === 429) return "rate-limit";
+  if (status === 402) return "quota";
+  if (status === 429) return "rate-limit";
   if (status >= 500) return "provider-unavailable";
   return "unknown";
 };
@@ -135,8 +140,9 @@ const classifyReason = (reason: AiError.AiErrorReason): ErrorReason => {
     case "AuthenticationError":
       return "auth";
     case "RateLimitError":
-    case "QuotaExhaustedError":
       return "rate-limit";
+    case "QuotaExhaustedError":
+      return "quota";
     case "InternalProviderError":
       return "provider-unavailable";
     case "NetworkError":
@@ -176,7 +182,8 @@ export const classifyError = (error: ClassifiableError): ErrorReason => {
  * `false` by the agent when replaying the prompt would duplicate server-side
  * effects; `CoderChatError.retryable` is chatd's own verdict). Otherwise
  * throttling, upstream outages, network errors, and turn timeouts are
- * transient, while auth and malformed-response failures are terminal.
+ * transient, while auth, exhausted quota, and malformed-response failures
+ * are terminal.
  */
 export const isTransient = (error: ClassifiableError): boolean => {
   const verdict = Option.getOrUndefined(coderMetadata(asAiError(error)))?.retryable;
@@ -270,6 +277,12 @@ const reasonFor = (
       reason = new AiError.RateLimitError({
         http,
         retryAfter,
+        metadata: { coder: { ...coder, message: description } },
+      });
+      break;
+    case "quota":
+      reason = new AiError.QuotaExhaustedError({
+        http,
         metadata: { coder: { ...coder, message: description } },
       });
       break;

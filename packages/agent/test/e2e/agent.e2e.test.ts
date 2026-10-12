@@ -78,7 +78,12 @@ suite("CoderAgent e2e (live Coder)", () => {
   }, 120_000);
 
   it("streams text deltas", async () => {
-    const agent = new CoderAgent({
+    // The model creates the chat after stream() returns, so agent.chatId is
+    // not set when a cleanup push right after stream() would read it. Scope
+    // exit runs agent.interrupt() and agent.archive() instead. archive() also
+    // finds the chat after a failed stream cleared chatId, and retries while
+    // an interrupted run winds down.
+    await using agent = new CoderAgent({
       client,
       organizationId,
       model: process.env.CODER_MODEL ?? "haiku",
@@ -88,20 +93,9 @@ suite("CoderAgent e2e (live Coder)", () => {
 
     let streamed = "";
     let chunks = 0;
-    try {
-      for await (const delta of result.textStream) {
-        streamed += delta;
-        chunks++;
-      }
-    } finally {
-      // The model creates the chat after stream() returns, so chatId is not
-      // set yet at that point. Read it once the stream has run. A failed
-      // stream clears chatId but keeps the chat in lastKnownChatId and
-      // strandedChatIds, so queue those too.
-      const ids = new Set(agent.strandedChatIds);
-      const id = agent.chatId ?? agent.lastKnownChatId;
-      if (id) ids.add(id);
-      cleanup.push(...ids);
+    for await (const delta of result.textStream) {
+      streamed += delta;
+      chunks++;
     }
     expect(agent.chatId).toBeDefined();
     expect(streamed.length).toBeGreaterThan(0);

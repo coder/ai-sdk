@@ -1,5 +1,5 @@
 import { tool } from "ai";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import NodeWebSocket from "ws";
 import { z } from "zod";
 import {
@@ -25,7 +25,6 @@ const suite = ready ? describe : describe.skip;
 
 let client: CoderChatClient;
 let organizationId: string;
-const cleanup: string[] = [];
 
 beforeAll(async () => {
   if (!ready) return;
@@ -41,33 +40,18 @@ beforeAll(async () => {
   }
 });
 
-afterEach(async () => {
-  for (const id of cleanup.splice(0)) {
-    try {
-      await client.archiveChat(id);
-    } catch {
-      // Active chats (e.g. left in requires_action) can't be archived directly;
-      // interrupt first, then archive. Best-effort.
-      try {
-        await client.interruptChat(id);
-        await client.archiveChat(id);
-      } catch {
-        /* give up */
-      }
-    }
-  }
-});
-
 suite("CoderAgent e2e (live Coder)", () => {
   it("generates plain text", async () => {
-    const agent = new CoderAgent({
+    // Each chat-creating test scopes its agent with `await using`: scope exit
+    // runs agent.interrupt() and agent.archive(), so a test that throws (in
+    // generate() or an assertion) still archives its chat.
+    await using agent = new CoderAgent({
       client,
       organizationId,
       model: process.env.CODER_MODEL ?? "haiku",
       instructions: "You are terse. Answer with a single word when possible.",
     });
     const result = await agent.generate({ prompt: "Reply with exactly the word: pong" });
-    if (agent.chatId) cleanup.push(agent.chatId);
 
     expect(result.text.toLowerCase()).toContain("pong");
     expect(result.finishReason).toBe("stop");
@@ -106,7 +90,7 @@ suite("CoderAgent e2e (live Coder)", () => {
   it("round-trips a custom (client-executed) tool", async () => {
     // A tool whose output the model cannot guess, forcing a real call.
     const calls: Array<{ topic: string }> = [];
-    const agent = new CoderAgent({
+    await using agent = new CoderAgent({
       client,
       organizationId,
       model: process.env.CODER_TOOL_MODEL ?? "sonnet",
@@ -129,7 +113,6 @@ suite("CoderAgent e2e (live Coder)", () => {
       prompt:
         "Use the lookup tool with topic 'coder', then reply with exactly the value it returns.",
     });
-    if (agent.chatId) cleanup.push(agent.chatId);
 
     // The custom tool actually executed locally with the model's args (round-trip worked).
     expect(calls.length).toBeGreaterThanOrEqual(1);
@@ -172,7 +155,7 @@ suite("CoderAgent e2e (live Coder)", () => {
       },
     });
     const calls: string[] = [];
-    const agent = new CoderAgent({
+    await using agent = new CoderAgent({
       client: countingClient,
       organizationId,
       model: process.env.CODER_TOOL_MODEL ?? "sonnet",
@@ -195,7 +178,6 @@ suite("CoderAgent e2e (live Coder)", () => {
       prompt:
         "Use the lookup tool for topic 'alpha', then (in a separate call) for topic 'beta'. Reply with both values.",
     });
-    if (agent.chatId) cleanup.push(agent.chatId);
 
     // Both tools actually round-tripped (values are unguessable).
     expect(calls).toContain("alpha");
@@ -210,7 +192,7 @@ suite("CoderAgent e2e (live Coder)", () => {
 
   it("emits a coherent transport-event trace for a client-tool turn (#45)", async () => {
     const events: CoderTransportEvent[] = [];
-    const agent = new CoderAgent({
+    await using agent = new CoderAgent({
       baseUrl: baseUrl as string,
       token: token as string,
       organizationId,
@@ -232,7 +214,6 @@ suite("CoderAgent e2e (live Coder)", () => {
       prompt:
         "Use the lookup tool with topic 'trace', then reply with exactly the value it returns.",
     });
-    if (agent.chatId) cleanup.push(agent.chatId);
     expect(result.text).toContain("SECRET-trace-5");
 
     // Log the trace (the point of the hook: a stable event vocabulary).
@@ -305,7 +286,7 @@ suite("CoderAgent e2e (live Coder)", () => {
     const doc = new TextEncoder().encode(
       `# Shipment Note\n\nThe reference id for this shipment is ${marker}.\n`,
     );
-    const agent = new CoderAgent({
+    await using agent = new CoderAgent({
       client,
       organizationId,
       model: process.env.CODER_MODEL ?? "haiku",
@@ -324,7 +305,6 @@ suite("CoderAgent e2e (live Coder)", () => {
         },
       ],
     });
-    if (agent.chatId) cleanup.push(agent.chatId);
 
     expect(result.text).toContain(marker);
   }, 120_000);

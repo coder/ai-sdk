@@ -56,26 +56,26 @@
     "example:sandbox": "tsx examples/03-sandbox.ts"
   },
   "dependencies": {
-    "@ai-sdk/provider": "4.0.26",
+    "@ai-sdk/provider": "4.0.27",
     "@coder/ai-sdk-agent": "workspace:^",
     "@coder/ai-sdk-provider": "workspace:^",
     "@coder/ai-sdk-sandbox": "workspace:^"
   },
   "devDependencies": {
-    "@ai-sdk/harness": "^1.0.137",
-    "@ai-sdk/provider-utils": "^5.0.53",
+    "@ai-sdk/harness": "^1.0.149",
+    "@ai-sdk/provider-utils": "^5.0.59",
     "@arethetypeswrong/cli": "^0.18.5",
     "@types/node": "^26.6.3",
-    "@vitest/coverage-v8": "^5.0.3",
-    "ai": "^7.0.126",
+    "@vitest/coverage-v8": "^5.0.4",
+    "ai": "^7.0.138",
     "effect": "4.0.3",
     "publint": "^0.3.25",
     "tsup": "^8.5.1",
     "tsx": "^4.23.15",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
     "typescript-7": "npm:typescript@^7.0.2",
-    "vitest": "^5.0.3",
-    "zod": "4.6.5"
+    "vitest": "^5.0.4",
+    "zod": "4.6.7"
   },
   "peerDependencies": {
     "ai": "^7.0.0",

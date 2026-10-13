@@ -8,7 +8,7 @@
  * is interrupted after acquisition. Acquisition itself is uninterruptible, per
  * standard `acquireRelease` semantics.
  *
- * Transports stay out of scope here (spike): callers can pass any
+ * This module implements no transport of its own: callers can pass any
  * `CoderTransport`; the default is the ambient-login CLI transport.
  */
 import {

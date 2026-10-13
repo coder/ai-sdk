@@ -7,8 +7,8 @@
  * {@link layer} bind it to a Coder AI Gateway model resolved from
  * `CoderProviderSettings` or an existing `CoderProvider`.
  *
- * Spike limitations (fail loudly with an `InvalidRequestError` reason rather
- * than silently degrade): provider-defined tools are not expressible in the
+ * Limitations (fail loudly with an `InvalidRequestError` reason rather than
+ * silently degrade): provider-defined tools are not expressible in the
  * `LanguageModelV4` call options. Response parts with no `effect/ai`
  * equivalent (custom parts, reasoning files, tool approval requests,
  * URL/reference/text file payloads) are dropped, and so are tool approval
@@ -531,7 +531,7 @@ const toolCallPart = (content: {
 
 /**
  * `Response.FilePartEncoded.data` is a base64 string; only `data` payloads can
- * be represented. URL / reference / text payloads are dropped (spike caveat).
+ * be represented. URL / reference / text payloads are dropped.
  */
 const fileDataToBase64 = (data: SharedV4FileData): string | undefined => {
   if (data.type !== "data") return undefined;

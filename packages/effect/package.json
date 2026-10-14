@@ -62,13 +62,13 @@
     "@coder/ai-sdk-sandbox": "workspace:^"
   },
   "devDependencies": {
-    "@ai-sdk/harness": "^1.0.149",
+    "@ai-sdk/harness": "^1.0.150",
     "@ai-sdk/provider-utils": "^5.0.59",
     "@arethetypeswrong/cli": "^0.18.5",
     "@types/node": "^26.6.3",
     "@vitest/coverage-v8": "^5.0.4",
-    "ai": "^7.0.138",
-    "effect": "4.0.3",
+    "ai": "^7.0.139",
+    "effect": "4.0.4",
     "publint": "^0.3.25",
     "tsup": "^8.5.1",
     "tsx": "^4.23.15",

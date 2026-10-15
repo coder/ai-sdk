@@ -33,8 +33,8 @@ importers:
         version: 8.22.0
     devDependencies:
       '@ai-sdk/react':
-        specifier: 4.0.142
-        version: 4.0.142(react@19.2.8)(zod@4.6.7)
+        specifier: 4.0.143
+        version: 4.0.143(react@19.2.8)(zod@4.6.7)
       '@types/node':
         specifier: ^26.6.5
         version: 26.6.5
@@ -42,8 +42,8 @@ importers:
         specifier: ^8.18.2
         version: 8.18.2
       ai:
-        specifier: ^7.0.139
-        version: 7.0.139(zod@4.6.7)
+        specifier: ^7.0.140
+        version: 7.0.140(zod@4.6.7)
       tsup:
         specifier: ^8.5.1
         version: 8.5.1(@typescript/typescript6@6.0.2)(postcss@8.5.26)(supports-color@7.2.0)(tsx@4.23.15)(yaml@2.9.1)
@@ -79,8 +79,8 @@ importers:
         version: link:../sandbox
     devDependencies:
       '@ai-sdk/harness':
-        specifier: ^1.0.150
-        version: 1.0.150(ws@8.22.0)(zod@4.6.7)
+        specifier: ^1.0.151
+        version: 1.0.151(ws@8.22.0)(zod@4.6.7)
       '@ai-sdk/provider-utils':
         specifier: ^5.0.59
         version: 5.0.59(zod@4.6.7)
@@ -94,8 +94,8 @@ importers:
         specifier: ^5.0.4
         version: 5.0.4(vitest@5.0.4)
       ai:
-        specifier: ^7.0.139
-        version: 7.0.139(zod@4.6.7)
+        specifier: ^7.0.140
+        version: 7.0.140(zod@4.6.7)
       effect:
         specifier: 4.0.4
         version: 4.0.4
@@ -143,8 +143,8 @@ importers:
         specifier: ^5.0.4
         version: 5.0.4(vitest@5.0.4)
       ai:
-        specifier: ^7.0.139
-        version: 7.0.139(zod@4.6.7)
+        specifier: ^7.0.140
+        version: 7.0.140(zod@4.6.7)
       publint:
         specifier: ^0.3.25
         version: 0.3.25
@@ -173,8 +173,8 @@ importers:
         specifier: ^4.0.79
         version: 4.0.79(zod@4.6.7)
       ai:
-        specifier: ^7.0.139
-        version: 7.0.139(zod@4.6.7)
+        specifier: ^7.0.140
+        version: 7.0.140(zod@4.6.7)
       release-please:
         specifier: ~17.11.2
         version: 17.11.2(supports-color@7.2.0)
@@ -205,17 +205,17 @@ importers:
         version: 2.9.1
     devDependencies:
       '@ai-sdk/harness':
-        specifier: ^1.0.150
-        version: 1.0.150(ws@8.22.0)(zod@4.6.7)
+        specifier: ^1.0.151
+        version: 1.0.151(ws@8.22.0)(zod@4.6.7)
       '@ai-sdk/harness-claude-code':
-        specifier: ^1.0.154
-        version: 1.0.154(zod@4.6.7)
+        specifier: ^1.0.155
+        version: 1.0.155(zod@4.6.7)
       '@ai-sdk/provider-utils':
         specifier: ^5.0.59
         version: 5.0.59(zod@4.6.7)
       '@ai-sdk/tui':
-        specifier: ^1.0.140
-        version: 1.0.140(zod@4.6.7)
+        specifier: ^1.0.141
+        version: 1.0.141(zod@4.6.7)
       '@arethetypeswrong/cli':
         specifier: ^0.18.5
         version: 0.18.5
@@ -258,20 +258,20 @@ packages:
     peerDependencies:
       zod: 4.6.7
 
-  '@ai-sdk/gateway@4.0.112':
-    resolution: {integrity: sha512-P7lmhAADfPRezkf+j//oq5RcScoRDR2sVPXEIVkPxPu7/bgAcQSLkJrQnwmWKnBecbplGxk8/ij7zaHFvDsDgg==}
+  '@ai-sdk/gateway@4.0.113':
+    resolution: {integrity: sha512-fYov5+sH1A20/eN1PaL5z8bZ9RUq0CcL9yAsAhCHz/qUCKliDOg9HXjNYzOUlH6o21lIrp/aKQc8QLGkEEZGlQ==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: 4.6.7
 
-  '@ai-sdk/harness-claude-code@1.0.154':
-    resolution: {integrity: sha512-pgO8i+uzZJsABo8VDECzRVOabQTn/82DHcNmolRDkGCQGCFswVm35EbDrYQ5tad34RY2dI3qWTr+r/cSeh6w3Q==}
+  '@ai-sdk/harness-claude-code@1.0.155':
+    resolution: {integrity: sha512-QwOTVNyzJ/RKb4r00X5WOPniz4s09BDOtmtj71E2xKIfoCToh5EcurQB+WSg1XMBY8GxtI0Da+EjIvozg36jiQ==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: 4.6.7
 
-  '@ai-sdk/harness@1.0.150':
-    resolution: {integrity: sha512-0zKBdycoV7/Nm05O6dK3zysxL0JRuNiK6TkGqHOADHtU+XZMrkbH8axCxeXWX6jDVAvYeIVoZJFCCA6FSvf0VQ==}
+  '@ai-sdk/harness@1.0.151':
+    resolution: {integrity: sha512-eOVu1WnLpt52FjoJxaj0PkZWWfC6NYWwTAci/l9fEmYoH/XPbj9LORWjOc1Ofref/9Ejcrx1Gq//1cQZdPJSTA==}
     engines: {node: '>=22'}
     peerDependencies:
       ws: ^8.21.0
@@ -302,14 +302,14 @@ packages:
     resolution: {integrity: sha512-TtWwm6SxFiPomlMIbTQa+yhJte+w4/oCsW+wJrJzMC3MqHpAY9e5dJF1Y4HxyKt3W2Csac0KiI76Ckio11TFYw==}
     engines: {node: '>=22'}
 
-  '@ai-sdk/react@4.0.142':
-    resolution: {integrity: sha512-74wU/+zbsyyWTOnomRu6qTIfGSsV3o+lUqjuyAgGRRT9BtRi1brCeMjFgYk3E82SZZhExgfgFFulyXGv0EcnfA==}
+  '@ai-sdk/react@4.0.143':
+    resolution: {integrity: sha512-v+DZm3iMvOKbawPk8FAKL6RhJfROXB6XJQuLj0ZPZ7eJnvebVMYGHFjjWVYP80NQ7xxctibjBdb7CNUAtbs4qQ==}
     engines: {node: '>=22'}
     peerDependencies:
       react: ^18 || ~19.0.1 || ~19.1.2 || ^19.2.1
 
-  '@ai-sdk/tui@1.0.140':
-    resolution: {integrity: sha512-/NulrfzQfZVCGgdKImhUkDyAt4CR9c2Clzmx7s56CvSJ5eIWhOiRYEWqLVxk3R/dTos/8zmF5rPJdHQzjK8bBQ==}
+  '@ai-sdk/tui@1.0.141':
+    resolution: {integrity: sha512-lOxJC6kuIE7V4+srxZBYyrE8cusZ2UgHtsTw0hXFa0uJwchPwhlnkWwe6BYroihSvCH+sUtLzthrqiJLDGilmQ==}
     engines: {node: '>=22'}
 
   '@andrewbranch/untar.js@1.0.4':
@@ -1304,8 +1304,8 @@ packages:
     resolution: {integrity: sha512-MnA+YT8fwfJPgBx3m60MNqakm30XOkyIoH1y6huTQvC0PwZG7ki8NacLBcrPbNoo8vEZy7Jpuk7+jMO+CUovTQ==}
     engines: {node: '>= 14'}
 
-  ai@7.0.139:
-    resolution: {integrity: sha512-IpLx5f0yjQVWfiIzwVMwTBQ/SQH9aNnmY7QLd2USw57LrXd9jpwYDXXLpzYomM2wB3LMtjGmWRR8Jpd/GCE0zQ==}
+  ai@7.0.140:
+    resolution: {integrity: sha512-GHWqpUcY7EsRHc7jC99SqzpgabExb9w7anxDYa5N79AIVsGavIZFxZKhVQ/SORkuXFkPO4FG8cCSweaGutvwSw==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: 4.6.7
@@ -2486,16 +2486,16 @@ snapshots:
       '@ai-sdk/provider-utils': 5.0.59(zod@4.6.7)
       zod: 4.6.7
 
-  '@ai-sdk/gateway@4.0.112(zod@4.6.7)':
+  '@ai-sdk/gateway@4.0.113(zod@4.6.7)':
     dependencies:
       '@ai-sdk/provider': 4.0.27
       '@ai-sdk/provider-utils': 5.0.59(zod@4.6.7)
       '@vercel/oidc': 3.2.0
       zod: 4.6.7
 
-  '@ai-sdk/harness-claude-code@1.0.154(zod@4.6.7)':
+  '@ai-sdk/harness-claude-code@1.0.155(zod@4.6.7)':
     dependencies:
-      '@ai-sdk/harness': 1.0.150(ws@8.22.0)(zod@4.6.7)
+      '@ai-sdk/harness': 1.0.151(ws@8.22.0)(zod@4.6.7)
       '@ai-sdk/provider': 4.0.27
       '@ai-sdk/provider-utils': 5.0.59(zod@4.6.7)
       ws: 8.22.0
@@ -2504,11 +2504,11 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  '@ai-sdk/harness@1.0.150(ws@8.22.0)(zod@4.6.7)':
+  '@ai-sdk/harness@1.0.151(ws@8.22.0)(zod@4.6.7)':
     dependencies:
       '@ai-sdk/provider': 4.0.27
       '@ai-sdk/provider-utils': 5.0.59(zod@4.6.7)
-      ai: 7.0.139(zod@4.6.7)
+      ai: 7.0.140(zod@4.6.7)
       zod: 4.6.7
     optionalDependencies:
       ws: 8.22.0
@@ -2540,21 +2540,21 @@ snapshots:
     dependencies:
       json-schema: 0.4.0
 
-  '@ai-sdk/react@4.0.142(react@19.2.8)(zod@4.6.7)':
+  '@ai-sdk/react@4.0.143(react@19.2.8)(zod@4.6.7)':
     dependencies:
       '@ai-sdk/mcp': 2.0.74(zod@4.6.7)
       '@ai-sdk/provider': 4.0.27
       '@ai-sdk/provider-utils': 5.0.59(zod@4.6.7)
-      ai: 7.0.139(zod@4.6.7)
+      ai: 7.0.140(zod@4.6.7)
       react: 19.2.8
       swr: 2.5.1(react@19.2.8)
       throttleit: 2.1.0
     transitivePeerDependencies:
       - zod
 
-  '@ai-sdk/tui@1.0.140(zod@4.6.7)':
+  '@ai-sdk/tui@1.0.141(zod@4.6.7)':
     dependencies:
-      ai: 7.0.139(zod@4.6.7)
+      ai: 7.0.140(zod@4.6.7)
     transitivePeerDependencies:
       - zod
 
@@ -3162,9 +3162,9 @@ snapshots:
 
   agent-base@7.1.4: {}
 
-  ai@7.0.139(zod@4.6.7):
+  ai@7.0.140(zod@4.6.7):
     dependencies:
-      '@ai-sdk/gateway': 4.0.112(zod@4.6.7)
+      '@ai-sdk/gateway': 4.0.113(zod@4.6.7)
       '@ai-sdk/provider': 4.0.27
       '@ai-sdk/provider-utils': 5.0.59(zod@4.6.7)
       zod: 4.6.7

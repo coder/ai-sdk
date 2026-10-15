@@ -65,7 +65,7 @@
     "@types/node": "^26.6.5",
     "@types/ws": "^8.18.2",
     "ai": "^7.0.140",
-    "tsup": "^8.5.1",
+    "tsup": "^9.0.0",
     "tsx": "^4.23.15",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
     "typescript-7": "npm:typescript@^7.0.2",

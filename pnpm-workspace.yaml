@@ -7,8 +7,9 @@ allowBuilds:
   esbuild: true
 
 overrides:
-  # Force the patched esbuild across the whole workspace. tsup pins a vulnerable
-  # ^0.27.0 (< the 0.28.1 fix for the dev-only RCE/file-read advisories).
+  # Force the patched esbuild across the whole workspace. tsx (~0.28.0) and
+  # vite's peer range (^0.27.0 || ^0.28.0) still admit versions below the 0.28.1
+  # fix for the dev-only RCE/file-read advisories.
   esbuild: "^0.28.1"
   # The AI SDK chain's zod peer otherwise resolves to two versions (3.25.76 and
   # 4.4.3), which duplicates @ai-sdk/provider-utils (where Tool/ToolSet are

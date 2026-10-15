@@ -16,9 +16,11 @@ this file covers what you need to operate the repo without tripping over it.
   library with AI-generated changelog notes; it drives the release workflow.
 - Two TypeScript majors, on purpose. `tsc` (and so `typecheck`) is TypeScript 7
   from the `typescript-7` alias. The `typescript` entry in the tsup packages is
-  `@typescript/typescript6`, because tsup 8.5.1 builds `.d.ts` files with the
-  TypeScript 6 compiler API, which TypeScript 7.0 does not ship. Drop the TS 6
-  entry only when the `.d.ts` build works on TS 7 (issue #99).
+  `@typescript/typescript6`, because tsup builds `.d.ts` files with the
+  TypeScript 6 compiler API, which TypeScript 7.0 does not ship. tsup 9.0.0
+  still calls that API on the `typescript` import itself, so adding
+  `@typescript/typescript6` beside a TS 7 `typescript` does not work. Drop the
+  TS 6 entry only when the `.d.ts` build works on TS 7 (issue #99).
 - `packages/effect` depends on the other three via `workspace:^`. pnpm
   publishes each as `^<sibling version in the released commit>`. If an effect
   change needs an unreleased agent/provider/sandbox change, release that

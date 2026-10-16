@@ -57,19 +57,19 @@
     "example:structured": "tsx examples/06-structured-output.ts"
   },
   "dependencies": {
-    "@ai-sdk/provider": "4.0.27",
+    "@ai-sdk/provider": "4.0.28",
     "ws": "^8.22.0"
   },
   "devDependencies": {
-    "@ai-sdk/react": "4.0.145",
+    "@ai-sdk/react": "4.0.146",
     "@types/node": "^26.6.5",
     "@types/ws": "^8.18.2",
-    "ai": "^7.0.141",
+    "ai": "^7.0.142",
     "tsup": "^9.0.0",
     "tsx": "^4.23.15",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
     "typescript-7": "npm:typescript@^7.0.2",
-    "vitest": "^5.0.4",
+    "vitest": "^5.0.5",
     "zod": "4.6.7"
   },
   "peerDependencies": {

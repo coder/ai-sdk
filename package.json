@@ -28,9 +28,9 @@
     "attw": "pnpm --filter @coder/ai-sdk-sandbox --filter @coder/ai-sdk-provider --filter @coder/ai-sdk-effect attw"
   },
   "devDependencies": {
-    "@oxlint/plugins": "^1.88.0",
-    "oxfmt": "^0.73.0",
-    "oxlint": "^1.88.0"
+    "@oxlint/plugins": "^1.89.0",
+    "oxfmt": "^0.74.0",
+    "oxlint": "^1.89.0"
   },
   "engines": {
     "node": ">=22"

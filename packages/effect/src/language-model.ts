@@ -730,6 +730,17 @@ const responseMetadataPart = (metadata: {
   timestamp: metadata.timestamp?.toISOString(),
 });
 
+/**
+ * Map the AI SDK's unified finish reason onto `effect/ai`'s. `effect/ai` has
+ * no `"interrupted"` (the provider stream ended without a completion signal),
+ * so it becomes `"unknown"`: the model gave no finish reason. Like every
+ * reason other than stop/tool-calls/pause, `effect/ai` treats it as an
+ * incomplete response and does not run tool handlers.
+ */
+const toFinishReason = (
+  unified: LanguageModelV4FinishReason["unified"],
+): Response.FinishPartEncoded["reason"] => (unified === "interrupted" ? "unknown" : unified);
+
 /** The finish part, with `metadata.coder` only when it has keys. */
 const finishPart = (
   finishReason: LanguageModelV4FinishReason,
@@ -738,7 +749,7 @@ const finishPart = (
 ): Response.FinishPartEncoded => {
   const part: Response.FinishPartEncoded = {
     type: "finish",
-    reason: finishReason.unified,
+    reason: toFinishReason(finishReason.unified),
     usage: {
       inputTokens: {
         uncached: usage.inputTokens.noCache,

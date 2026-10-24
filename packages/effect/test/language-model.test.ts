@@ -584,6 +584,31 @@ describe("streamText", () => {
     expect(text).toBe("Hello");
   });
 
+  it("maps an interrupted finish onto the unknown finish reason", async () => {
+    // @ai-sdk/anthropic emits `interrupted` when the provider stream ends
+    // without a completion signal; effect/ai has no such literal.
+    const model = fakeModel({
+      doStream: async () => ({
+        stream: streamOf([
+          { type: "text-start", id: "t1" },
+          { type: "text-delta", id: "t1", delta: "Hel" },
+          {
+            type: "finish",
+            finishReason: { unified: "interrupted", raw: undefined },
+            usage: USAGE,
+          },
+        ]),
+      }),
+    });
+
+    const parts = await Effect.runPromise(
+      Effect.flatMap(service(model), (m) => Stream.runCollect(m.streamText({ prompt: "hi" }))),
+    );
+
+    const finish = parts.find((part) => part.type === "finish");
+    expect(finish?.reason).toBe("unknown");
+  });
+
   it("streams server tool markers and reports server tool calls on finish", async () => {
     const model = fakeModel({
       doStream: async () => ({

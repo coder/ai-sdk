@@ -148,6 +148,7 @@ const classifyReason = (reason: AiError.AiErrorReason): ErrorReason => {
     case "NetworkError":
       return "transport";
     case "InvalidOutputError":
+    case "InvalidResponseError":
     case "StructuredOutputError":
       return "malformed-response";
   }

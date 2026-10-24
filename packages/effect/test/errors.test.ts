@@ -210,6 +210,22 @@ describe("classifyError / isTransient", () => {
     expect(classifyError(malformed)).toBe("malformed-response");
     expect(isTransient(malformed)).toBe(false);
   });
+
+  it("classifies an invalid provider response as terminal despite a 5xx status", () => {
+    const invalid = AiError.make({
+      module: "T",
+      method: "m",
+      reason: new AiError.InvalidResponseError({
+        description: "bad SSE frame",
+        http: {
+          request: { method: "POST", url: "https://example.test/v1", urlParams: [], headers: {} },
+          response: { status: 502, headers: {} },
+        },
+      }),
+    });
+    expect(classifyError(invalid)).toBe("malformed-response");
+    expect(isTransient(invalid)).toBe(false);
+  });
 });
 
 describe("Coder Agents errors", () => {

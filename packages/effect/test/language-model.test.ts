@@ -549,6 +549,37 @@ describe("generateObject", () => {
       expect(first.content).toContain(`"city"`);
     }
   });
+
+  it("decodes structuredOutputText instead of the joined text parts", async () => {
+    // @ai-sdk/provider 4.0.34: OpenAI Responses can return a JSON draft and
+    // a final answer; `structuredOutputText` selects the final one.
+    const model = fakeModel({
+      doGenerate: async () => ({
+        content: [
+          { type: "text", text: `{"city":"Bonn","temperature":9}` },
+          { type: "text", text: `{"city":"Berlin","temperature":21}` },
+        ],
+        structuredOutputText: `{"city":"Berlin","temperature":21}`,
+        finishReason: { unified: "stop", raw: undefined },
+        usage: USAGE,
+        warnings: [],
+      }),
+    });
+
+    const Weather = Schema.Struct({ city: Schema.String, temperature: Schema.Finite });
+    const [object, text] = await Effect.runPromise(
+      Effect.flatMap(service(model), (m) =>
+        Effect.all([
+          m.generateObject({ prompt: "weather in berlin", schema: Weather }),
+          m.generateText({ prompt: "weather in berlin" }),
+        ]),
+      ),
+    );
+
+    expect(object.value).toEqual({ city: "Berlin", temperature: 21 });
+    // Plain text calls keep every text part.
+    expect(text.text).toBe(`{"city":"Bonn","temperature":9}{"city":"Berlin","temperature":21}`);
+  });
 });
 
 describe("streamText", () => {

@@ -13,6 +13,8 @@
  * equivalent (custom parts, reasoning files, tool approval requests,
  * URL/reference/text file payloads) are dropped, and so are tool approval
  * parts in the prompt (`effect/ai` resolves and strips them before the call).
+ * In JSON mode, a `generateText` result's `structuredOutputText` replaces its
+ * text parts, because `effect/ai` parses the joined text parts as the answer.
  *
  * Provider-executed tool calls and results for tools that are not in the
  * call's toolkit (e.g. Coder Agents' server-side tools) cannot be decoded by
@@ -238,9 +240,19 @@ const generateText = (
         if (result.response !== undefined) {
           parts.push(responseMetadataPart(result.response));
         }
+        // `effect/ai` parses the joined text parts as the JSON answer. A
+        // provider's `structuredOutputText` (e.g. OpenAI Responses drafts
+        // followed by a final answer) replaces them. An empty string is an
+        // explicit selection and must not fall back to the text parts.
+        const structured =
+          options.responseFormat.type === "json" ? result.structuredOutputText : undefined;
         for (const content of result.content) {
           if (serverTools.absorb(content)) continue;
+          if (structured !== undefined && content.type === "text") continue;
           parts.push(...contentToParts(content));
+        }
+        if (structured !== undefined) {
+          parts.push({ type: "text", text: structured });
         }
         parts.push(finishPart(result.finishReason, result.usage, serverTools));
         return parts;

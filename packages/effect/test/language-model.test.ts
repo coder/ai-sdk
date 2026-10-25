@@ -580,6 +580,29 @@ describe("generateObject", () => {
     // Plain text calls keep every text part.
     expect(text.text).toBe(`{"city":"Bonn","temperature":9}{"city":"Berlin","temperature":21}`);
   });
+
+  it("decodes an empty structuredOutputText instead of falling back to the text parts", async () => {
+    // An empty string is a deliberate selection, not "unset": the text parts
+    // hold valid JSON, but the call must parse "" and fail.
+    const model = fakeModel({
+      doGenerate: async () => ({
+        content: [{ type: "text", text: `{"city":"Berlin","temperature":21}` }],
+        structuredOutputText: "",
+        finishReason: { unified: "stop", raw: undefined },
+        usage: USAGE,
+        warnings: [],
+      }),
+    });
+
+    const Weather = Schema.Struct({ city: Schema.String, temperature: Schema.Finite });
+    const exit = await Effect.runPromiseExit(
+      Effect.flatMap(service(model), (m) =>
+        m.generateObject({ prompt: "weather in berlin", schema: Weather }),
+      ),
+    );
+
+    expect(failure(exit).reason).toMatchObject({ _tag: "StructuredOutputError", responseText: "" });
+  });
 });
 
 describe("streamText", () => {

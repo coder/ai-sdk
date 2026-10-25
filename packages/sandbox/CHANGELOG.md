@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.4.50](https://github.com/coder/ai-sdk/compare/sandbox-v0.4.49...sandbox-v0.4.50) (2026-10-25)
+
+A maintenance release with no user-facing changes.
+
 ## [0.4.49](https://github.com/coder/ai-sdk/compare/sandbox-v0.4.48...sandbox-v0.4.49) (2026-10-24)
 
 A maintenance release of the sandbox package with internal changes.

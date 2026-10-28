@@ -37,6 +37,7 @@ class MockForward implements PortForward {
 
 class MockTransport implements CoderTransport {
   execCalls: TransportExecOptions[] = [];
+  spawnCalls: TransportExecOptions[] = [];
   forwardCalls: ForwardPortOptions[] = [];
   forwards: MockForward[] = [];
   closedForwards = 0;
@@ -52,7 +53,8 @@ class MockTransport implements CoderTransport {
     return this.execResult;
   }
 
-  spawn(_options: TransportExecOptions): SpawnedProcess {
+  spawn(options: TransportExecOptions): SpawnedProcess {
+    this.spawnCalls.push(options);
     return {
       pid: 4321,
       stdout: emptyStream(),
@@ -135,6 +137,21 @@ describe("CoderWorkspaceSession", () => {
     await session.run({ command: "x", workingDirectory: "/tmp/w", env: { A: "1" } });
     expect(transport.execCalls[0]!.workingDirectory).toBe("/tmp/w");
     expect(transport.execCalls[0]!.env).toEqual({ A: "1" });
+  });
+
+  it("spawn delegates to transport.spawn, also through restricted()", async () => {
+    const { session, transport } = makeSession();
+    const proc = await session.restricted().spawn({ command: "sleep 1" });
+    expect(proc.pid).toBe(4321);
+    expect(transport.spawnCalls).toHaveLength(1);
+    expect(transport.spawnCalls[0]!.command).toBe("sleep 1");
+    expect(transport.spawnCalls[0]!.workingDirectory).toBe("/home/coder");
+  });
+
+  it("spawn rejects stdin: true before starting the command", async () => {
+    const { session, transport } = makeSession();
+    await expect(session.spawn({ command: "cat", stdin: true })).rejects.toThrow(/stdin/);
+    expect(transport.spawnCalls).toHaveLength(0);
   });
 
   it("getPortUrl forwards the port and returns a ws URL", async () => {

@@ -12,6 +12,8 @@ import type {
 // Derived from the upstream contract so the run/spawn option bag can never
 // silently drift from the AI SDK's sandbox-session shape.
 type SandboxProcessOptions = Parameters<Experimental_SandboxSession["run"]>[0];
+// `spawn` is overloaded on `stdin`; `Parameters` reads its last (widest) overload.
+type SandboxSpawnOptions = Parameters<Experimental_SandboxSession["spawn"]>[0];
 
 export interface CoderWorkspaceSessionConfig {
   transport: CoderTransport;
@@ -91,8 +93,18 @@ export class CoderWorkspaceSession implements HarnessV1NetworkSandboxSession {
   readonly run = (options: SandboxProcessOptions): Promise<ExecResult> =>
     this.#transport.exec(this.#execOptions(options));
 
-  readonly spawn = async (options: SandboxProcessOptions): Promise<SpawnedProcess> =>
-    this.#transport.spawn(this.#execOptions(options));
+  // Neither transport exposes a writable stdin, so `stdin: true` rejects
+  // before the command starts, as the upstream `spawn` contract requires.
+  readonly spawn: Experimental_SandboxSession["spawn"] = this.#spawn.bind(this);
+
+  #spawn(options: SandboxSpawnOptions & { stdin: true }): Promise<never>;
+  #spawn(options: SandboxSpawnOptions): Promise<SpawnedProcess>;
+  async #spawn(options: SandboxSpawnOptions): Promise<SpawnedProcess> {
+    if (options.stdin === true) {
+      throw new Error("CoderWorkspaceSession.spawn does not support `stdin: true`.");
+    }
+    return this.#transport.spawn(this.#execOptions(options));
+  }
 
   // --- file I/O surface -----------------------------------------------------
 

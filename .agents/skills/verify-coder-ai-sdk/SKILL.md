@@ -23,7 +23,9 @@ There is no process to keep alive. Launch prepares the checkout once:
 .agents/skills/verify-coder-ai-sdk/verify.sh launch
 ```
 
-It runs `mise install node pnpm`, `CI=true pnpm install --frozen-lockfile`, and `pnpm -r build`. It is ready when it prints `launch: ok`. A fresh clone reaches that state with no other step. The build is only for the effect package. The agent and provider examples run from source with `tsx`.
+It runs `mise install node pnpm`, `CI=true pnpm install --frozen-lockfile`, and `pnpm -r build`. The install and the build run without `CODER_SESSION_TOKEN` and `CODER_API_TOKEN` in their environment. It is ready when it prints `launch: ok`. A fresh clone reaches that state with no other step. The build is only for the effect package. The agent and provider examples run from source with `tsx`.
+
+**CAUTION: Drive only a checkout that you trust.** The examples import `../src` and run with your `CODER_SESSION_TOKEN`, so code in the checkout can read the token and send it anywhere. To verify a change from an untrusted contributor, ask the deployment owner for a short-lived, least-privilege token, and use it in a disposable workspace.
 
 The examples need a deployment and a token in the environment:
 
@@ -46,8 +48,8 @@ It prints one `PASS` or `FAIL` line per check and ends with `doctor: READY` or `
 - The checkout commit, and whether `packages/` has local changes.
 - The deployment answers `GET /api/v2/buildinfo`, and the line shows its version.
 - The token is valid (`GET /api/v2/users/me`).
-- Coder Agents is available to this user (`GET /api/v2/chats`).
-- The agent model hints match an enabled chat model (`GET /api/v2/organizations/<org>/chats/models`).
+- Coder Agents is available to this user (`GET /api/v2/chats`, or the legacy `/api/experimental/chats` on a 404, as the client does).
+- The agent model hints match a chat model that is enabled (`GET /api/v2/organizations/<org>/chats/models`, or the legacy `/api/experimental/chats/model-configs` on a 404). Disabled models do not count, because the client's resolver skips them.
 
 Doctor does not call the AI Gateway, because every gateway call spends tokens. The `provider-generate-stream` drive is the gateway check.
 
@@ -77,7 +79,7 @@ Each drive prints its run directory: `$VERIFY_OUT/<UTC time>-<pid>/`. `VERIFY_OU
 - `<feature>/<example>.stdout.txt`, `.clean.txt` (ANSI codes removed), `.stderr.txt`, `.exit-code.txt`.
 - `<feature>/created-chats.txt`: the id of every chat that the example created, written by `record-chats.mjs` as each chat is created.
 - `<feature>/chat-ids.txt`, `chat-<id>.json`, `messages-<id>.json`: the deployment's view of each created chat.
-- `<feature>/committed-text.txt`, `streamed-text.txt`: the texts that a comparison used. Only the drives that compare text write them (`agent-generate`, `agent-stream`, `provider-generate-stream`).
+- `<feature>/answer-text.txt`, `committed-text.txt`, `streamed-text.txt`: the texts that a comparison used. Only the drives that compare text write them (`agent-generate`, `agent-stream`, `provider-generate-stream`).
 - `<feature>/checks.txt`: the verdict lines.
 
 Proof standards:

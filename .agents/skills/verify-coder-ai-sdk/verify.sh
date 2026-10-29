@@ -18,9 +18,16 @@ set -euo pipefail
 SKILL="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(git -C "$SKILL" rev-parse --show-toplevel)"
 cd "$ROOT"
-if command -v mise >/dev/null 2>&1; then
-  PATH="$(mise where node)/bin:$(dirname "$(mise which pnpm)"):$PATH"
-fi
+# Put Node and pnpm from mise.toml first on PATH when mise has them installed.
+# Before `launch` installs them, keep the ambient PATH: doctor reports it.
+use_mise_toolchain() {
+  command -v mise >/dev/null 2>&1 || return 0
+  local node_dir pnpm_bin
+  node_dir="$(mise where node 2>/dev/null)" || return 0
+  pnpm_bin="$(mise which pnpm 2>/dev/null)" || return 0
+  PATH="$node_dir/bin:$(dirname "$pnpm_bin"):$PATH"
+}
+use_mise_toolchain
 OUT_ROOT="${VERIFY_OUT:-${XUM_SCRATCH_DIR:-${TMPDIR:-/tmp}}/verify-coder-ai-sdk}"
 DRIVE_TIMEOUT="${VERIFY_TIMEOUT:-300}"
 FEATURES=(agent-generate agent-stream agent-custom-tool agent-multi-turn provider-generate-stream)
@@ -48,10 +55,11 @@ cmd_launch() {
   if command -v mise >/dev/null 2>&1; then
     # Only the two runtime tools: a bare `mise install` also tries global tools.
     mise install node pnpm
-    PATH="$(mise where node)/bin:$(dirname "$(mise which pnpm)"):$PATH"
+    use_mise_toolchain
   fi
-  CI=true pnpm install --frozen-lockfile
-  pnpm -r build
+  # Dependency lifecycle scripts and the build never get the Coder credentials.
+  env -u CODER_SESSION_TOKEN -u CODER_API_TOKEN CI=true pnpm install --frozen-lockfile
+  env -u CODER_SESSION_TOKEN -u CODER_API_TOKEN pnpm -r build
   echo "launch: ok. Next: verify.sh doctor"
 }
 
@@ -94,21 +102,34 @@ cmd_doctor() {
   else
     check FAIL "GET /api/v2/users/me -> $status (token invalid or expired)"
   fi
-  status="$(api GET "$tmp/chats.json" '/api/v2/chats?limit=1' || true)"
-  if [ "$status" = 200 ]; then check PASS "Coder Agents chat API answers (GET /api/v2/chats)"; else check FAIL "GET /api/v2/chats -> $status: Coder Agents is not available to this user"; fi
+  # Same routes as CoderChatClient: the v2 route, then the legacy route on a 404.
+  local route=/api/v2/chats
+  status="$(api GET "$tmp/chats.json" "$route?limit=1" || true)"
+  if [ "$status" = 404 ]; then
+    route=/api/experimental/chats
+    status="$(api GET "$tmp/chats.json" "$route?limit=1" || true)"
+  fi
+  if [ "$status" = 200 ]; then check PASS "Coder Agents chat API answers (GET $route)"; else check FAIL "GET $route -> $status: Coder Agents is not available to this user"; fi
   if [ -n "$org" ]; then
-    status="$(api GET "$tmp/models.json" "/api/v2/organizations/$org/chats/models" || true)"
+    local models_route="/api/v2/organizations/$org/chats/models"
+    status="$(api GET "$tmp/models.json" "$models_route" || true)"
+    if [ "$status" = 404 ]; then
+      models_route=/api/experimental/chats/model-configs
+      status="$(api GET "$tmp/models.json" "$models_route" || true)"
+    fi
     if [ "$status" = 200 ]; then
       local hint
       for hint in "${CODER_MODEL:-haiku}" "${CODER_TOOL_MODEL:-sonnet}"; do
-        if jq -e --arg h "$hint" '[.models[]? | ((.display_name // "") + " " + (.model // "") + " " + (.id // "")) | ascii_downcase | contains($h | ascii_downcase)] | any' "$tmp/models.json" >/dev/null; then
+        # The legacy route returns a bare array. Disabled models do not count:
+        # the client's resolver skips them too.
+        if jq -e --arg h "$hint" '[(if type == "array" then . else .models end)[]? | select(.enabled != false) | ((.display_name // "") + " " + (.model // "") + " " + (.id // "")) | ascii_downcase | contains($h | ascii_downcase)] | any' "$tmp/models.json" >/dev/null; then
           check PASS "agent model hint \"$hint\" matches an enabled chat model"
         else
           check FAIL "agent model hint \"$hint\" matches no chat model (set CODER_MODEL / CODER_TOOL_MODEL)"
         fi
       done
     else
-      check FAIL "GET /api/v2/organizations/$org/chats/models -> $status"
+      check FAIL "GET $models_route -> $status"
     fi
   fi
   rm -rf "$tmp"
@@ -185,6 +206,20 @@ check_that() {
   echo "$verdict $message" | tee -a "$CHECKS"
   if [ "$verdict" = FAIL ]; then FAILED=1; fi
 }
+# usage_matches <example-output> <messages.json> : the printed "Usage :" JSON
+# equals the sum over the chat's assistant messages. The input total includes
+# cache reads and writes, as the agent's usage mapping does.
+usage_matches() {
+  node -e '
+    const fs = require("node:fs");
+    const line = fs.readFileSync(process.argv[1], "utf8").split("\n").find((l) => /^Usage +: /.test(l));
+    const got = JSON.parse(line.replace(/^Usage +: /, ""));
+    const msgs = JSON.parse(fs.readFileSync(process.argv[2], "utf8")).messages.filter((m) => m.role === "assistant");
+    const sum = (key) => msgs.reduce((n, m) => n + (m.usage?.[key] ?? 0), 0);
+    const wantInput = sum("input_tokens") + sum("cache_read_tokens") + sum("cache_creation_tokens");
+    process.exit(got.outputTokens === sum("output_tokens") && got.inputTokens === wantInput ? 0 : 1);
+  ' "$1" "$2"
+}
 # answer_mentions <example-output> <word> : the Answer block contains the word.
 # A digit or "-" next to it is not a match, so "20-sided" does not count as the value 20.
 answer_mentions() { [ -n "$2" ] && field_block Answer "$1" | grep -Eq -- "(^|[^0-9-])$2([^0-9-]|$)"; }
@@ -193,18 +228,28 @@ is_true() { [ "$(jq -r "$2" "$1" 2>/dev/null)" = true ]; }
 # --- features -----------------------------------------------------------------
 
 drive_agent_generate() {
-  local dir="$1" code id answer out
+  local dir="$1" code id out
   code="$(run_example "$dir" agent examples/01-generate.ts "CODER_MODEL=${CODER_MODEL:-haiku}")"
   out="$dir/01-generate.clean.txt"
   check_that "example exits 0 (got $code)" [ "$code" = 0 ]
   id="$(sed -n 's/^Chat id *: //p' "$out")"
-  answer="$(field_block Answer "$out")"
-  check_that "generate() returned text" [ -n "$answer" ]
+  # console.log("Answer       :", text) prints the text between that label and
+  # "\nFinish reason:". Cut exactly there, so trailing newlines still count.
+  node -e '
+    const fs = require("node:fs");
+    const out = fs.readFileSync(process.argv[1], "utf8");
+    const label = "Answer       : ";
+    const start = out.indexOf(label);
+    const end = out.indexOf("\nFinish reason:", start);
+    if (start >= 0 && end >= start) fs.writeFileSync(process.argv[2], out.slice(start + label.length, end));
+  ' "$out" "$dir/answer-text.txt"
+  check_that "generate() returned text" [ -s "$dir/answer-text.txt" ]
   check_that "finish reason is stop" grep -q '^Finish reason: stop$' "$out"
   check_created "$dir" 1
   if ! grep -qx "$id" "$dir/chat-ids.txt"; then check_that "the printed chat id is a chat the example created" false; return; fi
   committed_text "$dir/messages-$id.json" >"$dir/committed-text.txt"
-  check_that "result.text equals the assistant text that chatd committed" [ "$(cat "$dir/committed-text.txt")" = "$answer" ]
+  check_that "result.text equals the assistant text that chatd committed" cmp -s "$dir/answer-text.txt" "$dir/committed-text.txt"
+  check_that "result.usage equals the usage that chatd committed" usage_matches "$out" "$dir/messages-$id.json"
 }
 
 drive_agent_stream() {

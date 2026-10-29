@@ -45,19 +45,19 @@ export async function generateEditorial(input: EditorialInput): Promise<ReleaseN
  * list) that gets spliced in beneath release-please's version header. Returns an
  * empty string when there's nothing worth saying, signalling "no injection".
  *
- * Model-written text is flattened to a single line so it can't introduce a heading
- * line that release-please's changelog parser would mistake for a version boundary.
+ * Model-written text goes through `toOneLine`, so it can't start a Markdown `#`
+ * heading or a line that matches release-please's version header pattern.
  */
 export function renderEditorial(notes: ReleaseNotes, ctx: EditorialContext): string {
   const out: string[] = [];
 
-  const summary = flatten(notes.summary);
+  const summary = toOneLine(notes.summary);
   if (summary) {
     out.push(summary);
   }
 
   const highlights = notes.highlights
-    .map((h) => ({ text: flatten(h.text), prNumber: h.prNumber }))
+    .map((h) => ({ text: toOneLine(h.text), prNumber: h.prNumber }))
     .filter((h) => h.text);
   if (highlights.length > 0) {
     const host = (ctx.host || "https://github.com").replace(/\/+$/, "");
@@ -74,7 +74,10 @@ export function renderEditorial(notes: ReleaseNotes, ctx: EditorialContext): str
   return out.join("\n").trim();
 }
 
-/** Collapse whitespace (incl. newlines) to single spaces so model prose stays one line. */
-function flatten(text: string): string {
-  return text.replace(/\s+/g, " ").trim();
+/**
+ * Collapse whitespace (incl. newlines) to single spaces so model prose stays one
+ * line, and escape a leading `#` so that line is not a Markdown heading.
+ */
+function toOneLine(text: string): string {
+  return text.replace(/\s+/g, " ").trim().replace(/^#/, "\\#");
 }

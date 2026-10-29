@@ -23,6 +23,22 @@ describe("renderEditorial", () => {
     expect(renderEditorial({ summary: "   ", highlights: [] }, ctx)).toBe("");
   });
 
+  it("keeps a summary that starts with a heading marker from becoming a version header", () => {
+    const md = renderEditorial({ summary: "## [9.9.9] not a release", highlights: [] }, ctx);
+    // release-please finds the previous entry with this pattern (DEFAULT_VERSION_HEADER_REGEX).
+    expect(`\n${md}`).not.toMatch(/\n###? v?[0-9[]/);
+    expect(md).not.toMatch(/^#{1,6} /m);
+    expect(md).toContain("[9.9.9] not a release");
+  });
+
+  it("keeps a highlight that starts with a heading marker from rendering as a heading", () => {
+    const md = renderEditorial(
+      { summary: "s", highlights: [{ text: "## [1.2.3] not a heading", prNumber: null }] },
+      ctx,
+    );
+    expect(md).toContain("- \\## [1.2.3] not a heading");
+  });
+
   it("omits the link when the PR number is null", () => {
     const md = renderEditorial(
       { summary: "s", highlights: [{ text: "Did a thing.", prNumber: null }] },

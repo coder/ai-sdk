@@ -498,6 +498,15 @@ const toolResultToV4 = (part: Prompt.ToolResultPart): LanguageModelV4ToolResultP
   let output: LanguageModelV4ToolResultOutput;
   if (part.isFailure) {
     output = { type: "error-json", value };
+  } else if (part.modelOutput !== undefined) {
+    // A tool's `toModelOutput` mapping (effect 4.0.7+) replaces the result
+    // sent to the model.
+    output = {
+      type: "content",
+      value: part.modelOutput.map((item) =>
+        item.type === "text" ? { type: "text", text: item.text } : filePartToV4(item),
+      ),
+    };
   } else {
     output = { type: "json", value };
   }

@@ -28,7 +28,7 @@ One indivisible step of the check is one WebSocket frame, a close, or a failed h
 The check covers these files and functions. The sync commit is in "Coverage record" below.
 
 ```sh
-SYNC=256b1e774d4ba9913b55cbdab0568cff612b51bd
+SYNC=223d370e9071e11229b279bf06faba019c063c14
 # A squash merge drops the branch commit: then use the commit that last updated this file.
 git cat-file -e "$SYNC^{commit}" 2>/dev/null ||
   SYNC="$(git log -1 --format=%H -- .agents/skills/verify-agent-stream-exactly-once/SKILL.md)"
@@ -181,7 +181,7 @@ The check does not cover:
 
 ## Coverage record
 
-- **Sync commit:** `256b1e774d4ba9913b55cbdab0568cff612b51bd` (branch `skills-re5e` on top of `main` 7246e31, 2026-10-29). At this commit the check gives the results above, and all 7 mutants are `CAUGHT`. A squash merge removes this commit from history. Then the sync point is the commit that last changed this file, because the coverage record and the covered code merged together.
+- **Sync commit:** `223d370e9071e11229b279bf06faba019c063c14` (branch `issue-407-chatd-retry-preview-reset` on top of `main` d288d9b, 2026-10-29). At this commit the check gives the results above, and all 9 mutants are `CAUGHT`. A squash merge removes this commit from history. Then the sync point is the commit that last changed this file, because the coverage record and the covered code merged together.
 - **chatd model source:** coder/coder `3697bb38ce6fa29bf73a82f3494cca3ecf708de6`.
 
 | File                                         | Functions the check exercises                                                                                                                                |

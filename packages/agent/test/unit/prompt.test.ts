@@ -69,6 +69,51 @@ describe("classifyTurnAction", () => {
       throw new Error("expected resume");
     }
   });
+
+  it("flattens a content output to text and replaces file parts with placeholders", () => {
+    // chatd hands a client tool result to the model as text, so file bytes
+    // must not reach the wire as base64 (or as a JSON-serialized Uint8Array).
+    const prompt: LanguageModelV4Prompt = [
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "c",
+            toolName: "screenshot",
+            output: {
+              type: "content",
+              value: [
+                { type: "text", text: "Swatch label: red" },
+                {
+                  type: "file",
+                  data: { type: "data", data: "iVBORw0KGgo=" },
+                  mediaType: "image/png",
+                  filename: "swatch.png",
+                },
+                {
+                  type: "file",
+                  data: { type: "data", data: new Uint8Array([1, 2, 3]) },
+                  mediaType: "application/pdf",
+                },
+                { type: "custom", providerOptions: { x: { y: 1 } } },
+              ],
+            },
+          },
+        ],
+      },
+    ];
+    const action = classifyTurnAction(prompt);
+    if (action.kind !== "resume") throw new Error("expected resume");
+    expect(action.toolResults).toEqual([
+      {
+        tool_call_id: "c",
+        output:
+          "Swatch label: red\n[image/png swatch.png omitted]\n[application/pdf omitted]\n[custom content omitted]",
+        is_error: false,
+      },
+    ]);
+  });
 });
 
 describe("extractSystemPrompt", () => {

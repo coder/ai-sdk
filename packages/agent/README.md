@@ -124,6 +124,12 @@ SDK tool loop:
 - Coder's own server‑side tools (file editing, shell, MCP, …) still run on the
   server. They appear in the transcript as `providerExecuted` tool
   calls/results: you observe them, you don't execute them.
+- Coder Agents gives a client tool result to the model as text. If a tool's
+  `toModelOutput` returns `content` parts, this package keeps the text parts
+  and replaces each file or image part with a note such as
+  `[image/png chart.png omitted]`. The model does not see the image. To show
+  the model a file, put it in a user message as a `file` part (see
+  [Files](#files)).
 
 <details>
 <summary>Since v0.2.1: server tools stream as <code>dynamic-tool</code> parts</summary>

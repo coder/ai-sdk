@@ -14,7 +14,7 @@ export CODER_SESSION_TOKEN=$(coder tokens create --name coderagent-example)
 # optional:
 #   export CODER_ORG_ID=<org-uuid>      # otherwise auto-detected from your user
 #   export CODER_MODEL=haiku            # model hint for most examples
-#   export CODER_TOOL_MODEL=sonnet      # model used by the tool example
+#   export CODER_TOOL_MODEL=sonnet      # model for the tool-calling examples (03, 06)
 ```
 
 Each example **creates a new chat and archives it when done** — it never creates or touches

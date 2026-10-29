@@ -76,8 +76,9 @@ const SETTLE_RETRY_DELAY_MS = 1_000;
 /**
  * Clamps a user-supplied delay to what `AbortSignal.timeout`/`setTimeout`
  * accept: a non-negative integer no larger than the 32-bit timer cap.
- * Anything else (negative, fractional beyond flooring, `NaN`, `Infinity`)
- * falls back to the default rather than throwing at dispose time.
+ * `+Infinity` becomes the cap. Fractions are floored. `undefined`, `NaN`,
+ * negative values and `-Infinity` fall back to the default rather than
+ * throwing at dispose time.
  */
 function sanitizeDelayMs(value: number | undefined, fallback: number): number {
   const MAX_TIMER_MS = 2 ** 31 - 1;

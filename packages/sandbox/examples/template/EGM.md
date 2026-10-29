@@ -30,9 +30,6 @@ nothing when the adapter versions match. The full guide is
 - Build arg `HARNESS_CLAUDE_CODE_VERSION`, default `1.0.90`. The comment says to pin it to
   the adapter version that the host application resolves.
   [Dockerfile:HARNESS_CLAUDE_CODE_VERSION]
-- The default `1.0.90` does not match the `@ai-sdk/harness-claude-code` range in
-  `packages/sandbox/package.json`, although the Dockerfile comment says it matches.
-  [Dockerfile:HARNESS_CLAUDE_CODE_VERSION] [../../package.json:devDependencies]
 
 ## Invariants
 

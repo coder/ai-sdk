@@ -1,7 +1,7 @@
 /**
  * Full end-to-end: run a real Claude Code turn inside a Coder workspace through
  * the provider. Exercises the whole stack — bridge bootstrap (pnpm install +
- * CLI), the authenticated WebSocket over `coder port-forward`, and a tool-use
+ * CLI), the authenticated WebSocket over the transport's port forward, and a tool-use
  * round-trip.
  *
  *   E2E_WORKSPACE=aisdk-claude-e2e npx tsx scripts/e2e-claude.ts "<prompt>"

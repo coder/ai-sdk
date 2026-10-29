@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.12.29](https://github.com/coder/ai-sdk/compare/agent-v0.12.28...agent-v0.12.29) (2026-10-29)
+
+A maintenance release with internal updates and no documented user-facing API or behavior changes.
+
 ## [0.12.28](https://github.com/coder/ai-sdk/compare/agent-v0.12.27...agent-v0.12.28) (2026-10-29)
 
 Tool outputs are now flattened to text for chatd, improving compatibility with how tool results are consumed.

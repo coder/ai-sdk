@@ -31,6 +31,14 @@ describe("renderEditorial", () => {
     expect(md).toContain("[9.9.9] not a release");
   });
 
+  it("keeps a highlight that starts with a heading marker from rendering as a heading", () => {
+    const md = renderEditorial(
+      { summary: "s", highlights: [{ text: "## [1.2.3] not a heading", prNumber: null }] },
+      ctx,
+    );
+    expect(md).toContain("- \\## [1.2.3] not a heading");
+  });
+
   it("omits the link when the PR number is null", () => {
     const md = renderEditorial(
       { summary: "s", highlights: [{ text: "Did a thing.", prNumber: null }] },

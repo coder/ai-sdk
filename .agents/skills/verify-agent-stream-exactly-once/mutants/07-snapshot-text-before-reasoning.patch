@@ -1,0 +1,20 @@
+Expect: ContentInOrder
+A snapshot whose deltas never arrived emits its text parts before its reasoning parts, not in wire order (translate.ts, `#ingestMessage`, #79).
+
+diff --git a/packages/agent/src/model/translate.ts b/packages/agent/src/model/translate.ts
+index 04ff1a4..f19b912 100644
+--- a/packages/agent/src/model/translate.ts
++++ b/packages/agent/src/model/translate.ts
+@@ -991,7 +991,11 @@ export class TurnTranslator {
+         // ledger, unlike a block cursor, loses nothing to the close.
+         let seenText = 0;
+         let seenReasoning = 0;
+-        for (const p of content) {
++        // MUTANT: reconcile text parts before reasoning parts, not in wire order
++        const ordered = [...content].sort(
++          (x, y) => Number(x.type === "reasoning") - Number(y.type === "reasoning"),
++        );
++        for (const p of ordered) {
+           if (p.type === "text") {
+             const end = seenText + (p.text ?? "").length;
+             const from = Math.max(seenText, textAttributed.length);

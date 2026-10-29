@@ -1,0 +1,16 @@
+Expect: ReasoningExactlyOnce
+Streamed reasoning deltas are not recorded as pending, so the snapshot emits the reasoning again (translate.ts, `#ingestMessagePart`).
+
+diff --git a/packages/agent/src/model/translate.ts b/packages/agent/src/model/translate.ts
+index 04ff1a4..4690034 100644
+--- a/packages/agent/src/model/translate.ts
++++ b/packages/agent/src/model/translate.ts
+@@ -834,7 +834,7 @@ export class TurnTranslator {
+         this.#openReasoning(out);
+         if (part.text) {
+           out.push({ type: "reasoning-delta", id: this.#reasoning.id as string, delta: part.text });
+-          this.#reasoning.pending += part.text;
++          // MUTANT: streamed reasoning is not recorded as pending
+         }
+         break;
+       case "tool-call":

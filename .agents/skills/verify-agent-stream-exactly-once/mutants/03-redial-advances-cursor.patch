@@ -1,0 +1,18 @@
+Expect: TextExactlyOnce
+A redial dials with after_id = the highest committed id seen, not the turn's original cursor, so a revision committed during the outage never arrives (ws.ts, dial URL).
+
+diff --git a/packages/agent/src/coder/ws.ts b/packages/agent/src/coder/ws.ts
+index 82581cd..dc3116b 100644
+--- a/packages/agent/src/coder/ws.ts
++++ b/packages/agent/src/coder/ws.ts
+@@ -280,7 +280,9 @@ async function* streamChatEventsLoop(
+     emit?.({ type: "ws:dial", chatId, reader, attempt, url, timestamp: Date.now() });
+     let ws: WebSocketLike;
+     try {
+-      ws = factory(url, { headers: { "Coder-Session-Token": token } });
++      // MUTANT: a redial resumes after the highest committed id seen
++      const dialUrl = attempt > 1 && maxCommittedId !== undefined ? `${wsBase}${path}?after_id=${maxCommittedId}` : url;
++      ws = factory(dialUrl, { headers: { "Coder-Session-Token": token } });
+     } catch (err) {
+       // A synchronously-throwing factory is a terminal reader failure (as
+       // before the hooks); keep the observability invariants on the way out —

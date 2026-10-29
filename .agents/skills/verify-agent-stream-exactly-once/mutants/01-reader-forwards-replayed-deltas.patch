@@ -1,0 +1,16 @@
+Expect: TextExactlyOnce
+The stream reader forwards the deltas that chatd replays from seq 1 after a redial (ws.ts, episode filter in `ingest`).
+
+diff --git a/packages/agent/src/coder/ws.ts b/packages/agent/src/coder/ws.ts
+index 82581cd..7c4ae7f 100644
+--- a/packages/agent/src/coder/ws.ts
++++ b/packages/agent/src/coder/ws.ts
+@@ -343,7 +343,7 @@ async function* streamChatEventsLoop(
+           ) {
+             // An already-yielded delta, replayed after a redial: suppressed
+             // from the consumption path (never enqueued below).
+-            forwarded = false;
++            forwarded = true; // MUTANT: replayed deltas reach the translator again
+           } else {
+             lastHistoryVersion = hv;
+             lastGenerationAttempt = ga;

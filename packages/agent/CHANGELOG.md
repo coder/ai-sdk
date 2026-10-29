@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.12.28](https://github.com/coder/ai-sdk/compare/agent-v0.12.27...agent-v0.12.28) (2026-10-29)
+
+Tool outputs are now flattened to text for chatd, improving compatibility with how tool results are consumed.
+
+### Highlights
+
+- Content tool outputs are now flattened to plain text for chatd. ([#405](https://github.com/coder/ai-sdk/pull/405))
+
+### Bug Fixes
+
+* **agent:** flatten content tool outputs to text for chatd ([#405](https://github.com/coder/ai-sdk/issues/405)) ([7edc552](https://github.com/coder/ai-sdk/commit/7edc55252aa893fe8aa49711e945e6e82a5193f2))
+
 ## [0.12.27](https://github.com/coder/ai-sdk/compare/agent-v0.12.26...agent-v0.12.27) (2026-10-28)
 
 A maintenance release with internal changes and no documented user-facing updates.

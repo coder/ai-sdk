@@ -178,6 +178,78 @@ describe("generateText", () => {
     ]);
   });
 
+  it("sends a tool's model output in place of its serialized result", async () => {
+    let captured: LanguageModelV4CallOptions | undefined;
+    const model = fakeModel({
+      doGenerate: async (options) => {
+        captured = options;
+        return {
+          content: [{ type: "text", text: "ok" }],
+          finishReason: { unified: "stop", raw: undefined },
+          usage: USAGE,
+          warnings: [],
+        };
+      },
+    });
+
+    const messages: Array<Prompt.MessageEncoded> = [
+      { role: "user", content: [{ type: "text", text: "Take a screenshot." }] },
+      {
+        role: "assistant",
+        content: [{ type: "tool-call", id: "call_1", name: "screenshot", params: {} }],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            id: "call_1",
+            name: "screenshot",
+            isFailure: false,
+            result: { path: "/tmp/shot.png" },
+            modelOutput: [
+              { type: "text", text: "Screenshot" },
+              {
+                type: "file",
+                mediaType: "image/png",
+                fileName: "shot.png",
+                data: "iVBORw0KGgo=",
+              },
+            ],
+            providerExecuted: false,
+          },
+        ],
+      },
+    ];
+
+    await Effect.runPromise(
+      Effect.flatMap(service(model), (m) => m.generateText({ prompt: messages })),
+    );
+
+    expect(captured?.prompt.at(-1)).toEqual({
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: "call_1",
+          toolName: "screenshot",
+          output: {
+            type: "content",
+            value: [
+              { type: "text", text: "Screenshot" },
+              {
+                type: "file",
+                mediaType: "image/png",
+                filename: "shot.png",
+                data: { type: "data", data: "iVBORw0KGgo=" },
+              },
+            ],
+          },
+        },
+      ],
+    });
+  });
+
   it("sends tool definitions as JSON schema and resolves tool calls", async () => {
     const GetWeather = Tool.make("get_weather", {
       description: "Look up the current weather",

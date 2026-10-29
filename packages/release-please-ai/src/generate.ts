@@ -45,13 +45,14 @@ export async function generateEditorial(input: EditorialInput): Promise<ReleaseN
  * list) that gets spliced in beneath release-please's version header. Returns an
  * empty string when there's nothing worth saying, signalling "no injection".
  *
- * Model-written text is flattened to a single line so it can't introduce a heading
- * line that release-please's changelog parser would mistake for a version boundary.
+ * Model-written text is flattened to a single line, and a leading `#` in the
+ * summary is escaped, so it can't introduce a heading line that release-please's
+ * changelog parser would mistake for a version boundary.
  */
 export function renderEditorial(notes: ReleaseNotes, ctx: EditorialContext): string {
   const out: string[] = [];
 
-  const summary = flatten(notes.summary);
+  const summary = flatten(notes.summary).replace(/^#/, "\\#");
   if (summary) {
     out.push(summary);
   }

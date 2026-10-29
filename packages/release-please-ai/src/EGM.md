@@ -59,11 +59,10 @@ PR workflow runs that wait at `action_required`.
   with a heading, it appends the editorial after the notes
   [changelog-notes.ts:injectAfterHeader]
 - `renderEditorial` collapses all whitespace in model text to single spaces, so each model
-  text stays on one line. Highlights get a `- ` prefix. The summary line gets no prefix, so
-  a summary that starts with one to six `#` characters and a space still renders as a
-  heading line. It drops empty
-  highlights, adds `### Highlights` only when one remains, and returns `""` when there is
-  nothing to render [generate.ts:renderEditorial]
+  text stays on one line. Highlights get a `- ` prefix. A leading `#` in the summary becomes
+  `\#`, so the summary line does not render as a heading or match release-please's version
+  header pattern. It drops empty highlights, adds `### Highlights` only when one remains,
+  and returns `""` when there is nothing to render [generate.ts:renderEditorial]
 - PR links use `${host}/${owner}/${repository}/pull/${n}`. `host` defaults to
   `"https://github.com"` and loses trailing slashes [generate.ts:renderEditorial]
 - `visibleCommits` uses `DEFAULT_SECTIONS` only when `sections` is missing or empty

@@ -27,7 +27,7 @@ One indivisible step of the check is one WebSocket frame, a close, or a failed h
 The check covers these files and functions. The sync commit is in "Coverage record" below.
 
 ```sh
-SYNC=cb7f5059709803f584c3f5835cd46a60f076eea7
+SYNC=0957835a414f71fbcbb1075d5959c363e15b1b5f
 # A squash merge drops the branch commit: then use the commit that last updated this file.
 git cat-file -e "$SYNC^{commit}" 2>/dev/null ||
   SYNC="$(git log -1 --format=%H -- .agents/skills/verify-agent-stream-exactly-once/SKILL.md)"
@@ -121,7 +121,7 @@ Decide in this order:
 - **What happens.** chatd starts a step's generation again when an attempt fails with a retryable provider error (`retry` event, then `preview_reset`), or when the history changes while the step streams (`preview_reset`). chatd expects clients to drop the abandoned attempt's preview: `stream_loop.go` says "Clients drop their preview on the retry event". TurnTranslator ignores `retry` and `preview_reset` (`translate.ts`, the `default:` case of `ingest`). The deltas of the abandoned attempt stay in the AI SDK output, the new attempt's deltas follow them, and the committed snapshot then cannot reconcile.
 - **Shortest counterexample** (scenario "attempt fails after a partial stream and chatd retries it", no drop needed): chatd streams `a`, the AI SDK gets `a`, the provider call fails and chatd retries, chatd streams `a` again and the AI SDK gets it, chatd commits `ab`. The AI SDK got `aa`, and chatd committed `ab`.
 - **Harm.** After a provider retry, `result.text` repeats the start of the answer and can miss its end.
-- **Status.** Open. Verified against chatd source at the pinned commit. Not reproduced live: that needs a provider error in the middle of a stream.
+- **Status.** Open: [#407](https://github.com/coder/ai-sdk/issues/407). Verified against chatd source at the pinned commit. Not reproduced live: that needs a provider error in the middle of a stream.
 
 When a fix lands, the two scenarios fail with "known finding ... no longer reproduces". Then delete their `knownFinding` fields, so that they must pass, and delete this section.
 
@@ -181,7 +181,7 @@ The check does not cover:
 
 ## Coverage record
 
-- **Sync commit:** `cb7f5059709803f584c3f5835cd46a60f076eea7` (branch `skills-re5e` on top of `main` 7246e31, 2026-10-29). At this commit the check gives the results above, and all 6 mutants are `CAUGHT`. A squash merge removes this commit from history. Then the sync point is the commit that last changed this file, because the coverage record and the covered code merged together.
+- **Sync commit:** `0957835a414f71fbcbb1075d5959c363e15b1b5f` (branch `skills-re5e` on top of `main` 7246e31, 2026-10-29). At this commit the check gives the results above, and all 6 mutants are `CAUGHT`. A squash merge removes this commit from history. Then the sync point is the commit that last changed this file, because the coverage record and the covered code merged together.
 - **chatd model source:** coder/coder `3697bb38ce6fa29bf73a82f3494cca3ecf708de6`.
 
 | File                                         | Functions the check exercises                                                                                                                                |

@@ -85,6 +85,38 @@ export async function userContentToInputParts(
   return parts.filter((p): p is ChatInputPart => p !== null);
 }
 
+type ContentOutputPart = Extract<
+  LanguageModelV4ToolResultOutput,
+  { type: "content" }
+>["value"][number];
+
+/**
+ * Flattens a `content` tool output (e.g. from a tool's `toModelOutput`) to one
+ * text string. chatd stores a client tool result as opaque JSON and gives it to
+ * the model as text, so a file part would reach the model as base64 characters,
+ * never as an image. Text parts and inline text files pass through. A URL file
+ * becomes a note with its URL. Any other file becomes a short placeholder, in
+ * the format of effect's `Prompt.toolModelOutputToText`.
+ */
+function contentOutputToText(parts: readonly ContentOutputPart[]): string {
+  return parts
+    .map((part) => {
+      switch (part.type) {
+        case "text":
+          return part.text;
+        case "file": {
+          if (part.data.type === "text") return part.data.text;
+          const label = `${part.mediaType}${part.filename === undefined ? "" : ` ${part.filename}`}`;
+          if (part.data.type === "url") return `[${label} at ${String(part.data.url)}]`;
+          return `[${label} omitted]`;
+        }
+        default:
+          return `[${part.type} content omitted]`;
+      }
+    })
+    .join("\n");
+}
+
 function toolResultOutputToChatd(output: LanguageModelV4ToolResultOutput): {
   value: unknown;
   isError: boolean;
@@ -101,7 +133,7 @@ function toolResultOutputToChatd(output: LanguageModelV4ToolResultOutput): {
     case "execution-denied":
       return { value: { execution_denied: true, reason: output.reason }, isError: true };
     case "content":
-      return { value: output.value, isError: false };
+      return { value: contentOutputToText(output.value), isError: false };
     default:
       return { value: output, isError: false };
   }

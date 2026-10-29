@@ -1964,4 +1964,70 @@ describe("TurnTranslator — generation attempt restarts (#407)", () => {
     ]);
     expect(textBlocks(parts)).toEqual(["Hello wor", "Hi"]);
   });
+
+  describe("a redial re-sends a blank step while the next step streams", () => {
+    // chatd commits a step whose only part is reasoning without text when the
+    // model streamed a reasoning block without deltas (`chatloop.go`
+    // `processStepStream`), and a `stop` hook can continue the turn after it
+    // (`generation.go` `finishGenerationTurn`). A redial re-sends every
+    // committed message of the turn, so the blank step arrives again while
+    // the next step streams. The next step must still arrive exactly once.
+    const blankStep = msg(2, "assistant", [{ type: "reasoning", text: "" }]);
+    const redial = [blankStep, previewReset];
+    for (const kind of ["text", "reasoning"] as const) {
+      const deltaType = kind === "text" ? "text-delta" : "reasoning-delta";
+      const streamed = (parts: ReturnType<TurnTranslator["ingest"]>) =>
+        parts.flatMap((p) => (p.type === deltaType ? [p.delta] : [])).join("");
+      const step2 = (ga: number, seq: number, text: string) =>
+        epart(kind, text, { hv: 2, ga, seq });
+      const commit = msg(3, "assistant", [{ type: kind, text: "ab" }]);
+
+      it(`keeps ${kind} once without a restart`, () => {
+        const { parts } = run([
+          blankStep,
+          previewReset,
+          step2(1, 1, "a"),
+          ...redial,
+          step2(1, 2, "b"),
+          commit,
+          status("waiting"),
+        ]);
+        expect(streamed(parts)).toBe("ab");
+      });
+
+      it(`keeps ${kind} once when the redial comes before the retried attempt streams`, () => {
+        const { parts } = run([
+          blankStep,
+          previewReset,
+          step2(1, 1, "a"),
+          step2(1, 2, "b"),
+          retry,
+          previewReset,
+          ...redial,
+          step2(2, 1, "a"),
+          step2(2, 2, "b"),
+          commit,
+          status("waiting"),
+        ]);
+        expect(streamed(parts)).toBe("ab");
+      });
+
+      it(`keeps ${kind} once when the redial comes inside the retried attempt`, () => {
+        const { parts } = run([
+          blankStep,
+          previewReset,
+          step2(1, 1, "a"),
+          step2(1, 2, "b"),
+          retry,
+          previewReset,
+          step2(2, 1, "a"),
+          ...redial,
+          step2(2, 2, "b"),
+          commit,
+          status("waiting"),
+        ]);
+        expect(streamed(parts)).toBe("ab");
+      });
+    }
+  });
 });

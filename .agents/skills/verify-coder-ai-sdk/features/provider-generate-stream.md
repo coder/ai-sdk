@@ -22,6 +22,7 @@ Preconditions:
 
 - **Generate.** Ask the one-sentence question. Run `.agents/skills/verify-coder-ai-sdk/verify.sh drive provider-generate-stream`. `PASS generateText returned text`, `PASS finish reason is stop`, and `PASS usage reports output tokens` appear.
 - **Stream.** Ask for the haiku in `examples/02-stream.ts`, in the same drive. `PASS textStream produced text` and `PASS stream usage reports output tokens` appear. `streamed-text.txt` holds the haiku.
+- **No chats.** `PASS the example created 0 chat(s) (created 0)` appears: the provider never touches Coder Agents.
 - **Proof.** Keep `01-generate.clean.txt`, `02-stream.clean.txt`, `streamed-text.txt`, and `checks.txt`.
 
 ## Gotchas

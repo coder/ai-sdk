@@ -22,7 +22,7 @@ Preconditions:
 
 - **Generate.** Ask the one-sentence question in `examples/01-generate.ts`. Run `.agents/skills/verify-coder-ai-sdk/verify.sh drive agent-generate`. The lines `PASS example exits 0`, `PASS generate() returned text`, and `PASS finish reason is stop` appear.
 - **Second view.** The drive reads the chat's messages from `GET /api/v2/chats/<id>/messages`. `PASS result.text equals the assistant text that chatd committed` appears. `committed-text.txt` holds the stored text.
-- **Cleanup.** The drive reads `GET /api/v2/chats/<id>`. `PASS the example archived its chat` appears, and `chat-<id>.json` has `"archived": true`.
+- **Cleanup.** The drive reads `GET /api/v2/chats/<id>`. `PASS the example created 1 chat(s) (created 1)` and `PASS the example archived every chat it created` appear, and `chat-<id>.json` has `"archived": true`.
 - **Proof.** Keep `agent-generate/01-generate.clean.txt`, `messages-<id>.json`, `chat-<id>.json`, and `checks.txt` from the run directory.
 
 ## Gotchas

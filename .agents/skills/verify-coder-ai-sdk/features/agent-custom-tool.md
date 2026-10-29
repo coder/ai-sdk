@@ -23,7 +23,7 @@ Preconditions:
 - **Call the tool.** Ask the agent to roll a 20-sided die. Run `.agents/skills/verify-coder-ai-sdk/verify.sh drive agent-custom-tool`. `PASS the local tool ran exactly once (ran 1 times)` and `PASS result.steps records the rollDice call` appear. The stdout has one `[local tool] rollDice({ sides: 20 }) -> N` line.
 - **Use the result.** `PASS the answer reports the rolled value N` appears.
 - **Second view.** The drive reads `GET /api/v2/chats/<id>/messages`. `PASS chatd stored one rollDice tool call` and `PASS chatd stored one rollDice tool result with value N` appear. `messages-<id>.json` has one `tool-call` part and one `tool-result` part named `rollDice`.
-- **Cleanup.** `PASS the example archived its chat` appears.
+- **Cleanup.** `PASS the example created 1 chat(s) (created 1)` and `PASS the example archived every chat it created` appear.
 - **Proof.** Keep `03-custom-tool.clean.txt`, `messages-<id>.json`, and `checks.txt`.
 
 ## Gotchas

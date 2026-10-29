@@ -61,7 +61,7 @@ Doctor does not call the AI Gateway, because every gateway call spends tokens. T
 
 Each feature file in [`features/`](features/README.md) says what the drive does and what proves the feature. The drive:
 
-1. Runs the feature's example scripts with `pnpm exec tsx`, under `timeout`.
+1. Runs the feature's example scripts with `pnpm exec tsx`, under `timeout`. It preloads `record-chats.mjs` (`NODE_OPTIONS=--import`), which only observes `fetch`: it records the id of every chat that the example creates.
 2. Reads what the example printed: the answer, the finish reason, the tool calls, and the chat id.
 3. Reads the same result a second way, from the deployment: `GET /api/v2/chats/<id>` and `GET /api/v2/chats/<id>/messages`. The proof compares the two views, for example the streamed text with the assistant text that chatd committed.
 4. Prints one `PASS` or `FAIL` line per check, then `drive: PASS` or `drive: FAIL`. The exit code is 0 only on `PASS`.
@@ -75,10 +75,10 @@ Each drive prints its run directory: `$VERIFY_OUT/<UTC time>-<pid>/`. `VERIFY_OU
 - `run.txt`: the commit and whether `packages/` was clean or had local changes, the Node version, and the deployment URL and version.
 - `<feature>/command.txt`: the exact commands, with the model variables that the drive set.
 - `<feature>/<example>.stdout.txt`, `.clean.txt` (ANSI codes removed), `.stderr.txt`, `.exit-code.txt`.
-- `<feature>/chat-ids.txt`, `chat-<id>.json`, `messages-<id>.json`: the deployment's view of each chat.
+- `<feature>/created-chats.txt`: the id of every chat that the example created, written by `record-chats.mjs` as each chat is created.
+- `<feature>/chat-ids.txt`, `chat-<id>.json`, `messages-<id>.json`: the deployment's view of each created chat.
 - `<feature>/committed-text.txt`, `streamed-text.txt`: the texts that a comparison used. Only the drives that compare text write them (`agent-generate`, `agent-stream`, `provider-generate-stream`).
 - `<feature>/checks.txt`: the verdict lines.
-- `<feature>/leaked-candidates.txt`: only when a chat may have leaked. See Cleanup.
 
 Proof standards:
 
@@ -90,17 +90,15 @@ Proof standards:
 
 ## Cleanup
 
-Each example archives the chats it created, in a `finally` block, and the drive checks that (`the example archived its chat`). Cleanup handles what is left after a crash or a timeout:
+Each example archives the chats it created, in a `finally` block. The drive checks that: `PASS the example archived every chat it created`. Cleanup handles what is left after a crash or a timeout:
 
 ```sh
 .agents/skills/verify-coder-ai-sdk/verify.sh cleanup <run-dir>
 ```
 
-It reads every `chat-ids.txt` in the run directory and archives each chat that is still unarchived. It writes `cleanup.txt` and never deletes evidence.
+It reads every `created-chats.txt` in the run directory and archives each chat that is still unarchived. The recorder writes an id when the chat is created, so this also covers an example that died before it printed its id. Cleanup writes `cleanup.txt`, never deletes evidence, and exits 1 when an archive fails (for example HTTP 409, see Gotchas).
 
-When an example dies before it prints its chat id, the drive looks for unarchived chats created during the drive whose first user message is the example's prompt. It lists them in `leaked-candidates.txt` and prints a `WARN` line. Read them, then archive them with `cleanup <run-dir> --candidates`.
-
-The deployment is shared. Cleanup touches only chats that this run recorded. Never archive chats found by listing all chats: they belong to you or to other runs. No drive creates workspaces, so there is nothing else to tear down. Several runs can go side by side, because each example creates its own chat.
+The deployment is shared. Cleanup touches only chats that this run's examples created. Never archive chats found by listing all chats: they belong to you or to other runs. No drive creates workspaces, so there is nothing else to tear down. Several runs can go side by side, because each example creates its own chat and each run records only its own.
 
 ## Gotchas
 
@@ -108,8 +106,9 @@ The deployment is shared. Cleanup touches only chats that this run recorded. Nev
 - `CODER_MODEL` means a chat model hint for the agent examples and a gateway model id for the provider examples. The helper sets the provider's own model, so a `CODER_MODEL=haiku` for the agent does not break the provider drive.
 - Model output varies. When a check about the model's words fails (the rolled value, the recalled color), read `checks.txt` and the stdout before you call it a regression. Rerun once. A transport or tool failure does not depend on the model.
 - `npx vitest` and bare `node` can run the system Node 22 instead of the pinned Node 26. Use the helper, which fixes `PATH`.
-- A chat stuck in `requires_action` refuses an archive with HTTP 409. Submit an error result for its pending tool call first (`POST /api/v2/chats/<id>/tool-results`), then archive it.
+- A chat stuck in `requires_action` refuses an archive with HTTP 409, and cleanup reports `FAILED`. Submit an error result for its pending tool call first (`POST /api/v2/chats/<id>/tool-results`), then run cleanup again. A chat that is still running can also answer 409: wait a few seconds and retry.
 - The examples test the source, not the packed npm tarball. CI's `pnpm publint` and `pnpm attw` cover packaging.
+- The stream comparison is byte-exact. The drive cuts only the example's own framing: one blank line before the deltas and one after.
 
 ## Maintaining the map
 

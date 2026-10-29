@@ -23,7 +23,7 @@ Preconditions:
 - **Turn 1.** Tell the agent that your favorite color is teal. **Turn 2.** Ask for your favorite color. Run `.agents/skills/verify-coder-ai-sdk/verify.sh drive agent-multi-turn`. `PASS both turns used one chat` appears: both `chat:` lines in the stdout show the same id.
 - **Memory.** `PASS turn 2 recalls the color from turn 1` appears. The `Turn 2:` line contains `teal`.
 - **Second view.** The drive reads `GET /api/v2/chats/<id>/messages`. `PASS chatd stored both user turns in that chat` appears.
-- **Cleanup.** `PASS the example archived its chat` appears.
+- **Cleanup.** `PASS the example created 1 chat(s) (created 1)` and `PASS the example archived every chat it created` appear.
 - **Proof.** Keep `04-multi-turn.clean.txt`, `messages-<id>.json`, and `checks.txt`.
 
 ## Gotchas

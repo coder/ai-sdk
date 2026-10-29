@@ -7,9 +7,8 @@
 #   verify.sh doctor                 read-only checks: toolchain, checkout, deployment, auth, models
 #   verify.sh features               list the mapped features
 #   verify.sh drive <feature>...     drive features; prints the run directory and PASS/FAIL per check
-#   verify.sh cleanup <run-dir> [--candidates]
-#                                    archive the chats that the run recorded and that are still
-#                                    unarchived; --candidates also archives possibly leaked chats
+#   verify.sh cleanup <run-dir>      archive the chats that the run's examples created and that
+#                                    are still unarchived; exits 1 when an archive fails
 #
 # Needs CODER_URL and CODER_SESSION_TOKEN. Never prints the token.
 # Evidence goes to $VERIFY_OUT/<run-id>/<feature>/ (default
@@ -36,11 +35,12 @@ need_env() {
   CODER_URL="${CODER_URL%/}"
 }
 # GET or PATCH against the deployment. Writes the body to $2, prints the HTTP status.
+# The token goes to curl on stdin as a config line, so it never shows in a process list.
 api() {
   local method="$1" out="$2" path="$3" body="${4:-}"
-  local args=(-sS -o "$out" -w '%{http_code}' -X "$method" -H "Coder-Session-Token: $CODER_SESSION_TOKEN")
+  local args=(-sS -K - -o "$out" -w '%{http_code}' -X "$method")
   if [ -n "$body" ]; then args+=(-H 'Content-Type: application/json' --data "$body"); fi
-  curl "${args[@]}" "$CODER_URL$path"
+  printf 'header = "Coder-Session-Token: %s"\n' "$CODER_SESSION_TOKEN" | curl "${args[@]}" "$CODER_URL$path"
 }
 strip_ansi() { sed 's/\x1b\[[0-9;]*m//g'; }
 
@@ -119,25 +119,47 @@ cmd_doctor() {
 
 # run_example <feature-dir> <package> <example> [VAR=value...] : runs one example
 # script with extra environment, keeps its output, prints its exit code.
+# record-chats.mjs is preloaded: it appends the id of every chat that the
+# example creates to created-chats.txt, even when the example dies early.
 run_example() {
   local dir="$1" pkg="$2" example="$3" name
   shift 3
   name="$(basename "$example" .ts)"
   echo "cd packages/$pkg && ${*:+$* }pnpm exec tsx $example" >>"$dir/command.txt"
   local code=0
-  (cd "packages/$pkg" && env "$@" timeout "$DRIVE_TIMEOUT" pnpm exec tsx "$example") \
+  (cd "packages/$pkg" && env "$@" VERIFY_CHAT_LOG="$dir/created-chats.txt" \
+    NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--import=$SKILL/record-chats.mjs" \
+    timeout "$DRIVE_TIMEOUT" pnpm exec tsx "$example") \
     >"$dir/$name.stdout.txt" 2>"$dir/$name.stderr.txt" || code=$?
   strip_ansi <"$dir/$name.stdout.txt" >"$dir/$name.clean.txt"
   echo "$code" >"$dir/$name.exit-code.txt"
   echo "$code"
 }
 
-# record_chat <feature-dir> <chat-id> : saves the chat and its messages (second view) and the id.
+# record_chat <feature-dir> <chat-id> : saves the chat and its messages (second view).
 record_chat() {
   local dir="$1" id="$2"
-  echo "$id" >>"$dir/chat-ids.txt"
   api GET "$dir/chat-$id.json" "/api/v2/chats/$id" >/dev/null
   api GET "$dir/messages-$id.json" "/api/v2/chats/$id/messages?limit=100" >/dev/null
+}
+
+# check_created <feature-dir> <expected-count> : reads the second view of every
+# chat that the example created, and checks the count and that each is archived.
+check_created() {
+  local dir="$1" want="$2" id n=0
+  sort -u "$dir/created-chats.txt" 2>/dev/null >"$dir/chat-ids.txt" || true
+  while read -r id; do
+    [ -n "$id" ] || continue
+    n=$((n + 1))
+    record_chat "$dir" "$id"
+  done <"$dir/chat-ids.txt"
+  check_that "the example created $want chat(s) (created $n)" [ "$n" = "$want" ]
+  local unarchived=""
+  while read -r id; do
+    [ -n "$id" ] || continue
+    is_true "$dir/chat-$id.json" .archived || unarchived="$unarchived $id"
+  done <"$dir/chat-ids.txt"
+  check_that "the example archived every chat it created${unarchived:+ (left:$unarchived)}" [ -z "$unarchived" ]
 }
 
 # The value printed after "<label> :" up to the next "Label :" line (multi-line text).
@@ -151,23 +173,7 @@ field_block() {
 
 # Assistant text of a chat, in message id order, from the saved messages.
 committed_text() {
-  jq -r '[.messages | sort_by(.id)[] | select(.role == "assistant") | .content[]? | select(.type == "text") | .text] | join("")' "$1"
-}
-
-# Unarchived chats created since <start> whose first user message is <prompt>:
-# chats that this drive may have leaked when the example died before it printed an id.
-find_candidates() {
-  local dir="$1" start="$2" prompt="$3" id
-  api GET "$dir/.chats-after.json" '/api/v2/chats?limit=50' >/dev/null || return 0
-  for id in $(jq -r --arg s "$start" '.[]? | select(.archived == false and .created_at >= $s) | .id' "$dir/.chats-after.json"); do
-    grep -qx "$id" "$dir/chat-ids.txt" 2>/dev/null && continue
-    api GET "$dir/.candidate.json" "/api/v2/chats/$id/messages?limit=100" >/dev/null || continue
-    if jq -e --arg p "$prompt" '[.messages | sort_by(.id)[] | select(.role == "user")][0].content[]? | select(.type == "text" and .text == $p)' "$dir/.candidate.json" >/dev/null; then
-      echo "$id" >>"$dir/leaked-candidates.txt"
-      echo "WARN possibly leaked chat $id (archive: verify.sh cleanup $(dirname "$dir") --candidates)"
-    fi
-  done
-  rm -f "$dir/.chats-after.json" "$dir/.candidate.json"
+  jq -j '[.messages | sort_by(.id)[] | select(.role == "assistant") | .content[]? | select(.type == "text") | .text] | join("")' "$1"
 }
 
 FAILED=0
@@ -195,29 +201,34 @@ drive_agent_generate() {
   answer="$(field_block Answer "$out")"
   check_that "generate() returned text" [ -n "$answer" ]
   check_that "finish reason is stop" grep -q '^Finish reason: stop$' "$out"
-  if [ -z "$id" ]; then check_that "example printed a chat id" false; return; fi
-  record_chat "$dir" "$id"
+  check_created "$dir" 1
+  if ! grep -qx "$id" "$dir/chat-ids.txt"; then check_that "the printed chat id is a chat the example created" false; return; fi
   committed_text "$dir/messages-$id.json" >"$dir/committed-text.txt"
   check_that "result.text equals the assistant text that chatd committed" [ "$(cat "$dir/committed-text.txt")" = "$answer" ]
-  check_that "the example archived its chat" is_true "$dir/chat-$id.json" .archived
 }
 
 drive_agent_stream() {
-  local dir="$1" code id streamed out
+  local dir="$1" code id out
   code="$(run_example "$dir" agent examples/02-stream.ts "CODER_MODEL=${CODER_MODEL:-haiku}")"
   out="$dir/02-stream.clean.txt"
   check_that "example exits 0 (got $code)" [ "$code" = 0 ]
-  # The deltas sit between the heading and the "Steps" line, framed by blank lines.
-  streamed="$(awk '/^=== stream\(\) ===$/{on=1; next} /^Steps +:/{on=0} on' "$out" | sed '/^$/d')"
-  printf '%s' "$streamed" >"$dir/streamed-text.txt"
-  check_that "textStream produced text" [ -n "$streamed" ]
+  # The example writes "\n", then every delta, then "\n\n" before "Steps". Cut
+  # exactly that framing, so blank lines inside the reply still count.
+  node -e '
+    const fs = require("node:fs");
+    const out = fs.readFileSync(process.argv[1], "utf8");
+    const head = "=== stream() ===\n\n";
+    const start = out.indexOf(head);
+    const end = out.lastIndexOf("\n\nSteps ");
+    if (start >= 0 && end >= start + head.length) fs.writeFileSync(process.argv[2], out.slice(start + head.length, end));
+  ' "$out" "$dir/streamed-text.txt"
+  check_that "textStream produced text" [ -s "$dir/streamed-text.txt" ]
   check_that "finish reason is stop" grep -q '^Finish reason: stop$' "$out"
   id="$(sed -n 's/^Chat id *: //p' "$out")"
-  if [ -z "$id" ]; then check_that "example printed a chat id" false; return; fi
-  record_chat "$dir" "$id"
+  check_created "$dir" 1
+  if ! grep -qx "$id" "$dir/chat-ids.txt"; then check_that "the printed chat id is a chat the example created" false; return; fi
   committed_text "$dir/messages-$id.json" >"$dir/committed-text.txt"
-  check_that "streamed text equals the committed text, exactly once" [ "$(sed '/^$/d' "$dir/committed-text.txt")" = "$streamed" ]
-  check_that "the example archived its chat" is_true "$dir/chat-$id.json" .archived
+  check_that "streamed text equals the committed text, exactly once" cmp -s "$dir/streamed-text.txt" "$dir/committed-text.txt"
 }
 
 drive_agent_custom_tool() {
@@ -231,11 +242,10 @@ drive_agent_custom_tool() {
   check_that "result.steps records the rollDice call" grep -q '^Tool calls *: rollDice(' "$out"
   check_that "the answer reports the rolled value ${value:-?}" answer_mentions "$out" "$value"
   id="$(sed -n 's/^Chat id *: //p' "$out")"
-  if [ -z "$id" ]; then check_that "example printed a chat id" false; return; fi
-  record_chat "$dir" "$id"
+  check_created "$dir" 1
+  if ! grep -qx "$id" "$dir/chat-ids.txt"; then check_that "the printed chat id is a chat the example created" false; return; fi
   check_that "chatd stored one rollDice tool call" jq -e '[.messages[].content[]? | select(.type == "tool-call" and .tool_name == "rollDice")] | length == 1' "$dir/messages-$id.json"
   check_that "chatd stored one rollDice tool result with value ${value:-?}" jq -e --arg v "${value:--1}" '[.messages[].content[]? | select(.type == "tool-result" and .tool_name == "rollDice") | (.result | if type == "string" then (fromjson? // {}) else . end) | .value == ($v | tonumber)] | length == 1 and all' "$dir/messages-$id.json"
-  check_that "the example archived its chat" is_true "$dir/chat-$id.json" .archived
 }
 
 drive_agent_multi_turn() {
@@ -247,10 +257,9 @@ drive_agent_multi_turn() {
   check_that "both turns used one chat" [ "$(printf '%s\n' "$ids" | grep -c .)" = 1 ]
   check_that "turn 2 recalls the color from turn 1" grep -qi '^Turn 2:.*teal' "$out"
   id="$(printf '%s\n' "$ids" | head -1)"
-  if [ -z "$id" ]; then check_that "example printed a chat id" false; return; fi
-  record_chat "$dir" "$id"
+  check_created "$dir" 1
+  if ! grep -qx "$id" "$dir/chat-ids.txt"; then check_that "the printed chat id is a chat the example created" false; return; fi
   check_that "chatd stored both user turns in that chat" jq -e '[.messages[] | select(.role == "user")] | length == 2' "$dir/messages-$id.json"
-  check_that "the example archived its chat" is_true "$dir/chat-$id.json" .archived
 }
 
 drive_provider_generate_stream() {
@@ -271,16 +280,7 @@ drive_provider_generate_stream() {
   printf '%s\n' "$haiku" >"$dir/streamed-text.txt"
   check_that "textStream produced text" [ -n "$haiku" ]
   check_that "stream usage reports output tokens" grep -q '"outputTokens":[1-9]' "$out"
-}
-
-prompt_of() {
-  case "$1" in
-    agent-generate) echo "In one sentence, what is Coder?" ;;
-    agent-stream) echo "Describe a sunrise over the mountains in three sentences." ;;
-    agent-custom-tool) echo "Roll a 20-sided die using the tool, then tell me the number I rolled." ;;
-    agent-multi-turn) echo "Remember that my favorite color is teal. Reply with just 'ok'." ;;
-    *) echo "" ;;
-  esac
+  check_created "$dir" 0
 }
 
 cmd_drive() {
@@ -298,13 +298,11 @@ cmd_drive() {
   echo "run: $run"
   for feature in "$@"; do
     case " ${FEATURES[*]} " in *" $feature "*) ;; *) die "unknown feature $feature (known: ${FEATURES[*]})" ;; esac
-    local dir="$run/$feature" start
+    local dir="$run/$feature"
     mkdir -p "$dir"
     CHECKS="$dir/checks.txt"
-    start="$(date -u +%Y-%m-%dT%H:%M:%S)"
     echo "== $feature"
     "drive_${feature//-/_}" "$dir"
-    if [ -n "$(prompt_of "$feature")" ]; then find_candidates "$dir" "$start" "$(prompt_of "$feature")"; fi
   done
   echo "evidence: $run"
   if [ "$FAILED" = 0 ]; then echo "drive: PASS"; else echo "drive: FAIL"; return 1; fi
@@ -312,21 +310,33 @@ cmd_drive() {
 
 cmd_cleanup() {
   need_env
-  local run="${1:-}" include_candidates="${2:-}" id status tmp
+  local run="${1:-}" id status tmp failed=0
   [ -d "$run" ] || die "cleanup needs the run directory that drive printed"
   tmp="$(mktemp)"
-  local files=("$run"/*/chat-ids.txt)
-  if [ "$include_candidates" = --candidates ]; then files+=("$run"/*/leaked-candidates.txt); fi
-  for id in $(cat "${files[@]}" 2>/dev/null | sort -u); do
-    api GET "$tmp" "/api/v2/chats/$id" >/dev/null
-    if [ "$(jq -r .archived "$tmp")" = true ]; then
+  for id in $(cat "$run"/*/created-chats.txt 2>/dev/null | sort -u); do
+    status="$(api GET "$tmp" "/api/v2/chats/$id")"
+    if [ "$status" = 200 ] && [ "$(jq -r .archived "$tmp")" = true ]; then
       echo "already archived: $id" | tee -a "$run/cleanup.txt"
       continue
     fi
     status="$(api PATCH "$tmp" "/api/v2/chats/$id" '{"archived":true}')"
-    echo "archive $id -> HTTP $status" | tee -a "$run/cleanup.txt"
+    case "$status" in
+      2??) echo "archived $id (HTTP $status)" | tee -a "$run/cleanup.txt" ;;
+      409)
+        echo "FAILED $id: HTTP 409, the chat is busy or waits in requires_action (see SKILL.md, Gotchas)" | tee -a "$run/cleanup.txt"
+        failed=1
+        ;;
+      *)
+        echo "FAILED $id: HTTP $status" | tee -a "$run/cleanup.txt"
+        failed=1
+        ;;
+    esac
   done
   rm -f "$tmp"
+  if [ "$failed" = 1 ]; then
+    echo "cleanup: FAILED for some chats; evidence kept in $run"
+    return 1
+  fi
   echo "cleanup: done; evidence kept in $run"
 }
 
@@ -336,5 +346,5 @@ case "${1:-}" in
   features) printf '%s\n' "${FEATURES[@]}" ;;
   drive) shift; cmd_drive "$@" ;;
   cleanup) shift; cmd_cleanup "$@" ;;
-  *) sed -n '2,17p' "$0"; exit 2 ;;
+  *) sed -n '2,16p' "$0"; exit 2 ;;
 esac

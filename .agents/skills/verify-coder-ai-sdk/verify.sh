@@ -84,7 +84,10 @@ resolve_model() {
   tmp="$(mktemp)"
   status="$(api GET "$tmp" "/api/v2/organizations/$2/chats/models" || true)"
   if [ "$status" = 404 ]; then status="$(api GET "$tmp" /api/experimental/chats/model-configs || true)"; fi
-  if [ "$status" = 200 ]; then jq -r --arg hint "$1" -f "$SKILL/resolve-model.jq" "$tmp"; fi
+  # resolve-model.jq is checkout code too: run it without the Coder tokens.
+  if [ "$status" = 200 ]; then
+    env -u CODER_SESSION_TOKEN -u CODER_API_TOKEN jq -r --arg hint "$1" -f "$SKILL/resolve-model.jq" "$tmp"
+  fi
   rm -f "$tmp"
 }
 

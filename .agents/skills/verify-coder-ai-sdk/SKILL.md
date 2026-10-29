@@ -25,7 +25,7 @@ There is no process to keep alive. Launch prepares the checkout once:
 
 It runs `mise install node pnpm`, `CI=true pnpm install --frozen-lockfile`, and `pnpm -r build`. The install and the build run without `CODER_SESSION_TOKEN` and `CODER_API_TOKEN` in their environment. The drives pass only `CODER_SESSION_TOKEN` to the examples. It is ready when it prints `launch: ok`. A fresh clone reaches that state with no other step. The build is only for the effect package. The agent and provider examples run from source with `tsx`.
 
-**CAUTION: Drive only a checkout that you trust.** The examples import `../src` and run with your `CODER_SESSION_TOKEN`, so code in the checkout can read the token and send it anywhere. `verify.sh` is part of the checkout too: read its diff before you run it from someone else's branch. To verify a change from an untrusted contributor, ask the deployment owner for a short-lived, least-privilege token, and use it in a disposable workspace.
+**CAUTION: Drive only a checkout that you trust.** The examples import `../src` and run with your `CODER_SESSION_TOKEN`, so code in the checkout can read the token and send it anywhere. The skill's own files (`verify.sh`, `resolve-model.jq`, `record-chats.mjs`) are part of the checkout too, and `launch` runs the checkout's install and build scripts with every other variable in your environment. Read the diff of the skill and of `package.json` scripts before you run any command from someone else's branch. To verify a change from an untrusted contributor, ask the deployment owner for a short-lived, least-privilege token, and use it in a disposable workspace.
 
 The examples need a deployment and a token in the environment:
 

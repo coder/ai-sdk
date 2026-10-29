@@ -632,6 +632,7 @@ function check(outcome: RunOutcome): Violation[] {
   if (errors.length > 0) completes.push(`${errors.length} error part(s)`);
   if (finishes.length !== 1) completes.push(`${finishes.length} finish parts`);
   const finish = finishes[0];
+  if (finish && parts[parts.length - 1] !== finish) completes.push("parts after finish");
   if (finish && finish.finishReason.unified !== "stop") {
     completes.push(`finish reason ${finish.finishReason.unified}`);
   }

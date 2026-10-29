@@ -16,7 +16,12 @@ cd "$ROOT"
 # Use the toolchain pinned in mise.toml: the ambient PATH can carry an older
 # Node and pnpm.
 if command -v mise >/dev/null 2>&1; then
-  PATH="$(mise where node)/bin:$(dirname "$(mise which pnpm)"):$PATH"
+  if node_dir="$(mise where node 2>/dev/null)" && pnpm_bin="$(mise which pnpm 2>/dev/null)"; then
+    PATH="$node_dir/bin:$(dirname "$pnpm_bin"):$PATH"
+  else
+    echo "check.sh: mise has not installed the pinned Node and pnpm; run: mise install node pnpm" >&2
+    exit 2
+  fi
 fi
 if [ ! -d packages/agent/node_modules ]; then
   echo "check.sh: packages/agent/node_modules is missing; run: CI=true pnpm install --frozen-lockfile" >&2

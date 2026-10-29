@@ -43,7 +43,7 @@ PR workflow runs that wait at `action_required`.
   prompt and render steps [types.ts:EditorialInput]
 - Internal (not exported) in `changelog-notes.ts`: `toCommitView`, `injectAfterHeader`
   [changelog-notes.ts:injectAfterHeader]
-- Internal (not exported) in `generate.ts`: `flatten` [generate.ts:flatten]
+- Internal (not exported) in `generate.ts`: `toOneLine` [generate.ts:toOneLine]
 - Internal (not exported) in `cli.ts`: `required`, `main`, `emitReleaseOutputs`,
   `emitPullRequestOutputs`, `writeOutputs`, `warnNonFatal` [cli.ts:main]
 
@@ -59,10 +59,11 @@ PR workflow runs that wait at `action_required`.
   with a heading, it appends the editorial after the notes
   [changelog-notes.ts:injectAfterHeader]
 - `renderEditorial` collapses all whitespace in model text to single spaces, so each model
-  text stays on one line. Highlights get a `- ` prefix. A leading `#` in the summary becomes
-  `\#`, so the summary line does not render as a heading or match release-please's version
+  text stays on one line, and turns a leading `#` into `\#`. Highlights get a `- ` prefix.
+  So model text starts no `#` heading and no line that matches release-please's version
   header pattern. It drops empty highlights, adds `### Highlights` only when one remains,
   and returns `""` when there is nothing to render [generate.ts:renderEditorial]
+  [generate.ts:toOneLine]
 - PR links use `${host}/${owner}/${repository}/pull/${n}`. `host` defaults to
   `"https://github.com"` and loses trailing slashes [generate.ts:renderEditorial]
 - `visibleCommits` uses `DEFAULT_SECTIONS` only when `sections` is missing or empty

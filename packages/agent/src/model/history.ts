@@ -106,7 +106,7 @@ function toUIParts(
 
 /**
  * Converts persisted chat history (`CoderChatClient.getMessages`) into AI SDK
- * v6 `UIMessage`s, e.g. to rehydrate `useChat({ messages })` for an existing
+ * v7 `UIMessage`s, e.g. to rehydrate `useChat({ messages })` for an existing
  * chat. Pure and side-effect free.
  *
  * The mapping mirrors what a live-streamed transcript of the same turn looks

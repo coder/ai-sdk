@@ -1,14 +1,16 @@
 /**
- * End-to-end verification of the built provider against a REAL Coder workspace.
+ * End-to-end verification of the provider source (`../src`) against a REAL
+ * Coder workspace.
  *
  *   npx tsx scripts/verify-real.ts [workspace]   (default: aisdk-sandbox-test)
  *
  * By default, requires the `coder` CLI on PATH and logged in. Set
  * `CODER_TRANSPORT=native`, `CODER_URL`, and `CODER_SESSION_TOKEN` to exercise
  * CoderNativeTransport without invoking the CLI from the transport. Exercises
- * createCoderWorkspace: exec, exit codes, env, cwd, stdin,
- * base64 file round-trips, spawn streaming, and — the bridge's critical path —
- * a real WebSocket upgrade tunneled through OpenSSH `-L` forwarding.
+ * the transport directly (exec, exit codes, env, cwd, stdin, spawn streaming),
+ * the file-io helpers (base64 file round-trips), and a `createCoderWorkspace`
+ * session: `run`, `spawn`, and — the bridge's critical path — a real WebSocket
+ * upgrade through `getPortUrl` (OpenSSH `-L` forwarding or the native relay).
  */
 
 import crypto from "node:crypto";

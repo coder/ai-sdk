@@ -22,9 +22,10 @@ export interface RemoteCommandOptions {
 /**
  * Build the shell script that runs inside the workspace for a single command.
  *
- * The result is delivered verbatim as one argv element to `coder ssh ... -- bash
- * -lc <script>` (no intermediate local shell), so it only has to be valid bash
- * for the *remote* login shell.
+ * `CoderCliTransport` shell-quotes the result into one remote
+ * `bash -lc '<script>'` (or `bash -c`) argument for OpenSSH, with no
+ * intermediate local shell, so it only has to be valid bash for the *remote*
+ * shell.
  *
  * Shapes produced:
  * - no cwd, no env:   `<command>`

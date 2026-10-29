@@ -1,0 +1,16 @@
+Expect: Completes
+Every connection drop ends the stream with a CoderStreamError instead of a redial (ws.ts, after the connection loop). The model then interrupts the run too, so NoInterrupt also breaks.
+
+diff --git a/packages/agent/src/coder/ws.ts b/packages/agent/src/coder/ws.ts
+index 82581cd..c06b46f 100644
+--- a/packages/agent/src/coder/ws.ts
++++ b/packages/agent/src/coder/ws.ts
+@@ -508,7 +508,7 @@ async function* streamChatEventsLoop(
+     // frame forever.
+     if (failure instanceof CoderApiError) throw failure;
+     if (parseFailure && failure) throw failure;
+-    if (sawUntrackableDelta) {
++    if (sawUntrackableDelta || true) { // MUTANT: every drop ends the stream
+       // A CoderStreamError (not a bare CoderAgentError) so the model layer
+       // applies its retry-safety gates — otherwise the generic stream_closed
+       // wrap would advertise a same-chat retry that could duplicate the turn.

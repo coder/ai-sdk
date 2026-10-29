@@ -1,0 +1,17 @@
+Expect: UsageOnce
+Usage is added once per snapshot instead of once per message id, so replayed snapshots count twice (translate.ts, `#usageByMessageId`).
+
+diff --git a/packages/agent/src/model/translate.ts b/packages/agent/src/model/translate.ts
+index 04ff1a4..9476065 100644
+--- a/packages/agent/src/model/translate.ts
++++ b/packages/agent/src/model/translate.ts
+@@ -912,7 +912,8 @@ export class TurnTranslator {
+     // internal model step); tool messages never carry usage, and under
+     // summing, accepting a hypothetical mirrored copy would double-count.
+     if (message.usage && message.role === "assistant") {
+-      this.#usageByMessageId.set(message.id, message.usage);
++      // MUTANT: every snapshot adds its usage, replays included
++      this.#usageByMessageId.set(this.#usageByMessageId.size + 1_000_000, message.usage);
+     }
+     const content = message.content ?? [];
+ 

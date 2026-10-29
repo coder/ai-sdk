@@ -17,6 +17,9 @@ set -euo pipefail
 
 SKILL="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(git -C "$SKILL" rev-parse --show-toplevel)"
+# Relative paths in VERIFY_OUT and in `cleanup <run-dir>` mean the caller's directory.
+CALLER_PWD="$PWD"
+absolute() { case "$1" in /*) printf '%s' "$1" ;; *) printf '%s/%s' "$CALLER_PWD" "$1" ;; esac; }
 cd "$ROOT"
 # Put Node and pnpm from mise.toml first on PATH when mise has them installed.
 # Before `launch` installs them, keep the ambient PATH: doctor reports it.
@@ -28,7 +31,7 @@ use_mise_toolchain() {
   PATH="$node_dir/bin:$(dirname "$pnpm_bin"):$PATH"
 }
 use_mise_toolchain
-OUT_ROOT="${VERIFY_OUT:-${XUM_SCRATCH_DIR:-${TMPDIR:-/tmp}}/verify-coder-ai-sdk}"
+OUT_ROOT="$(absolute "${VERIFY_OUT:-${XUM_SCRATCH_DIR:-${TMPDIR:-/tmp}}/verify-coder-ai-sdk}")"
 DRIVE_TIMEOUT="${VERIFY_TIMEOUT:-300}"
 FEATURES=(agent-generate agent-stream agent-custom-tool agent-multi-turn provider-generate-stream)
 
@@ -50,6 +53,35 @@ api() {
   printf 'header = "Coder-Session-Token: %s"\n' "$CODER_SESSION_TOKEN" | curl "${args[@]}" "$CODER_URL$path"
 }
 strip_ansi() { sed 's/\x1b\[[0-9;]*m//g'; }
+
+# The chat route prefix, as CoderChatClient picks it: the v2 route, or the
+# legacy route when v2 answers 404. Sets CHAT_PREFIX and CHAT_PROBE_STATUS.
+CHAT_PREFIX=/api/v2/chats
+CHAT_PROBE_STATUS=""
+pick_chat_prefix() {
+  local tmp
+  tmp="$(mktemp)"
+  CHAT_PREFIX=/api/v2/chats
+  CHAT_PROBE_STATUS="$(api GET "$tmp" "$CHAT_PREFIX?limit=1" || true)"
+  if [ "$CHAT_PROBE_STATUS" = 404 ]; then
+    CHAT_PREFIX=/api/experimental/chats
+    CHAT_PROBE_STATUS="$(api GET "$tmp" "$CHAT_PREFIX?limit=1" || true)"
+  fi
+  rm -f "$tmp"
+}
+
+# resolve_model <hint> <org> : prints the model config id that the agent's own
+# resolver (CoderChatClient.resolveModelConfigId) picks, or nothing.
+resolve_model() {
+  (cd packages/agent && VERIFY_HINT="$1" VERIFY_ORG="$2" pnpm exec tsx -e '
+    import { CoderChatClient } from "./src/coder/client.ts";
+    const client = new CoderChatClient({ baseUrl: process.env.CODER_URL, token: process.env.CODER_SESSION_TOKEN });
+    client.resolveModelConfigId(process.env.VERIFY_HINT, process.env.VERIFY_ORG).then(
+      (id) => console.log(id ?? ""),
+      () => process.exit(1),
+    );
+  ' 2>/dev/null)
+}
 
 cmd_launch() {
   if command -v mise >/dev/null 2>&1; then
@@ -102,35 +134,20 @@ cmd_doctor() {
   else
     check FAIL "GET /api/v2/users/me -> $status (token invalid or expired)"
   fi
-  # Same routes as CoderChatClient: the v2 route, then the legacy route on a 404.
-  local route=/api/v2/chats
-  status="$(api GET "$tmp/chats.json" "$route?limit=1" || true)"
-  if [ "$status" = 404 ]; then
-    route=/api/experimental/chats
-    status="$(api GET "$tmp/chats.json" "$route?limit=1" || true)"
-  fi
-  if [ "$status" = 200 ]; then check PASS "Coder Agents chat API answers (GET $route)"; else check FAIL "GET $route -> $status: Coder Agents is not available to this user"; fi
+  pick_chat_prefix
+  if [ "$CHAT_PROBE_STATUS" = 200 ]; then check PASS "Coder Agents chat API answers (GET $CHAT_PREFIX)"; else check FAIL "GET $CHAT_PREFIX -> $CHAT_PROBE_STATUS: Coder Agents is not available to this user"; fi
   if [ -n "$org" ]; then
-    local models_route="/api/v2/organizations/$org/chats/models"
-    status="$(api GET "$tmp/models.json" "$models_route" || true)"
-    if [ "$status" = 404 ]; then
-      models_route=/api/experimental/chats/model-configs
-      status="$(api GET "$tmp/models.json" "$models_route" || true)"
-    fi
-    if [ "$status" = 200 ]; then
-      local hint
-      for hint in "${CODER_MODEL:-haiku}" "${CODER_TOOL_MODEL:-sonnet}"; do
-        # The legacy route returns a bare array. Disabled models do not count:
-        # the client's resolver skips them too.
-        if jq -e --arg h "$hint" '[(if type == "array" then . else .models end)[]? | select(.enabled != false) | ((.display_name // "") + " " + (.model // "") + " " + (.id // "")) | ascii_downcase | contains($h | ascii_downcase)] | any' "$tmp/models.json" >/dev/null; then
-          check PASS "agent model hint \"$hint\" matches an enabled chat model"
-        else
-          check FAIL "agent model hint \"$hint\" matches no chat model (set CODER_MODEL / CODER_TOOL_MODEL)"
-        fi
-      done
-    else
-      check FAIL "GET $models_route -> $status"
-    fi
+    local hint model_id
+    for hint in "${CODER_MODEL:-haiku}" "${CODER_TOOL_MODEL:-sonnet}"; do
+      # The agent's own resolver decides, so provider:model hints, display
+      # names, disabled models, and the legacy route behave as in the drive.
+      model_id="$(resolve_model "$hint" "$org" || true)"
+      if [ -n "$model_id" ]; then
+        check PASS "agent model hint \"$hint\" resolves to chat model $model_id"
+      else
+        check FAIL "agent model hint \"$hint\" resolves to no enabled chat model (set CODER_MODEL / CODER_TOOL_MODEL)"
+      fi
+    done
   fi
   rm -rf "$tmp"
   if [ "$ok" = 1 ]; then echo "doctor: READY"; else echo "doctor: NOT READY"; return 1; fi
@@ -144,6 +161,7 @@ cmd_doctor() {
 # example creates to created-chats.txt, even when the example dies early.
 run_example() {
   local dir="$1" pkg="$2" example="$3" name
+  dir="$(absolute "$dir")"
   shift 3
   name="$(basename "$example" .ts)"
   echo "cd packages/$pkg && ${*:+$* }pnpm exec tsx $example" >>"$dir/command.txt"
@@ -160,8 +178,8 @@ run_example() {
 # record_chat <feature-dir> <chat-id> : saves the chat and its messages (second view).
 record_chat() {
   local dir="$1" id="$2"
-  api GET "$dir/chat-$id.json" "/api/v2/chats/$id" >/dev/null
-  api GET "$dir/messages-$id.json" "/api/v2/chats/$id/messages?limit=100" >/dev/null
+  api GET "$dir/chat-$id.json" "$CHAT_PREFIX/$id" >/dev/null
+  api GET "$dir/messages-$id.json" "$CHAT_PREFIX/$id/messages?limit=100" >/dev/null
 }
 
 # check_created <feature-dir> <expected-count> : reads the second view of every
@@ -334,6 +352,7 @@ cmd_drive() {
   local run feature
   run="$OUT_ROOT/$(date -u +%Y%m%dT%H%M%SZ)-$$"
   mkdir -p "$run"
+  pick_chat_prefix
   api GET "$run/buildinfo.json" /api/v2/buildinfo >/dev/null || true
   {
     echo "commit: $(git rev-parse HEAD)$(git diff --quiet HEAD -- packages && echo ' (packages/ clean)' || echo ' + local changes under packages/')"
@@ -355,16 +374,18 @@ cmd_drive() {
 
 cmd_cleanup() {
   need_env
-  local run="${1:-}" id status tmp failed=0
-  [ -d "$run" ] || die "cleanup needs the run directory that drive printed"
+  local run id status tmp failed=0
+  run="$(absolute "${1:-}")"
+  [ -n "${1:-}" ] && [ -d "$run" ] || die "cleanup needs the run directory that drive printed"
+  pick_chat_prefix
   tmp="$(mktemp)"
   for id in $(cat "$run"/*/created-chats.txt 2>/dev/null | sort -u); do
-    status="$(api GET "$tmp" "/api/v2/chats/$id")"
+    status="$(api GET "$tmp" "$CHAT_PREFIX/$id")"
     if [ "$status" = 200 ] && [ "$(jq -r .archived "$tmp")" = true ]; then
       echo "already archived: $id" | tee -a "$run/cleanup.txt"
       continue
     fi
-    status="$(api PATCH "$tmp" "/api/v2/chats/$id" '{"archived":true}')"
+    status="$(api PATCH "$tmp" "$CHAT_PREFIX/$id" '{"archived":true}')"
     case "$status" in
       2??) echo "archived $id (HTTP $status)" | tee -a "$run/cleanup.txt" ;;
       409)

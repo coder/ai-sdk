@@ -49,7 +49,7 @@ It prints one `PASS` or `FAIL` line per check and ends with `doctor: READY` or `
 - The deployment answers `GET /api/v2/buildinfo`, and the line shows its version.
 - The token is valid (`GET /api/v2/users/me`).
 - Coder Agents is available to this user (`GET /api/v2/chats`, or the legacy `/api/experimental/chats` on a 404, as the client does).
-- The agent model hints match a chat model that is enabled (`GET /api/v2/organizations/<org>/chats/models`, or the legacy `/api/experimental/chats/model-configs` on a 404). Disabled models do not count, because the client's resolver skips them.
+- The agent model hints resolve to an enabled chat model. Doctor asks the agent's own resolver (`CoderChatClient.resolveModelConfigId`, read-only), so `provider:model` hints, display names, disabled models, and the legacy routes behave exactly as in a drive.
 
 Doctor does not call the AI Gateway, because every gateway call spends tokens. The `provider-generate-stream` drive is the gateway check.
 
@@ -72,7 +72,7 @@ All five features take about 30 seconds and a few cents of model tokens.
 
 ## Evidence
 
-Each drive prints its run directory: `$VERIFY_OUT/<UTC time>-<pid>/`. `VERIFY_OUT` defaults to `$XUM_SCRATCH_DIR/verify-coder-ai-sdk`, then `$TMPDIR/verify-coder-ai-sdk`, then `/tmp/verify-coder-ai-sdk`. A Xum scratch directory is deleted with its workspace, so copy the run directory elsewhere when the proof must outlive the workspace.
+Each drive prints its run directory: `$VERIFY_OUT/<UTC time>-<pid>/`. A relative `VERIFY_OUT`, like a relative `cleanup <run-dir>`, is relative to the directory you run `verify.sh` from. `VERIFY_OUT` defaults to `$XUM_SCRATCH_DIR/verify-coder-ai-sdk`, then `$TMPDIR/verify-coder-ai-sdk`, then `/tmp/verify-coder-ai-sdk`. A Xum scratch directory is deleted with its workspace, so copy the run directory elsewhere when the proof must outlive the workspace.
 
 - `run.txt`: the commit and whether `packages/` was clean or had local changes, the Node version, and the deployment URL and version.
 - `<feature>/command.txt`: the exact commands, with the model variables that the drive set.

@@ -18,7 +18,7 @@ A tool that the caller passes to `new CoderAgent({ tools })` runs in the caller'
 
 Preconditions:
 
-- `verify.sh doctor` prints `agent model hint "sonnet" matches an enabled chat model` (or your `CODER_TOOL_MODEL`).
+- `verify.sh doctor` prints `agent model hint "sonnet" resolves to chat model ...` (or your `CODER_TOOL_MODEL`).
 
 - **Call the tool.** Ask the agent to roll a 20-sided die. Run `.agents/skills/verify-coder-ai-sdk/verify.sh drive agent-custom-tool`. `PASS the local tool ran exactly once (ran 1 times)` and `PASS result.steps records the rollDice call` appear. The stdout has one `[local tool] rollDice({ sides: 20 }) -> N` line.
 - **Use the result.** `PASS the answer reports the rolled value N` appears.

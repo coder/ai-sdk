@@ -18,7 +18,7 @@
 
 Preconditions:
 
-- `verify.sh doctor` prints `doctor: READY`, including `agent model hint "haiku"` (or your `CODER_MODEL`).
+- `verify.sh doctor` prints `doctor: READY`, including `agent model hint "haiku" resolves to chat model ...` (or your `CODER_MODEL`).
 
 - **Generate.** Ask the one-sentence question in `examples/01-generate.ts`. Run `.agents/skills/verify-coder-ai-sdk/verify.sh drive agent-generate`. The lines `PASS example exits 0`, `PASS generate() returned text`, and `PASS finish reason is stop` appear.
 - **Second view.** The drive reads the chat's messages from `GET /api/v2/chats/<id>/messages`. `PASS result.text equals the assistant text that chatd committed` appears: `answer-text.txt` and `committed-text.txt` are byte for byte equal.

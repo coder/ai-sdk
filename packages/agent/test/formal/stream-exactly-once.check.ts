@@ -89,6 +89,7 @@ const reasoning = (t: string) => ({ kind: "reasoning" as const, text: t });
 const part: WorldEvent = { kind: "part" };
 const commit: WorldEvent = { kind: "commit" };
 const retry: WorldEvent = { kind: "retry" };
+const hook: WorldEvent = { kind: "hook" };
 const settle: WorldEvent = { kind: "settle" };
 
 /**
@@ -195,6 +196,35 @@ const SCENARIOS: Scenario[] = [
     ],
     maxDrops: 1,
     maxRuns: 40_000,
+  },
+  // A blank step: chatd commits a reasoning block that streamed no deltas
+  // (`chatloop.go` `processStepStream`). `GenerateAssistant` (`chatloop.go`)
+  // rejects blank content only for content-filter and silent finishes, and
+  // `generateAssistant` (`generation.go`) skips the commit only for a step
+  // without parts. A `stop` hook then continues the turn into step 2, and a
+  // redial re-sends the blank step while step 2 streams (`stream_loop.go`
+  // `loadDBSnapshot`, `messageEvents`).
+  {
+    name: "blank step 1, then a stop hook continues the turn into step 2",
+    start: "new-chat",
+    steps: [
+      { parts: [reasoning("")], usage: 1 },
+      { parts: [text("a"), text("b")], usage: 10 },
+    ],
+    timeline: [commit, hook, part, part, commit, settle],
+    maxDrops: 2,
+    maxRuns: 20_000,
+  },
+  {
+    name: "blank step 1, then a stop hook continues the turn and chatd retries step 2",
+    start: "new-chat",
+    steps: [
+      { parts: [reasoning("")], usage: 1 },
+      { parts: [text("a"), text("b")], usage: 10 },
+    ],
+    timeline: [commit, hook, part, part, retry, part, part, commit, settle],
+    maxDrops: 1,
+    maxRuns: 20_000,
   },
 ];
 
@@ -322,6 +352,8 @@ function describeWorld(ev: WorldEvent): string {
     }
     case "revise":
       return `chatd revises step ${ev.step + 1}'s message (appends "${ev.appendText}", usage unit ${ev.usage})`;
+    case "hook":
+      return "a stop hook continues the turn; chatd commits its model-only context row";
     case "settle":
       return "chatd settles the turn (status waiting)";
   }
@@ -709,7 +741,7 @@ function compareUsage(
 }
 
 /**
- * Every part and suffix is one letter, and no letter repeats: see
+ * Every non-empty part and suffix is one letter, and no letter repeats: see
  * `compareDeltas`. One exception: a retry's `nextParts` can reuse the step's
  * own letters, in any order (the new attempt repeats the abandoned one, or
  * reorders it). A scenario has at most one such retry, and never revises
@@ -722,7 +754,7 @@ function compareUsage(
 function validate(scn: Scenario): void {
   const fail = (why: string) => new Error(`scenario "${scn.name}": ${why}`);
   const letters = [
-    ...scn.steps.flatMap((step) => step.parts.map((p) => p.text)),
+    ...scn.steps.flatMap((step) => step.parts.flatMap((p) => (p.text === "" ? [] : [p.text]))),
     ...scn.timeline.flatMap((ev) => (ev.kind === "revise" ? [ev.appendText] : [])),
   ];
   let step = 0;

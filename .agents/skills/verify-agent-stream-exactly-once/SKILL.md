@@ -75,6 +75,8 @@ RESULT scenario="attempt fails after a partial stream and chatd retries it" stat
 RESULT scenario="attempt fails after a partial stream and chatd retries it with different text" status=pass runs=980 violating=0 violated=none
 RESULT scenario="attempt fails after a partial stream and chatd retries it, reasoning and text reordered" status=pass runs=23 violating=0 violated=none
 RESULT scenario="step 1 revised while step 2 streams, so chatd restarts step 2" status=pass runs=2947 violating=0 violated=none
+RESULT scenario="blank step 1, then a stop hook continues the turn into step 2" status=pass runs=7014 violating=0 violated=none
+RESULT scenario="blank step 1, then a stop hook continues the turn and chatd retries step 2" status=pass runs=1761 violating=0 violated=none
 ```
 
 The script exits 0 when every scenario is `pass` or `known-finding`. It exits non-zero on `fail`, and also when a known finding no longer reproduces.
@@ -108,6 +110,8 @@ Decide in this order:
    | replayed preview parts, `delivers: ... part`      | `stream_loop.go` `part` (forwards seq > last forwarded seq; a new connection starts at 0)               |
    | `chatd streams the next part of the current step` | `ARCHITECTURE.md` "Message part buffer" (`AddPart`), "Generation goroutine" (`RecordGenerationAttempt`) |
    | `chatd commits the current step ...`              | `ARCHITECTURE.md` "Message revisions and history version"; `applyDBSnapshot` message sync               |
+   | a blank step, `message N assistant ""`            | `chatloop/chatloop.go` `processStepStream` (a block without deltas commits empty text)                  |
+   | `a stop hook continues the turn ...`              | `generation.go` `finishGenerationTurn`, `chathooks/effects.go` `EventMessages` (a model-only row)       |
    | `the provider call fails ...; chatd retires ...`  | `generation.go` (retryable errors), `applyDBSnapshot` (`attemptRetired`, retry event)                   |
    | `chatd revises step N's message ...`              | `ARCHITECTURE.md` "Event processing" case 2 (a history change cancels the attempt)                      |
    | `(N unforwarded preview part(s) dropped)`         | `stream_loop.go` `part` (rejects parts of an older history version or attempt)                          |
@@ -133,7 +137,7 @@ Fixed: `restart-keeps-abandoned-deltas` ([#407](https://github.com/coder/ai-sdk/
   .agents/skills/verify-agent-stream-exactly-once/mutants.sh
   ```
 
-  It takes about 2 minutes. It applies each `mutants/*.patch` to the real code, runs the check, and requires that a passing scenario now fails with the property on the patch's `Expect:` line. It reverts every patch, and it refuses to start when a file that a patch touches has local changes. Every mutant must print `CAUGHT`.
+  It takes about 5 minutes. It applies each `mutants/*.patch` to the real code, runs the check, and requires that a passing scenario now fails with the property on the patch's `Expect:` line. It reverts every patch, and it refuses to start when a file that a patch touches has local changes. Every mutant must print `CAUGHT`.
 
 - **A patch no longer applies** because the code moved: make the same one-line break by hand in the new code, save it with `git diff -- <file> > mutants/<name>.patch`, put the `Expect:` line and the one-sentence description back at the top, and restore the file with `git checkout -- <file>`.
 
@@ -151,16 +155,17 @@ The mutants, and what each one breaks:
 | `08-restart-keeps-pending`           | A new attempt keeps the abandoned attempt's pending text       | TextExactlyOnce      |
 | `09-diverged-commit-suppressed`      | A commit that diverges from the emitted text emits nothing     | TextExactlyOnce      |
 | `10-restart-commit-ignores-order`    | After a restart, a commit is reconciled per kind, not in order | ContentInOrder       |
+| `11-blank-snapshot-claims-deltas`    | A re-sent blank step claims the next step's open deltas        | TextExactlyOnce      |
 
-`06` also breaks NoInterrupt. `07` breaks only ContentInOrder: the text and reasoning checks each see the right letters, in the wrong order between them.
+`06` also breaks NoInterrupt, and `11` also breaks ContentInOrder. `07` breaks only ContentInOrder: the text and reasoning checks each see the right letters, in the wrong order between them.
 
 ## What a pass covers
 
 A pass covers the real client code against the chatd model within these bounds. It does not cover the whole system.
 
 - **Turn shapes:** a new chat (`createChat`, no `after_id`) and a follow-up turn (`createChatMessage`, `after_id` = the prompt id).
-- **Steps:** up to 2 assistant steps of up to 3 text or reasoning parts.
-- **Server events:** streamed parts, commits, one retry (its new attempt streams the same parts, other text, or the same parts with reasoning and text reordered), one revision that appends text and changes usage, and the settle.
+- **Steps:** up to 2 assistant steps of up to 3 text or reasoning parts. A part can be blank: a block without deltas streams nothing and commits empty text, as in a step whose only part is empty reasoning.
+- **Server events:** streamed parts, commits, one retry (its new attempt streams the same parts, other text, or the same parts with reasoning and text reordered), one revision that appends text and changes usage, a `stop` hook that continues the turn after a step, and the settle.
 - **Network:** up to 2 connection failures per run (drops or failed handshakes). That is fewer than the reader's budget of 5, so every run must complete. Each connection can open before or after any server event.
 - **Relay lag:** at each commit, retry, or revision, chatd can drop any preview parts that it has not forwarded yet.
 
@@ -170,12 +175,15 @@ The check assumes these facts about chatd:
 - Events of one sync arrive in `applyDBSnapshot` order: messages, status, retry, `preview_reset`.
 - A history change during a step cancels the attempt, and the step starts again from its first part.
 - A redial replays every committed message past `after_id` at its latest revision, then the current attempt's parts from seq 1.
+- A `stop` hook's model context row takes a message id and advances `history_version`, but the stream never sends it: `GetChatMessagesByRevisionForStream` in coder/coder `coderd/database/queries/chats.sql` reads only user-visible rows.
+- A step that streams no parts sends only `preview_reset` when its attempt starts. The client ignores `preview_reset`, so the model leaves that attempt out.
 - The client runs until it waits between environment steps. The reader queues frames in arrival order and drains its queue before it decides to redial (`ws.ts`), so a slower consumer sees the same events. I did not verify this for the `requires_action` pause path, which the check does not cover.
 
 The check does not cover:
 
 - Client tool calls, `requires_action`, and the stream that one turn keeps across segments.
 - Server tool calls and their results, and sources.
+- A `stop` hook's user-visible notice row.
 - Queued submissions (#114, #119) and the promotion boundary (#120).
 - `history_reset`, error status, 4xx handshakes, unparseable frames, and servers without episode coordinates.
 - Aborts, `requestTimeoutMs`, and the `/watch` socket.
@@ -184,7 +192,7 @@ The check does not cover:
 
 ## Coverage record
 
-- **Sync commit:** `5be3f4d7306c6bbb51b559a0c594c73a510ed2ae` (branch `issue-407-chatd-retry-preview-reset` on top of `main` d288d9b, 2026-10-29). At this commit the check gives the results above, and all 10 mutants are `CAUGHT`. A squash merge removes this commit from history. Then the sync point is the commit that last changed this file, because the coverage record and the covered code merged together.
+- **Sync commit:** `5be3f4d7306c6bbb51b559a0c594c73a510ed2ae` (branch `issue-407-chatd-retry-preview-reset` on top of `main` d288d9b, 2026-10-29). At this commit the check gives the results above, and all 11 mutants are `CAUGHT`. A squash merge removes this commit from history. Then the sync point is the commit that last changed this file, because the coverage record and the covered code merged together.
 - **chatd model source:** coder/coder `3697bb38ce6fa29bf73a82f3494cca3ecf708de6`.
 
 | File                                         | Functions the check exercises                                                                                                                                |

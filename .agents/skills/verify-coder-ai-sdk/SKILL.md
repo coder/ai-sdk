@@ -23,7 +23,7 @@ There is no process to keep alive. Launch prepares the checkout once:
 .agents/skills/verify-coder-ai-sdk/verify.sh launch
 ```
 
-It runs `mise install node pnpm`, `CI=true pnpm install --frozen-lockfile`, and `pnpm -r build`. The install and the build run without `CODER_SESSION_TOKEN` and `CODER_API_TOKEN` in their environment. It is ready when it prints `launch: ok`. A fresh clone reaches that state with no other step. The build is only for the effect package. The agent and provider examples run from source with `tsx`.
+It runs `mise install node pnpm`, `CI=true pnpm install --frozen-lockfile`, and `pnpm -r build`. The install and the build run without `CODER_SESSION_TOKEN` and `CODER_API_TOKEN` in their environment. The drives pass only `CODER_SESSION_TOKEN` to the examples. It is ready when it prints `launch: ok`. A fresh clone reaches that state with no other step. The build is only for the effect package. The agent and provider examples run from source with `tsx`.
 
 **CAUTION: Drive only a checkout that you trust.** The examples import `../src` and run with your `CODER_SESSION_TOKEN`, so code in the checkout can read the token and send it anywhere. `verify.sh` is part of the checkout too: read its diff before you run it from someone else's branch. To verify a change from an untrusted contributor, ask the deployment owner for a short-lived, least-privilege token, and use it in a disposable workspace.
 

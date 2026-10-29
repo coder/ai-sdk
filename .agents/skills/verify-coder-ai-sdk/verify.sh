@@ -76,6 +76,11 @@ pick_chat_prefix() {
 # the token. Uses the v2 route, or the legacy route on a 404, as the client does.
 resolve_model() {
   local tmp status
+  # A UUID hint is returned as is, before any request, as the client does.
+  if [[ "$1" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+    printf '%s\n' "$1"
+    return 0
+  fi
   tmp="$(mktemp)"
   status="$(api GET "$tmp" "/api/v2/organizations/$2/chats/models" || true)"
   if [ "$status" = 404 ]; then status="$(api GET "$tmp" /api/experimental/chats/model-configs || true)"; fi
@@ -166,7 +171,9 @@ run_example() {
   name="$(basename "$example" .ts)"
   echo "cd packages/$pkg && ${*:+$* }pnpm exec tsx $example" >>"$dir/command.txt"
   local code=0
-  (cd "packages/$pkg" && env "$@" VERIFY_CHAT_LOG="$dir/created-chats.txt" \
+  # Only the session token reaches checkout code: an ambient CODER_API_TOKEN
+  # (which the provider examples prefer) is removed.
+  (cd "packages/$pkg" && env -u CODER_API_TOKEN "$@" VERIFY_CHAT_LOG="$dir/created-chats.txt" \
     NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--import=$SKILL/record-chats.mjs" \
     timeout "$DRIVE_TIMEOUT" pnpm exec tsx "$example") \
     >"$dir/$name.stdout.txt" 2>"$dir/$name.stderr.txt" || code=$?

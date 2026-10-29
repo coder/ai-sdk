@@ -29,4 +29,4 @@ Preconditions:
 
 - This feature has no second view. The gateway's interception log is not available to a normal user (`GET /api/v2/aibridge/interceptions` returns 404 on dogfood), and the provider creates no chat. The proof is the API result and its usage.
 - **CAUTION: Call the gateway only through the examples. Do not send your Coder token to other gateway routes by hand.**
-- The examples read `CODER_API_TOKEN` before `CODER_SESSION_TOKEN`. A stale `CODER_API_TOKEN` in the environment wins.
+- The examples read `CODER_API_TOKEN` before `CODER_SESSION_TOKEN`. The drive removes `CODER_API_TOKEN` from the examples' environment, so they always use `CODER_SESSION_TOKEN`. When you run an example by hand, a stale `CODER_API_TOKEN` wins.

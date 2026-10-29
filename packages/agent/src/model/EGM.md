@@ -102,9 +102,12 @@ deliberate design.
   in the output, before the committed content [translate.ts:TurnTranslator.#ingestMessage]
 - A revision of an earlier assistant message emits a suffix only when its content strictly extends
   the ledger, in its own closed block [translate.ts:TurnTranslator.#reconcileRevision]
-- A same-id revision that arrives while the next step's deltas are open is deferred (latest wins)
-  and reconciled when the next snapshot settles, before an `error` part, before a new client tool
-  call, or in `finish` [translate.ts:TurnTranslator.#flushDeferredRevisions]
+- A same-id snapshot of the current message that arrives while the next step's deltas are open
+  claims none of them and is deferred (latest wins) when an earlier snapshot of the message carried
+  content, or when this snapshot carries none. A redial can re-send a blank committed step while
+  the next step streams [translate.ts:TurnTranslator.#ingestMessage]
+- A deferred snapshot is reconciled when the next snapshot settles, before an `error` part, before
+  a new client tool call, or in `finish` [translate.ts:TurnTranslator.#flushDeferredRevisions]
 - Messages with an id at or below the effective turn cursor are skipped (no content, no usage).
   This filters replays, because redials reuse the turn's original `after_id`
   [translate.ts:TurnTranslator.#ingestMessage]

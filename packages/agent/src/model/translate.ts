@@ -1079,6 +1079,9 @@ export class TurnTranslator {
       const fullText = joinContent(content, "text");
       const fullReasoning = joinContent(content, "reasoning");
       const known = this.#emittedByMessageId.get(message.id);
+      const substantive = content.some((p) =>
+        p.type === "text" || p.type === "reasoning" ? (p.text ?? "").length > 0 : true,
+      );
 
       if (known && message.id !== this.#currentAssistantId) {
         // A replay or revision bump of an EARLIER message (a redial replays
@@ -1091,7 +1094,7 @@ export class TurnTranslator {
         // step streams, #currentAssistantId still names the last committed
         // one and its pending deltas must join the reconciliation below.
         this.#reconcileRevision(out, known, content);
-      } else if (known && this.#deltasSinceSnapshot && known.substantive) {
+      } else if (known && this.#deltasSinceSnapshot && (known.substantive || !substantive)) {
         // A same-id snapshot racing the NEXT step's open deltas. A message
         // whose earlier snapshot already carried content — text, reasoning,
         // or only tools/sources — never streams more deltas (content changes
@@ -1103,7 +1106,10 @@ export class TurnTranslator {
         // snapshot settles ownership of the pending deltas (see below).
         // Announce-style commits (the earlier snapshot was EMPTY) stay on
         // the attribution path below — their deltas ARE this message's
-        // content.
+        // content. A snapshot that is still empty claims nothing either: a
+        // redial re-sends a blank committed step (reasoning without text,
+        // `chatloop.go` `processStepStream`) while a `stop` hook's
+        // continuation streams the next step.
         this.#deferredRevisions.set(message.id, content);
       } else {
         // First sight of this message, or a re-snapshot of the CURRENT one —
@@ -1202,9 +1208,7 @@ export class TurnTranslator {
         // every later message's reconciliation.
         this.#pending = [];
         this.#replay = undefined;
-        rec.substantive ||= content.some((p) =>
-          p.type === "text" || p.type === "reasoning" ? (p.text ?? "").length > 0 : true,
-        );
+        rec.substantive ||= substantive;
         this.#emittedByMessageId.set(message.id, rec);
         this.#deltasSinceSnapshot = false;
         // Delta ownership is settled: reconcile revisions that were deferred

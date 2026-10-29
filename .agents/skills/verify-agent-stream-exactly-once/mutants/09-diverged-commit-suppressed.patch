@@ -1,0 +1,16 @@
+Expect: TextExactlyOnce
+A commit whose text diverges from the emitted deltas emits nothing when the client saw no restart, so the committed text is lost (translate.ts, `#ingestMessage`, #407).
+
+diff --git a/packages/agent/src/model/translate.ts b/packages/agent/src/model/translate.ts
+index 993bce2..ced58f9 100644
+--- a/packages/agent/src/model/translate.ts
++++ b/packages/agent/src/model/translate.ts
+@@ -1160,7 +1160,7 @@ export class TurnTranslator {
+             textFrom = rec.text.length;
+             reasoningFrom = rec.reasoning.length;
+           }
+-        } else if (!textOk && fullText.startsWith(rec.text)) {
++        } else if (false) { // MUTANT: a diverging commit's text stays suppressed
+           // Text that does not extend the emitted deltas, with no restart
+           // seen: chatd commits exactly the text deltas it streamed
+           // (`chatloop.go` `processStepStream`), so the deltas came from an

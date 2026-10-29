@@ -1,0 +1,16 @@
+Expect: ContentInOrder
+After a restart, a commit is reconciled per kind instead of in order across text and reasoning, so a reordered attempt keeps the abandoned order (translate.ts, `#ingestMessage`, #407).
+
+diff --git a/packages/agent/src/model/translate.ts b/packages/agent/src/model/translate.ts
+index 993bce2..87dfa2e 100644
+--- a/packages/agent/src/model/translate.ts
++++ b/packages/agent/src/model/translate.ts
+@@ -1152,7 +1152,7 @@ export class TurnTranslator {
+           // cannot be taken back: emit the snapshot's content in full, in
+           // new blocks, after it (see #streamDelta).
+           const rest = contentSegments(content, rec.text.length, rec.reasoning.length);
+-          if (!isSegmentPrefix(replay, rest)) {
++          if (rest.length < 0) { // MUTANT: a commit after a restart is not checked in order
+             this.#closeText(out);
+             this.#closeReasoning(out);
+             textOk = true;

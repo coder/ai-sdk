@@ -934,18 +934,20 @@ describe("TurnTranslator — earlier-message revision reconciliation (#57)", () 
     expect(parts.filter((p) => p.type === "tool-call")).toHaveLength(1);
   });
 
-  it("settles pending deltas on a suppressed rewrite commit so later messages reconcile", () => {
+  it("emits a rewrite commit in full and settles pending deltas so later messages reconcile", () => {
     // A delta-streamed message commits with REWRITTEN content ("Hi" does not
-    // extend the emitted "Hello"): the rewrite itself stays suppressed, but
-    // the commit still settles ownership of the deltas — stale pending
-    // content must not poison the NEXT message's reconciliation.
+    // extend the emitted "Hello"). The emitted "Hello" cannot be taken back,
+    // so the commit's content follows in full in a new block (#407: nothing
+    // committed is lost), and the commit settles ownership of the deltas —
+    // stale pending content must not poison the NEXT message's
+    // reconciliation.
     const { parts } = run([
       part("assistant", { type: "text", text: "Hello" }),
       msg(2, "assistant", [{ type: "text", text: "Hi" }]),
       msg(4, "assistant", [{ type: "text", text: "Next" }]),
       status("waiting"),
     ]);
-    expect(textBlocks(parts)).toEqual(["Hello", "Next"]);
+    expect(textBlocks(parts)).toEqual(["Hello", "Hi", "Next"]);
   });
 
   it("reconciles a revision deferred during a delta race once the next step commits", () => {
@@ -1799,5 +1801,167 @@ describe("TurnTranslator — promotion settle boundary (#120)", () => {
     const finish = parts.at(-1)!;
     if (finish.type !== "finish") throw new Error("expected finish part");
     expect(finish.usage.outputTokens.total).toBe(3);
+  });
+});
+
+describe("TurnTranslator — generation attempt restarts (#407)", () => {
+  /** A delta stamped with its episode, as chatd sends it. */
+  function epart(
+    type: "text" | "reasoning",
+    text: string,
+    episode: { hv: number; ga: number; seq: number },
+  ): ChatStreamEvent {
+    return {
+      type: "message_part",
+      chat_id: "c",
+      message_part: {
+        role: "assistant",
+        part: { type, text },
+        history_version: episode.hv,
+        generation_attempt: episode.ga,
+        seq: episode.seq,
+      },
+    };
+  }
+  const retry: ChatStreamEvent = {
+    type: "retry",
+    chat_id: "c",
+    retry: { attempt: 1, delay_ms: 1000, error: "overloaded", retrying_at: "" },
+  };
+  const previewReset: ChatStreamEvent = { type: "preview_reset", chat_id: "c" };
+  const reasoningBlocks = (parts: ReturnType<TurnTranslator["ingest"]>) =>
+    parts.filter((p) => p.type === "reasoning-delta").map((p) => p.delta);
+
+  it("does not repeat the text a retried attempt streams again (shortest reproduction)", () => {
+    const { parts } = run([
+      epart("text", "a", { hv: 1, ga: 1, seq: 1 }),
+      retry,
+      previewReset,
+      epart("text", "a", { hv: 1, ga: 2, seq: 1 }),
+      msg(2, "assistant", [{ type: "text", text: "ab" }]),
+      status("waiting"),
+    ]);
+    expect(textBlocks(parts)).toEqual(["ab"]);
+  });
+
+  it("does not repeat reasoning a retried attempt streams again", () => {
+    const { parts } = run([
+      epart("reasoning", "Th", { hv: 1, ga: 1, seq: 1 }),
+      retry,
+      previewReset,
+      epart("reasoning", "Th", { hv: 1, ga: 2, seq: 1 }),
+      epart("reasoning", "ink", { hv: 1, ga: 2, seq: 2 }),
+      msg(2, "assistant", [
+        { type: "reasoning", text: "Think" },
+        { type: "text", text: "Done" },
+      ]),
+      status("waiting"),
+    ]);
+    expect(reasoningBlocks(parts).join("")).toBe("Think");
+    expect(textBlocks(parts)).toEqual(["Done"]);
+  });
+
+  it("does not repeat a step that a history change restarted", () => {
+    const { parts } = run([
+      epart("text", "a", { hv: 1, ga: 1, seq: 1 }),
+      msg(2, "assistant", [{ type: "text", text: "a" }]),
+      previewReset,
+      epart("text", "c", { hv: 2, ga: 1, seq: 1 }),
+      // A revision of step 1 changes the history, so chatd restarts step 2.
+      msg(2, "assistant", [{ type: "text", text: "a+" }]),
+      previewReset,
+      epart("text", "c", { hv: 3, ga: 1, seq: 1 }),
+      epart("text", "d", { hv: 3, ga: 1, seq: 2 }),
+      msg(3, "assistant", [{ type: "text", text: "cd" }]),
+      status("waiting"),
+    ]);
+    expect(textBlocks(parts).join("")).toBe("acd+");
+  });
+
+  it("keeps the pending text when a redial's preview_reset continues the same attempt", () => {
+    // Every (re)connection opens with preview_reset; the reader then drops
+    // the replayed seq 1 and forwards seq 2 of the SAME episode.
+    const { parts } = run([
+      epart("text", "a", { hv: 1, ga: 1, seq: 1 }),
+      previewReset,
+      epart("text", "b", { hv: 1, ga: 1, seq: 2 }),
+      msg(2, "assistant", [{ type: "text", text: "abc" }]),
+      status("waiting"),
+    ]);
+    expect(textBlocks(parts)).toEqual(["abc"]);
+  });
+
+  it("emits a diverging retried attempt in full, in a new block, after the abandoned text", () => {
+    // The abandoned "Hello wor" cannot be taken back. The new attempt matches
+    // it for "Hello " (held back: already emitted), then diverges: the
+    // translator emits the new attempt from its start, so the output is the
+    // abandoned text followed by the complete committed text.
+    const { parts } = run([
+      epart("text", "Hello ", { hv: 1, ga: 1, seq: 1 }),
+      epart("text", "wor", { hv: 1, ga: 1, seq: 2 }),
+      retry,
+      previewReset,
+      epart("text", "Hello ", { hv: 1, ga: 2, seq: 1 }),
+      epart("text", "there", { hv: 1, ga: 2, seq: 2 }),
+      msg(2, "assistant", [{ type: "text", text: "Hello there!" }]),
+      status("waiting"),
+    ]);
+    expect(textBlocks(parts)).toEqual(["Hello wor", "Hello there!"]);
+  });
+
+  it("emits a retried attempt in full when it reorders reasoning and text", () => {
+    // Per kind the new attempt repeats the abandoned one, but in another
+    // order: the output keeps the abandoned "a", "b", then the complete
+    // committed attempt in its own order.
+    const { parts } = run([
+      epart("text", "a", { hv: 1, ga: 1, seq: 1 }),
+      epart("reasoning", "b", { hv: 1, ga: 1, seq: 2 }),
+      retry,
+      previewReset,
+      epart("reasoning", "b", { hv: 1, ga: 2, seq: 1 }),
+      epart("text", "a", { hv: 1, ga: 2, seq: 2 }),
+      msg(2, "assistant", [
+        { type: "reasoning", text: "b" },
+        { type: "text", text: "a" },
+      ]),
+      status("waiting"),
+    ]);
+    const deltas = parts.flatMap((p) =>
+      p.type === "text-delta" || p.type === "reasoning-delta" ? [`${p.type}:${p.delta}`] : [],
+    );
+    expect(deltas).toEqual([
+      "text-delta:a",
+      "reasoning-delta:b",
+      "reasoning-delta:b",
+      "text-delta:a",
+    ]);
+  });
+
+  it("keeps suppressing committed reasoning that the deltas do not start, without a restart", () => {
+    // chatd can commit reasoning text that it never streamed (the text of a
+    // reasoning start), so without a restart a reasoning mismatch is not
+    // taken as an abandoned attempt: the reasoning is not emitted twice.
+    const { parts } = run([
+      epart("reasoning", "ink", { hv: 1, ga: 1, seq: 1 }),
+      epart("text", "Done", { hv: 1, ga: 1, seq: 2 }),
+      msg(2, "assistant", [
+        { type: "reasoning", text: "Think" },
+        { type: "text", text: "Done" },
+      ]),
+      status("waiting"),
+    ]);
+    expect(reasoningBlocks(parts).join("")).toBe("ink");
+    expect(textBlocks(parts)).toEqual(["Done"]);
+  });
+
+  it("emits a diverging commit in full when the retried attempt streamed nothing", () => {
+    const { parts } = run([
+      epart("text", "Hello wor", { hv: 1, ga: 1, seq: 1 }),
+      retry,
+      previewReset,
+      msg(2, "assistant", [{ type: "text", text: "Hi" }]),
+      status("waiting"),
+    ]);
+    expect(textBlocks(parts)).toEqual(["Hello wor", "Hi"]);
   });
 });

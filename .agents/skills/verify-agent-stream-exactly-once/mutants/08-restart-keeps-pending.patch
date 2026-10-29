@@ -1,0 +1,16 @@
+Expect: TextExactlyOnce
+A delta of a new generation attempt does not restart the attempt, so a retried step's text repeats (translate.ts, `#trackEpisode`, #407).
+
+diff --git a/packages/agent/src/model/translate.ts b/packages/agent/src/model/translate.ts
+index 993bce2..4ca3b60 100644
+--- a/packages/agent/src/model/translate.ts
++++ b/packages/agent/src/model/translate.ts
+@@ -559,7 +559,7 @@ export class TurnTranslator {
+   #trackEpisode(mp: NonNullable<ChatStreamEvent["message_part"]>): void {
+     if (mp.history_version === undefined || mp.generation_attempt === undefined) return;
+     const episode = `${mp.history_version}:${mp.generation_attempt}`;
+-    if (this.#deltaEpisode !== undefined && episode !== this.#deltaEpisode) this.#restartAttempt();
++    // MUTANT: a new attempt keeps the abandoned attempt's pending content
+     this.#deltaEpisode = episode;
+   }
+ 

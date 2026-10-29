@@ -2,10 +2,10 @@ Expect: TextExactlyOnce
 TurnTranslator does not record the text a snapshot emitted, so a replayed snapshot emits it again (translate.ts, `#ingestMessage`).
 
 diff --git a/packages/agent/src/model/translate.ts b/packages/agent/src/model/translate.ts
-index 04ff1a4..98091a1 100644
+index 993bce2..46702e0 100644
 --- a/packages/agent/src/model/translate.ts
 +++ b/packages/agent/src/model/translate.ts
-@@ -1005,7 +1005,7 @@ export class TurnTranslator {
+@@ -1193,7 +1193,7 @@ export class TurnTranslator {
              seenReasoning = end;
            }
          }

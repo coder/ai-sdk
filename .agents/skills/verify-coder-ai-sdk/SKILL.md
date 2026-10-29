@@ -25,7 +25,7 @@ There is no process to keep alive. Launch prepares the checkout once:
 
 It runs `mise install node pnpm`, `CI=true pnpm install --frozen-lockfile`, and `pnpm -r build`. The install and the build run without `CODER_SESSION_TOKEN` and `CODER_API_TOKEN` in their environment. It is ready when it prints `launch: ok`. A fresh clone reaches that state with no other step. The build is only for the effect package. The agent and provider examples run from source with `tsx`.
 
-**CAUTION: Drive only a checkout that you trust.** The examples import `../src` and run with your `CODER_SESSION_TOKEN`, so code in the checkout can read the token and send it anywhere. To verify a change from an untrusted contributor, ask the deployment owner for a short-lived, least-privilege token, and use it in a disposable workspace.
+**CAUTION: Drive only a checkout that you trust.** The examples import `../src` and run with your `CODER_SESSION_TOKEN`, so code in the checkout can read the token and send it anywhere. `verify.sh` is part of the checkout too: read its diff before you run it from someone else's branch. To verify a change from an untrusted contributor, ask the deployment owner for a short-lived, least-privilege token, and use it in a disposable workspace.
 
 The examples need a deployment and a token in the environment:
 
@@ -35,7 +35,7 @@ The examples need a deployment and a token in the environment:
 
 ## Doctor
 
-Run this first, and again whenever a result looks wrong. It only reads.
+Run this first, and again whenever a result looks wrong. It only reads, and it runs no package code (examples or `packages/*/src`).
 
 ```sh
 .agents/skills/verify-coder-ai-sdk/verify.sh doctor
@@ -49,7 +49,7 @@ It prints one `PASS` or `FAIL` line per check and ends with `doctor: READY` or `
 - The deployment answers `GET /api/v2/buildinfo`, and the line shows its version.
 - The token is valid (`GET /api/v2/users/me`).
 - Coder Agents is available to this user (`GET /api/v2/chats`, or the legacy `/api/experimental/chats` on a 404, as the client does).
-- The agent model hints resolve to an enabled chat model. Doctor asks the agent's own resolver (`CoderChatClient.resolveModelConfigId`, read-only), so `provider:model` hints, display names, disabled models, and the legacy routes behave exactly as in a drive.
+- The agent model hints resolve to an enabled chat model. `resolve-model.jq` applies the rules of `CoderChatClient.resolveModelConfigId` to the model list, so `provider:model` hints, display names, disabled models, and the legacy routes behave as in a drive. Doctor does not run the examples or `packages/*/src` with the token. When the resolver in `packages/agent/src/coder/client.ts` changes, update `resolve-model.jq` to match.
 
 Doctor does not call the AI Gateway, because every gateway call spends tokens. The `provider-generate-stream` drive is the gateway check.
 

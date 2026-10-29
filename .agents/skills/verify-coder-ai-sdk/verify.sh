@@ -70,17 +70,17 @@ pick_chat_prefix() {
   rm -f "$tmp"
 }
 
-# resolve_model <hint> <org> : prints the model config id that the agent's own
-# resolver (CoderChatClient.resolveModelConfigId) picks, or nothing.
+# resolve_model <hint> <org> : prints the model config id that the agent's
+# resolver would pick, or nothing. resolve-model.jq mirrors
+# CoderChatClient.resolveModelConfigId, so doctor runs no checkout code with
+# the token. Uses the v2 route, or the legacy route on a 404, as the client does.
 resolve_model() {
-  (cd packages/agent && VERIFY_HINT="$1" VERIFY_ORG="$2" pnpm exec tsx -e '
-    import { CoderChatClient } from "./src/coder/client.ts";
-    const client = new CoderChatClient({ baseUrl: process.env.CODER_URL, token: process.env.CODER_SESSION_TOKEN });
-    client.resolveModelConfigId(process.env.VERIFY_HINT, process.env.VERIFY_ORG).then(
-      (id) => console.log(id ?? ""),
-      () => process.exit(1),
-    );
-  ' 2>/dev/null)
+  local tmp status
+  tmp="$(mktemp)"
+  status="$(api GET "$tmp" "/api/v2/organizations/$2/chats/models" || true)"
+  if [ "$status" = 404 ]; then status="$(api GET "$tmp" /api/experimental/chats/model-configs || true)"; fi
+  if [ "$status" = 200 ]; then jq -r --arg hint "$1" -f "$SKILL/resolve-model.jq" "$tmp"; fi
+  rm -f "$tmp"
 }
 
 cmd_launch() {
@@ -139,8 +139,8 @@ cmd_doctor() {
   if [ -n "$org" ]; then
     local hint model_id
     for hint in "${CODER_MODEL:-haiku}" "${CODER_TOOL_MODEL:-sonnet}"; do
-      # The agent's own resolver decides, so provider:model hints, display
-      # names, disabled models, and the legacy route behave as in the drive.
+      # Same rules as the agent's resolver: provider:model hints, display
+      # names, disabled models, and the legacy route behave as in a drive.
       model_id="$(resolve_model "$hint" "$org" || true)"
       if [ -n "$model_id" ]; then
         check PASS "agent model hint \"$hint\" resolves to chat model $model_id"

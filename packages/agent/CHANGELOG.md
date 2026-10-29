@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.12.30](https://github.com/coder/ai-sdk/compare/agent-v0.12.29...agent-v0.12.30) (2026-10-29)
+
+Fixes a bug where a restarted chatd attempt could duplicate or drop its text output, ensuring the text is retained exactly once.
+
+### Highlights
+
+- Restarted chatd attempts now preserve their text output exactly once instead of duplicating or losing it. ([#414](https://github.com/coder/ai-sdk/pull/414))
+
+### Bug Fixes
+
+* **agent:** keep a restarted chatd attempt's text exactly once ([#414](https://github.com/coder/ai-sdk/issues/414)) ([1eefdf1](https://github.com/coder/ai-sdk/commit/1eefdf126086f84918cad0d95f46c00b588445dd))
+
 ## [0.12.29](https://github.com/coder/ai-sdk/compare/agent-v0.12.28...agent-v0.12.29) (2026-10-29)
 
 A maintenance release with internal updates and no documented user-facing API or behavior changes.

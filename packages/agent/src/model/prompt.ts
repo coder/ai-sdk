@@ -94,8 +94,9 @@ type ContentOutputPart = Extract<
  * Flattens a `content` tool output (e.g. from a tool's `toModelOutput`) to one
  * text string. chatd stores a client tool result as opaque JSON and gives it to
  * the model as text, so a file part would reach the model as base64 characters,
- * never as an image. Text parts pass through. A file part becomes a short
- * placeholder, in the format of effect's `Prompt.toolModelOutputToText`.
+ * never as an image. Text parts and inline text files pass through. A URL file
+ * becomes a note with its URL. Any other file becomes a short placeholder, in
+ * the format of effect's `Prompt.toolModelOutputToText`.
  */
 function contentOutputToText(parts: readonly ContentOutputPart[]): string {
   return parts
@@ -103,8 +104,12 @@ function contentOutputToText(parts: readonly ContentOutputPart[]): string {
       switch (part.type) {
         case "text":
           return part.text;
-        case "file":
-          return `[${part.mediaType}${part.filename === undefined ? "" : ` ${part.filename}`} omitted]`;
+        case "file": {
+          if (part.data.type === "text") return part.data.text;
+          const label = `${part.mediaType}${part.filename === undefined ? "" : ` ${part.filename}`}`;
+          if (part.data.type === "url") return `[${label} at ${String(part.data.url)}]`;
+          return `[${label} omitted]`;
+        }
         default:
           return `[${part.type} content omitted]`;
       }

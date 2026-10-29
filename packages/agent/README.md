@@ -126,8 +126,9 @@ SDK tool loop:
   calls/results: you observe them, you don't execute them.
 - Coder Agents gives a client tool result to the model as text. If a tool's
   `toModelOutput` returns `content` parts, this package keeps the text parts
-  and replaces each file or image part with a note such as
-  `[image/png chart.png omitted]`. The model does not see the image. To show
+  and inline text files. It replaces each other file or image part with a note
+  such as `[image/png chart.png omitted]` (a URL file keeps its URL in the
+  note). The model does not see the image. To show
   the model a file, put it in a user message as a `file` part (see
   [Files](#files)).
 

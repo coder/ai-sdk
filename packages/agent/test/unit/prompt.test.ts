@@ -70,7 +70,7 @@ describe("classifyTurnAction", () => {
     }
   });
 
-  it("flattens a content output to text and replaces file parts with placeholders", () => {
+  it("flattens a content output to text and replaces binary file parts with notes", () => {
     // chatd hands a client tool result to the model as text, so file bytes
     // must not reach the wire as base64 (or as a JSON-serialized Uint8Array).
     const prompt: LanguageModelV4Prompt = [
@@ -96,6 +96,18 @@ describe("classifyTurnAction", () => {
                   data: { type: "data", data: new Uint8Array([1, 2, 3]) },
                   mediaType: "application/pdf",
                 },
+                {
+                  type: "file",
+                  data: { type: "reference", reference: { openai: "file-1" } },
+                  mediaType: "image/jpeg",
+                },
+                { type: "file", data: { type: "text", text: "a,b\n1,2" }, mediaType: "text/csv" },
+                {
+                  type: "file",
+                  data: { type: "url", url: new URL("https://example.com/chart.png") },
+                  mediaType: "image/png",
+                  filename: "chart.png",
+                },
                 { type: "custom", providerOptions: { x: { y: 1 } } },
               ],
             },
@@ -108,8 +120,15 @@ describe("classifyTurnAction", () => {
     expect(action.toolResults).toEqual([
       {
         tool_call_id: "c",
-        output:
-          "Swatch label: red\n[image/png swatch.png omitted]\n[application/pdf omitted]\n[custom content omitted]",
+        output: [
+          "Swatch label: red",
+          "[image/png swatch.png omitted]",
+          "[application/pdf omitted]",
+          "[image/jpeg omitted]",
+          "a,b\n1,2",
+          "[image/png chart.png at https://example.com/chart.png]",
+          "[custom content omitted]",
+        ].join("\n"),
         is_error: false,
       },
     ]);

@@ -1,16 +1,16 @@
 Expect: TextExactlyOnce
-A commit whose text diverges from the text already emitted emits nothing, so the committed text is lost after a retry with different text (translate.ts, `#ingestMessage`, #407).
+A commit whose text diverges from the emitted deltas emits nothing when the client saw no restart, so the committed text is lost (translate.ts, `#ingestMessage`, #407).
 
 diff --git a/packages/agent/src/model/translate.ts b/packages/agent/src/model/translate.ts
-index d66ca70..444118b 100644
+index 993bce2..ced58f9 100644
 --- a/packages/agent/src/model/translate.ts
 +++ b/packages/agent/src/model/translate.ts
-@@ -1061,7 +1061,7 @@ export class TurnTranslator {
-         const reasoningOk = fullReasoning.startsWith(rec.reasoning);
-         const textDiverged = textOk && !fullText.startsWith(textAttributed);
-         const reasoningDiverged = reasoningOk && !fullReasoning.startsWith(reasoningAttributed);
--        const textFrom = textDiverged ? rec.text.length : textAttributed.length;
-+        const textFrom = textAttributed.length; // MUTANT: a diverging commit's text is suppressed
-         const reasoningFrom = reasoningDiverged ? rec.reasoning.length : reasoningAttributed.length;
-         if (textDiverged) this.#closeText(out);
-         if (reasoningDiverged) this.#closeReasoning(out);
+@@ -1160,7 +1160,7 @@ export class TurnTranslator {
+             textFrom = rec.text.length;
+             reasoningFrom = rec.reasoning.length;
+           }
+-        } else if (!textOk && fullText.startsWith(rec.text)) {
++        } else if (false) { // MUTANT: a diverging commit's text stays suppressed
+           // Text that does not extend the emitted deltas, with no restart
+           // seen: chatd commits exactly the text deltas it streamed
+           // (`chatloop.go` `processStepStream`), so the deltas came from an

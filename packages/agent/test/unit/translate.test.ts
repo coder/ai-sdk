@@ -1909,6 +1909,51 @@ describe("TurnTranslator — generation attempt restarts (#407)", () => {
     expect(textBlocks(parts)).toEqual(["Hello wor", "Hello there!"]);
   });
 
+  it("emits a retried attempt in full when it reorders reasoning and text", () => {
+    // Per kind the new attempt repeats the abandoned one, but in another
+    // order: the output keeps the abandoned "a", "b", then the complete
+    // committed attempt in its own order.
+    const { parts } = run([
+      epart("text", "a", { hv: 1, ga: 1, seq: 1 }),
+      epart("reasoning", "b", { hv: 1, ga: 1, seq: 2 }),
+      retry,
+      previewReset,
+      epart("reasoning", "b", { hv: 1, ga: 2, seq: 1 }),
+      epart("text", "a", { hv: 1, ga: 2, seq: 2 }),
+      msg(2, "assistant", [
+        { type: "reasoning", text: "b" },
+        { type: "text", text: "a" },
+      ]),
+      status("waiting"),
+    ]);
+    const deltas = parts.flatMap((p) =>
+      p.type === "text-delta" || p.type === "reasoning-delta" ? [`${p.type}:${p.delta}`] : [],
+    );
+    expect(deltas).toEqual([
+      "text-delta:a",
+      "reasoning-delta:b",
+      "reasoning-delta:b",
+      "text-delta:a",
+    ]);
+  });
+
+  it("keeps suppressing committed reasoning that the deltas do not start, without a restart", () => {
+    // chatd can commit reasoning text that it never streamed (the text of a
+    // reasoning start), so without a restart a reasoning mismatch is not
+    // taken as an abandoned attempt: the reasoning is not emitted twice.
+    const { parts } = run([
+      epart("reasoning", "ink", { hv: 1, ga: 1, seq: 1 }),
+      epart("text", "Done", { hv: 1, ga: 1, seq: 2 }),
+      msg(2, "assistant", [
+        { type: "reasoning", text: "Think" },
+        { type: "text", text: "Done" },
+      ]),
+      status("waiting"),
+    ]);
+    expect(reasoningBlocks(parts).join("")).toBe("ink");
+    expect(textBlocks(parts)).toEqual(["Done"]);
+  });
+
   it("emits a diverging commit in full when the retried attempt streamed nothing", () => {
     const { parts } = run([
       epart("text", "Hello wor", { hv: 1, ga: 1, seq: 1 }),

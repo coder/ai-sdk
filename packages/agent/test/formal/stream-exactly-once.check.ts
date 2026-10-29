@@ -22,7 +22,7 @@
  * - TextExactlyOnce / ReasoningExactlyOnce: the concatenated deltas equal
  *   the committed assistant text (or reasoning) of the turn, in message order.
  *   One narrow exception, for a retry whose new attempt streams different
- *   parts (`nextParts`): see `withDiverged`.
+ *   parts (`nextParts`): see `stepExpectation`.
  * - ContentInOrder: text and reasoning deltas together follow the wire order
  *   of the committed content parts.
  * - UsageOnce: every `finish` usage counter equals the sum over the turn's
@@ -35,7 +35,7 @@
 import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CoderChatClient } from "../../src/coder/client.js";
-import type { Chat, ChatStreamEvent } from "../../src/coder/types.js";
+import type { Chat, ChatMessagePart, ChatStreamEvent } from "../../src/coder/types.js";
 import type { WebSocketFactory, WebSocketLike } from "../../src/coder/ws.js";
 import { CoderLanguageModel } from "../../src/model/language-model.js";
 import {
@@ -43,6 +43,7 @@ import {
   ChatdWorld,
   type Frame,
   frameData,
+  type StepPart,
   type StepSpec,
   type TurnStart,
   usageFor,
@@ -155,6 +156,23 @@ const SCENARIOS: Scenario[] = [
       settle,
     ],
     maxDrops: 1,
+    maxRuns: 20_000,
+  },
+  {
+    name: "attempt fails after a partial stream and chatd retries it, reasoning and text reordered",
+    start: "new-chat",
+    steps: [{ parts: [text("a"), reasoning("b")], usage: 1 }],
+    timeline: [
+      part,
+      part,
+      { kind: "retry", nextParts: [reasoning("b"), text("a")] },
+      part,
+      part,
+      commit,
+      settle,
+    ],
+    // A drop can hide the restart: see `validate`.
+    maxDrops: 0,
     maxRuns: 20_000,
   },
   {
@@ -501,44 +519,62 @@ interface Violation {
 }
 
 /**
- * The text of step `step`'s diverged attempt (see `DivergedAttempt` in
- * chatd-world.ts) that reached the client, of one kind or of both. chatd
- * forwards an attempt's parts in seq order and a redial replays them from
- * seq 1, so the delivered parts are always the attempt's first parts.
+ * The parts of step `step`'s diverged attempt (see `DivergedAttempt` in
+ * chatd-world.ts) that reached the client, in seq order. chatd forwards an
+ * attempt's parts in seq order and a redial replays them from seq 1, so the
+ * delivered parts are always the attempt's first parts.
  */
-function divergedPrefix(
-  outcome: RunOutcome,
-  step: number,
-  kind: "text" | "reasoning" | "all",
-): string {
-  let got = "";
+function divergedParts(outcome: RunOutcome, step: number): StepPart[] {
+  const got: StepPart[] = [];
   for (const a of outcome.world.divergedAttempts()) {
     if (a.step !== step) continue;
     const delivered = outcome.delivered.get(`${a.historyVersion}:${a.generationAttempt}`) ?? 0;
-    for (const p of a.parts.slice(0, delivered))
-      if (kind === "all" || p.kind === kind) got += p.text;
+    got.push(...a.parts.slice(0, delivered));
   }
   return got;
+}
+
+/** Text and reasoning as one sequence of kind-tagged characters, in order. */
+function tagged(parts: readonly { type?: string; kind?: string; text?: string }[]): string[] {
+  return parts.flatMap((p) => {
+    const kind = p.kind ?? p.type;
+    if (kind !== "text" && kind !== "reasoning") return [];
+    return [...(p.text ?? "")].map((ch) => `${kind}:${ch}`);
+  });
 }
 
 /**
  * The one exception to exactly-once, scoped to a step whose attempt a retry
  * with `nextParts` abandoned (issue #407). The AI SDK stream cannot take back
- * text, so the abandoned attempt's text that already reached the AI SDK stays.
- * The translator holds back the new attempt's text while it repeats that text.
- * So when the committed text starts with the abandoned text, the AI SDK must
- * get the committed text exactly once. Otherwise it must get the abandoned
- * text, then the complete committed text. Steps without such a retry have an
- * empty `abandoned`, so this is the exact committed text.
+ * content, so the abandoned attempt's content that already reached the AI SDK
+ * stays. The translator holds back the new attempt's content while it repeats
+ * that content in order. So when the committed content starts with the
+ * abandoned content, text and reasoning in one order, the AI SDK must get the
+ * committed content exactly once. Otherwise it must get the abandoned content,
+ * then the complete committed content. Steps without such a retry have no
+ * abandoned parts, so this is the exact committed content.
  */
-function withDiverged(committed: string, abandoned: string): { want: string; shown: string } {
-  if (committed.startsWith(abandoned)) return { want: committed, shown: committed };
-  return { want: abandoned + committed, shown: `{${abandoned}}${committed}` };
+function stepExpectation(
+  outcome: RunOutcome,
+  step: number,
+  committedParts: readonly ChatMessagePart[],
+): (committed: string, kind: "text" | "reasoning" | "all") => { want: string; shown: string } {
+  const abandoned = divergedParts(outcome, step);
+  const want = tagged(committedParts);
+  const inOrder = tagged(abandoned).every((ch, i) => want[i] === ch);
+  return (committed, kind) => {
+    const kept = abandoned
+      .filter((p) => kind === "all" || p.kind === kind)
+      .map((p) => p.text)
+      .join("");
+    if (inOrder || kept === "") return { want: committed, shown: committed };
+    return { want: kept + committed, shown: `{${kept}}${committed}` };
+  };
 }
 
 /**
  * What a run must deliver for one kind of delta, per committed message: the
- * content its step streamed (see `withDiverged`), and the text that later
+ * content its step streamed (see `stepExpectation`), and the text that later
  * revisions appended. `shown` is the same for the report: `{ab}` marks
  * abandoned text that the AI SDK must keep.
  */
@@ -557,10 +593,11 @@ function expectedDeltas(
     const appended = kind === "text" ? m.appendedText : "";
     if (!full.endsWith(appended))
       throw new Error("harness: a revision suffix must end its message");
-    const expected = withDiverged(
-      full.slice(0, full.length - appended.length),
-      divergedPrefix(outcome, i, kind),
-    );
+    const expected = stepExpectation(
+      outcome,
+      i,
+      m.content,
+    )(full.slice(0, full.length - appended.length), kind);
     own.push(expected.want);
     shown.push(expected.shown);
     suffix.push(appended);
@@ -623,10 +660,11 @@ function compareContentOrder(
   const expected = world
     .turnMessages()
     .map((m, i) =>
-      withDiverged(
-        own(m.content.map((p) => p.text ?? "").join("")),
-        divergedPrefix(outcome, i, "all"),
-      ),
+      stepExpectation(
+        outcome,
+        i,
+        m.content,
+      )(own(m.content.map((p) => p.text ?? "").join("")), "all"),
     );
   const want = expected.map((e) => e.want).join("");
   if (got === want) return undefined;
@@ -672,10 +710,14 @@ function compareUsage(
 
 /**
  * Every part and suffix is one letter, and no letter repeats: see
- * `compareDeltas`. One exception: a retry's `nextParts` can start with the
- * step's own first letters (the new attempt repeats the abandoned one, then
- * diverges). A scenario has at most one such retry, on a text-only step, so
- * that `withDiverged` describes the whole expected output.
+ * `compareDeltas`. One exception: a retry's `nextParts` can reuse the step's
+ * own letters, in any order (the new attempt repeats the abandoned one, or
+ * reorders it). A scenario has at most one such retry, and never revises
+ * that step, so that `stepExpectation` describes the step's whole output.
+ * A step with reasoning needs `maxDrops: 0`: a drop can hide the restart
+ * from the client (no `retry` and no part of the new attempt arrive), and
+ * without a restart the translator reconciles each kind on its own and
+ * keeps a reasoning mismatch suppressed (translate.ts, `#ingestMessage`).
  */
 function validate(scn: Scenario): void {
   const fail = (why: string) => new Error(`scenario "${scn.name}": ${why}`);
@@ -684,19 +726,20 @@ function validate(scn: Scenario): void {
     ...scn.timeline.flatMap((ev) => (ev.kind === "revise" ? [ev.appendText] : [])),
   ];
   let step = 0;
-  let diverging = 0;
+  let diverging: number | undefined;
   for (const ev of scn.timeline) {
     if (ev.kind === "commit") step += 1;
+    if (ev.kind === "revise" && ev.step === diverging) throw fail("a diverging step is revised");
     if (ev.kind !== "retry" || !ev.nextParts) continue;
-    diverging += 1;
+    if (diverging !== undefined) throw fail("at most one retry can have nextParts");
+    diverging = step;
     const parts = scn.steps[step]?.parts ?? [];
-    if ([...parts, ...ev.nextParts].some((p) => p.kind !== "text"))
-      throw fail("a retry with nextParts needs a text-only step");
-    let shared = 0;
-    while (shared < parts.length && ev.nextParts[shared]?.text === parts[shared]?.text) shared++;
-    letters.push(...ev.nextParts.slice(shared).map((p) => p.text));
+    const hasReasoning = [...parts, ...ev.nextParts].some((p) => p.kind === "reasoning");
+    if (hasReasoning && scn.maxDrops > 0)
+      throw fail("a diverging step with reasoning needs maxDrops 0");
+    const own = new Set(parts.map((p) => p.text));
+    letters.push(...ev.nextParts.filter((p) => !own.has(p.text)).map((p) => p.text));
   }
-  if (diverging > 1) throw fail("at most one retry can have nextParts");
   if (letters.some((l) => l.length !== 1) || new Set(letters).size !== letters.length) {
     throw fail("parts and suffixes must be distinct single letters");
   }

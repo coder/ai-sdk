@@ -2,15 +2,15 @@ Expect: TextExactlyOnce
 TurnTranslator does not record the text a snapshot emitted, so a replayed snapshot emits it again (translate.ts, `#ingestMessage`).
 
 diff --git a/packages/agent/src/model/translate.ts b/packages/agent/src/model/translate.ts
-index d66ca70..435ca3a 100644
+index 993bce2..46702e0 100644
 --- a/packages/agent/src/model/translate.ts
 +++ b/packages/agent/src/model/translate.ts
-@@ -1086,7 +1086,7 @@ export class TurnTranslator {
+@@ -1193,7 +1193,7 @@ export class TurnTranslator {
              seenReasoning = end;
            }
          }
 -        if (textOk) rec.text = fullText;
 +        // MUTANT: the ledger never records what this snapshot emitted
          if (reasoningOk) rec.reasoning = fullReasoning;
-         // Reaching this path means THIS snapshot owns the step's deltas (the
+         // Reaching this path means THIS snapshot owns the pending deltas (the
          // race guard above intercepts the one ambiguous ordering), so they

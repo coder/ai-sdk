@@ -21,7 +21,8 @@ export interface CoderCliTransportOptions {
   /** Path or name of the coder binary. Default: `coder`. */
   coderBinary?: string;
   /**
-   * Path or name of the OpenSSH client used for exec/spawn. Default: `ssh`.
+   * Path or name of the OpenSSH client used for exec, spawn and port forwards.
+   * Default: `ssh`.
    * Exec goes through real OpenSSH (via a `coder ssh --stdio` ProxyCommand)
    * rather than `coder ssh <ws> -- cmd`, because the latter allocates a PTY —
    * which mangles output (CRLF), merges stdout/stderr, and breaks exit-code
@@ -280,9 +281,9 @@ function pickBoolean(record: Record<string, unknown>, ...keys: string[]): boolea
 }
 
 /**
- * Default {@link CoderTransport}. Exec/spawn use OpenSSH via a
- * `coder ssh --stdio` ProxyCommand; port-forward and lifecycle use the `coder`
- * CLI directly.
+ * Default {@link CoderTransport}. Exec, spawn and port forwards (`ssh -N -L`)
+ * use OpenSSH via a `coder ssh --stdio` ProxyCommand; create, start, stop,
+ * delete, status and presets use the `coder` CLI directly.
  */
 export class CoderCliTransport implements CoderTransport {
   readonly #coderBinary: string;

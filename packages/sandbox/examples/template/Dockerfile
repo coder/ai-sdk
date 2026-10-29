@@ -41,8 +41,7 @@ WORKDIR /home/${USER}
 #   (`pnpm why @ai-sdk/harness-claude-code`, or check its lockfile) via
 #   `--build-arg HARNESS_CLAUDE_CODE_VERSION=...`. A different adapter on the
 #   host re-runs the bootstrap against this directory and downloads the delta
-#   (slower first session, still correct). The default matches the version
-#   this repository's examples resolve.
+#   (slower first session, still correct).
 ARG HARNESS_CLAUDE_CODE_VERSION=1.0.90
 RUN mkdir -p /home/${USER}/.harness-bootstrap/claude-code \
   && cd /tmp \

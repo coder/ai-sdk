@@ -8,7 +8,7 @@ import type {
 } from "release-please";
 // Deep import: release-please ships no `exports` map, so its build output is
 // importable. DefaultChangelogNotes isn't re-exported from the package root, but
-// the build layout is stable within the pinned `~17.9.0` range, and reusing it lets
+// the build layout is stable within the pinned `~17.11.2` range, and reusing it lets
 // us delegate all changelog structure to release-please's own renderer.
 import { DefaultChangelogNotes } from "release-please/build/src/changelog-notes/default.js";
 import { generateEditorial, renderEditorial } from "./generate.js";

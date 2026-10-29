@@ -8,10 +8,12 @@ import {
 import type { ChatStreamEvent, ChatWatchEvent } from "./types.js";
 
 /**
- * A minimal WebSocket factory abstraction so the stream reader can run on
- * Node (via the `ws` package, with header auth) or in environments that
- * provide a global `WebSocket` (browsers, where auth must go in the query
- * string). Node is the default target.
+ * A minimal WebSocket factory abstraction so the readers can run on Node (via
+ * the `ws` package) or on another WebSocket implementation. Every dial passes
+ * the token as a `Coder-Session-Token` header in the factory's `headers`
+ * option, never in the URL. A browser's global `WebSocket` cannot send headers,
+ * so a factory built on it must authenticate some other way. Node is the
+ * default target.
  */
 export interface WebSocketLike {
   send(data: string): void;
@@ -133,9 +135,10 @@ const TRANSIENT_UPGRADE_STATUSES: ReadonlySet<number> = new Set([408, 425, 429])
  * are suppressed here rather than double-yielded. That episode filter runs at
  * frame arrival (not at consumption), so each frame's `ws:event` can carry
  * the reader's own verdict as `forwarded` (issue #111) while `timestamp`
- * keeps meaning arrival time. The iteration ends in five
- * ways: `signal` aborting (clean return), a non-transient 4xx upgrade
- * rejection (terminal {@link CoderApiError} — bad/expired token or a deleted
+ * keeps meaning arrival time. The iteration ends on: `signal` aborting (clean
+ * return), a `resolveApiPrefix` probe that throws before the first dial
+ * (rethrown), a `webSocketFactory` that throws (rethrown), a non-transient
+ * 4xx upgrade rejection (terminal {@link CoderApiError} — bad/expired token or a deleted
  * chat cannot succeed on retry, while 408/425/429 consume the redial budget),
  * an unparseable frame (terminal {@link CoderAgentError} — a redial would
  * replay the same frame forever), a drop while deltas WITHOUT episode
@@ -600,10 +603,11 @@ export interface WatchChatEventsOptions {
  *
  * Unlike the per-chat `/stream`, this is a long-lived subscription, so dropped
  * connections are redialed automatically with exponential backoff (1s doubling
- * to a 30s cap, reset once an event arrives). It ends in exactly three ways:
- * `signal` aborting, the consumer ending iteration (`break` from `for await`,
+ * to a 30s cap, reset once an event is yielded). It ends on: `signal`
+ * aborting, the consumer ending iteration (`break` from `for await`,
  * `iterator.return()`) — both tear the socket down promptly even while a read
- * is pending — or the server rejecting the upgrade with a 4xx — bad/expired
+ * is pending — a `resolveApiPrefix` probe or a `webSocketFactory` that throws
+ * (rethrown), or the server rejecting the upgrade with a 4xx — bad/expired
  * token, or an older Coder server without the endpoint (404) — which throws a
  * terminal {@link CoderApiError} instead of retrying forever.
  */

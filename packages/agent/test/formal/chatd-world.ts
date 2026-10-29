@@ -15,7 +15,12 @@
  * their latest revision, the chat status, the history version, the
  * generation attempt, and the preview parts of the current attempt.
  */
-import type { ChatMessage, ChatMessagePart, ChatStreamEvent } from "../../src/coder/types.js";
+import type {
+  ChatMessage,
+  ChatMessagePart,
+  ChatMessageUsage,
+  ChatStreamEvent,
+} from "../../src/coder/types.js";
 
 export const CHAT_ID = "chat-1";
 
@@ -28,7 +33,24 @@ export interface StepPart {
 /** One assistant model step: chatd streams its parts, then commits them as one message. */
 export interface StepSpec {
   parts: StepPart[];
-  outputTokens: number;
+  /** The message's usage unit: see {@link usageFor}. */
+  usage: number;
+}
+
+/**
+ * The wire usage that a message with usage unit `k` reports. Every counter is
+ * a different multiple of `k`, so double counting any one of them shows.
+ */
+export function usageFor(k: number): ChatMessageUsage {
+  return {
+    input_tokens: 2 * k,
+    output_tokens: k,
+    reasoning_tokens: 3 * k,
+    cache_read_tokens: 5 * k,
+    cache_creation_tokens: 7 * k,
+    total_cost_micros: 11 * k,
+    total_runtime_ms: 13 * k,
+  };
 }
 
 /**
@@ -50,7 +72,7 @@ export type WorldEvent =
   | { kind: "part" }
   | { kind: "commit" }
   | { kind: "retry" }
-  | { kind: "revise"; step: number; appendText: string; outputTokens: number }
+  | { kind: "revise"; step: number; appendText: string; usage: number }
   | { kind: "settle" };
 
 /** How the turn was submitted, which decides the stream's `after_id`. */
@@ -64,7 +86,8 @@ export interface CommittedMessage {
   id: number;
   role: "user" | "assistant";
   content: ChatMessagePart[];
-  outputTokens?: number;
+  /** The usage unit of an assistant message: see {@link usageFor}. */
+  usage?: number;
   /** Text that later revisions appended to this message, in order. */
   appendedText: string;
 }
@@ -104,7 +127,7 @@ export class ChatdWorld {
         id: 2,
         role: "assistant",
         content: [{ type: "text", text: "EARLIER" }],
-        outputTokens: 1000,
+        usage: 1000,
         appendedText: "",
       });
     }
@@ -172,7 +195,7 @@ export class ChatdWorld {
           id: this.#nextId,
           role: "assistant",
           content: step.parts.map((p) => ({ type: p.kind, text: p.text })),
-          outputTokens: step.outputTokens,
+          usage: step.usage,
           appendedText: "",
         };
         this.#nextId += 1;
@@ -198,7 +221,7 @@ export class ChatdWorld {
         if (!target) throw new Error(`ChatdWorld: no committed step ${ev.step} to revise`);
         target.content = [...target.content, { type: "text", text: ev.appendText }];
         target.appendedText += ev.appendText;
-        target.outputTokens = ev.outputTokens;
+        target.usage = ev.usage;
         // A history change cancels an attempt in progress (ARCHITECTURE.md,
         // "Event processing", case 2); the step restarts from its start.
         this.#historyChanged();
@@ -291,7 +314,7 @@ function messageEvent(m: CommittedMessage): ChatStreamEvent {
     created_at: "",
     content: m.content.map((p) => ({ ...p })),
   };
-  if (m.outputTokens !== undefined) message.usage = { output_tokens: m.outputTokens };
+  if (m.usage !== undefined) message.usage = usageFor(m.usage);
   return { type: "message", chat_id: CHAT_ID, message };
 }
 

@@ -61,6 +61,14 @@ export async function exploreAll(
   for (;;) {
     const chooser = new Chooser(prefix);
     await run(chooser);
+    // A run that ends before it replays the whole prefix took a different
+    // path on the same decisions: the branches below the prefix would be
+    // skipped, so stop instead of reporting a false pass.
+    if (chooser.decisions.length < prefix.length) {
+      throw new Error(
+        `exploreAll: replay ended after ${chooser.decisions.length} of ${prefix.length} recorded decisions`,
+      );
+    }
     runs += 1;
     if (runs > maxRuns) throw new Error(`exploreAll: more than ${maxRuns} runs; lower the bounds`);
     const decisions = chooser.decisions;

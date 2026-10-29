@@ -21,8 +21,10 @@
  *   `error`, after chatd settled the turn.
  * - TextExactlyOnce / ReasoningExactlyOnce: the concatenated deltas equal
  *   the committed assistant text (or reasoning) of the turn, in message order.
- * - UsageOnce: `finish` output tokens equal the sum over the turn's committed
- *   assistant messages (latest revision).
+ * - ContentInOrder: text and reasoning deltas together follow the wire order
+ *   of the committed content parts.
+ * - UsageOnce: every `finish` usage counter equals the sum over the turn's
+ *   committed assistant messages (latest revision).
  * - NoInterrupt: the client never interrupts the healthy server run.
  *
  * Run: `.agents/skills/verify-agent-stream-exactly-once/check.sh` from the
@@ -41,6 +43,7 @@ import {
   frameData,
   type StepSpec,
   type TurnStart,
+  usageFor,
   type WorldEvent,
 } from "./chatd-world.js";
 import { type Chooser, exploreAll } from "./explore.js";
@@ -49,6 +52,7 @@ type PropertyName =
   | "Completes"
   | "TextExactlyOnce"
   | "ReasoningExactlyOnce"
+  | "ContentInOrder"
   | "UsageOnce"
   | "NoInterrupt";
 
@@ -61,11 +65,20 @@ interface Scenario {
   /** Fails the check when the bounds produce more runs than this. */
   maxRuns: number;
   /**
-   * A violation that the current code has. The check fails if the scenario
-   * shows a property outside `properties`, or no violation at all (then the
-   * finding is fixed: move the scenario to the passing list).
+   * A violation that the current code has, pinned by its fingerprint: the
+   * violated properties, the number of violating runs, and the shortest
+   * counterexample's verdict per property. Exploration is deterministic, so
+   * any other defect in the scenario changes the fingerprint and fails the
+   * check. No violation at all also fails: the finding is fixed.
    */
-  knownFinding?: { id: string; properties: PropertyName[] };
+  knownFinding?: KnownFinding;
+}
+
+interface KnownFinding {
+  id: string;
+  violatingRuns: number;
+  /** The `=>` line of the shortest counterexample, per violated property. */
+  shortest: Partial<Record<PropertyName, string>>;
 }
 
 const text = (t: string) => ({ kind: "text" as const, text: t });
@@ -83,7 +96,7 @@ const SCENARIOS: Scenario[] = [
   {
     name: "one step, two text parts, new chat",
     start: "new-chat",
-    steps: [{ parts: [text("a"), text("b")], outputTokens: 1 }],
+    steps: [{ parts: [text("a"), text("b")], usage: 1 }],
     timeline: [part, part, commit, settle],
     maxDrops: 2,
     maxRuns: 20_000,
@@ -92,8 +105,8 @@ const SCENARIOS: Scenario[] = [
     name: "two steps, reasoning then text, follow-up turn",
     start: "follow-up",
     steps: [
-      { parts: [reasoning("p"), text("a"), text("b")], outputTokens: 1 },
-      { parts: [text("c"), text("d")], outputTokens: 10 },
+      { parts: [reasoning("p"), text("a"), text("b")], usage: 1 },
+      { parts: [text("c"), text("d")], usage: 10 },
     ],
     timeline: [part, part, part, commit, part, part, commit, settle],
     maxDrops: 2,
@@ -103,14 +116,14 @@ const SCENARIOS: Scenario[] = [
     name: "step 1 revised (text appended, usage changed) before step 2 starts",
     start: "new-chat",
     steps: [
-      { parts: [text("a"), text("b")], outputTokens: 1 },
-      { parts: [text("c")], outputTokens: 10 },
+      { parts: [text("a"), text("b")], usage: 1 },
+      { parts: [text("c")], usage: 10 },
     ],
     timeline: [
       part,
       part,
       commit,
-      { kind: "revise", step: 0, appendText: "e", outputTokens: 2 },
+      { kind: "revise", step: 0, appendText: "e", usage: 2 },
       part,
       commit,
       settle,
@@ -121,25 +134,32 @@ const SCENARIOS: Scenario[] = [
   {
     name: "attempt fails after a partial stream and chatd retries it",
     start: "new-chat",
-    steps: [{ parts: [text("a"), text("b")], outputTokens: 1 }],
+    steps: [{ parts: [text("a"), text("b")], usage: 1 }],
     timeline: [part, retry, part, part, commit, settle],
     maxDrops: 1,
     maxRuns: 20_000,
-    knownFinding: { id: "restart-keeps-abandoned-deltas", properties: ["TextExactlyOnce"] },
+    knownFinding: {
+      id: "restart-keeps-abandoned-deltas",
+      violatingRuns: 148,
+      shortest: {
+        TextExactlyOnce: 'the AI SDK got text "aa", chatd committed "ab"',
+        ContentInOrder: 'the AI SDK got text and reasoning in the order "aa", chatd committed "ab"',
+      },
+    },
   },
   {
     name: "step 1 revised while step 2 streams, so chatd restarts step 2",
     start: "new-chat",
     steps: [
-      { parts: [text("a"), text("b")], outputTokens: 1 },
-      { parts: [text("c"), text("d")], outputTokens: 10 },
+      { parts: [text("a"), text("b")], usage: 1 },
+      { parts: [text("c"), text("d")], usage: 10 },
     ],
     timeline: [
       part,
       part,
       commit,
       part,
-      { kind: "revise", step: 0, appendText: "e", outputTokens: 2 },
+      { kind: "revise", step: 0, appendText: "e", usage: 2 },
       part,
       part,
       commit,
@@ -147,7 +167,15 @@ const SCENARIOS: Scenario[] = [
     ],
     maxDrops: 1,
     maxRuns: 40_000,
-    knownFinding: { id: "restart-keeps-abandoned-deltas", properties: ["TextExactlyOnce"] },
+    knownFinding: {
+      id: "restart-keeps-abandoned-deltas",
+      violatingRuns: 997,
+      shortest: {
+        TextExactlyOnce: 'the AI SDK got text "abcce", chatd committed "ab[+e]cd"',
+        ContentInOrder:
+          'the AI SDK got text and reasoning in the order "abcc", chatd committed "abcd"',
+      },
+    },
   },
 ];
 
@@ -269,7 +297,7 @@ function describeWorld(ev: WorldEvent): string {
     case "retry":
       return "the provider call fails with a retryable error; chatd retires the attempt";
     case "revise":
-      return `chatd revises step ${ev.step + 1}'s message (appends "${ev.appendText}", output tokens ${ev.outputTokens})`;
+      return `chatd revises step ${ev.step + 1}'s message (appends "${ev.appendText}", usage unit ${ev.usage})`;
     case "settle":
       return "chatd settles the turn (status waiting)";
   }
@@ -516,6 +544,71 @@ function compareDeltas(
   return undefined;
 }
 
+/**
+ * Text and reasoning together: a step's own content arrives in the wire order
+ * of its parts, across both kinds (translate.ts walks a snapshot in wire
+ * order, #79). Revision suffixes are left out, as in `compareDeltas`.
+ */
+function compareContentOrder(
+  parts: LanguageModelV4StreamPart[],
+  world: ChatdWorld,
+): string | undefined {
+  const suffixLetters = new Set(world.turnMessages().flatMap((m) => [...m.appendedText]));
+  const own = (letters: string) => [...letters].filter((ch) => !suffixLetters.has(ch)).join("");
+  const got = own(
+    parts
+      .map((p) =>
+        (p.type === "text-delta" || p.type === "reasoning-delta") && "delta" in p ? p.delta : "",
+      )
+      .join(""),
+  );
+  const want = own(
+    world
+      .turnMessages()
+      .map((m) => m.content.map((p) => p.text ?? "").join(""))
+      .join(""),
+  );
+  if (got === want) return undefined;
+  return `the AI SDK got text and reasoning in the order "${got}", chatd committed "${want}"`;
+}
+
+/**
+ * Every usage counter in `finish` equals the sum over the turn's committed
+ * assistant messages at their latest revision (translate.ts `accumulateUsage`
+ * and `mapUsage`). Each counter is a different multiple of the usage unit
+ * (`usageFor`), so double counting any one of them shows.
+ */
+function compareUsage(
+  finish: Extract<LanguageModelV4StreamPart, { type: "finish" }>,
+  world: ChatdWorld,
+): string | undefined {
+  const k = world.turnMessages().reduce((sum, m) => sum + (m.usage ?? 0), 0);
+  const u = usageFor(k);
+  const want = {
+    inputTotal: (u.input_tokens ?? 0) + (u.cache_read_tokens ?? 0) + (u.cache_creation_tokens ?? 0),
+    inputNoCache: u.input_tokens,
+    cacheRead: u.cache_read_tokens,
+    cacheWrite: u.cache_creation_tokens,
+    output: u.output_tokens,
+    reasoning: u.reasoning_tokens,
+    costMicros: u.total_cost_micros,
+    runtimeMs: u.total_runtime_ms,
+  };
+  const coder = finish.providerMetadata?.coder;
+  const got = {
+    inputTotal: finish.usage.inputTokens.total,
+    inputNoCache: finish.usage.inputTokens.noCache,
+    cacheRead: finish.usage.inputTokens.cacheRead,
+    cacheWrite: finish.usage.inputTokens.cacheWrite,
+    output: finish.usage.outputTokens.total,
+    reasoning: finish.usage.outputTokens.reasoning,
+    costMicros: coder?.total_cost_micros,
+    runtimeMs: coder?.total_runtime_ms,
+  };
+  if (JSON.stringify(got) === JSON.stringify(want)) return undefined;
+  return `finish reports usage ${JSON.stringify(got)}, chatd committed ${JSON.stringify(want)} (usage unit ${k})`;
+}
+
 /** Every part and suffix is one letter, and no letter repeats: see `compareDeltas`. */
 function validate(scn: Scenario): void {
   const letters = [
@@ -557,15 +650,11 @@ function check(outcome: RunOutcome): Violation[] {
   const reasoningProblem = compareDeltas(delta("reasoning-delta"), world, "reasoning");
   if (reasoningProblem)
     violations.push({ property: "ReasoningExactlyOnce", detail: reasoningProblem });
+  const orderProblem = compareContentOrder(parts, world);
+  if (orderProblem) violations.push({ property: "ContentInOrder", detail: orderProblem });
   if (finish) {
-    const got = finish.usage.outputTokens.total;
-    const want = world.turnMessages().reduce((sum, m) => sum + (m.outputTokens ?? 0), 0);
-    if (got !== want) {
-      violations.push({
-        property: "UsageOnce",
-        detail: `finish reports ${got} output tokens, chatd committed ${want}`,
-      });
-    }
+    const usageProblem = compareUsage(finish, world);
+    if (usageProblem) violations.push({ property: "UsageOnce", detail: usageProblem });
   }
   const interrupts = outcome.fetchCalls.filter((c) => c.endsWith("/interrupt"));
   if (interrupts.length > 0) {
@@ -624,6 +713,26 @@ async function explore(scn: Scenario): Promise<ScenarioReport> {
   return report;
 }
 
+/** How a scenario's violations differ from its recorded known finding; empty when they match. */
+function fingerprintDifferences(finding: KnownFinding, report: ScenarioReport): string[] {
+  const differences: string[] = [];
+  if (report.violatingRuns !== finding.violatingRuns) {
+    differences.push(`violating runs ${report.violatingRuns}, recorded ${finding.violatingRuns}`);
+  }
+  const recorded = Object.keys(finding.shortest).sort();
+  const got = [...report.shortest.keys()].sort();
+  if (got.join(",") !== recorded.join(",")) {
+    differences.push(`violated ${got.join(",")}, recorded ${recorded.join(",") || "none"}`);
+  }
+  for (const [property, cx] of report.shortest) {
+    const want = finding.shortest[property];
+    if (want !== undefined && want !== cx.detail) {
+      differences.push(`${property} shortest "${cx.detail}", recorded "${want}"`);
+    }
+  }
+  return differences;
+}
+
 function render(scn: Scenario, report: ScenarioReport): string {
   const lines = [
     `scenario: ${scn.name}`,
@@ -655,20 +764,24 @@ describe("agent stream exactly-once (bounded exhaustive)", () => {
     const violated = [...report.shortest.keys()];
     const finding = scn.knownFinding;
     let status = violated.length === 0 ? "pass" : "fail";
-    if (finding && violated.length > 0) {
-      status = violated.every((p) => finding.properties.includes(p)) ? "known-finding" : "fail";
-    }
+    const differences = finding ? fingerprintDifferences(finding, report) : [];
+    if (finding && violated.length > 0 && differences.length === 0) status = "known-finding";
     // One machine-readable line per scenario; mutants.sh in the skill parses it.
     console.log(
-      `RESULT scenario="${scn.name}" status=${status} runs=${report.runs} violated=${violated.join(",") || "none"}`,
+      `RESULT scenario="${scn.name}" status=${status} runs=${report.runs} violating=${report.violatingRuns} violated=${violated.join(",") || "none"}`,
     );
     if (finding && violated.length === 0) {
       throw new Error(
         `known finding ${finding.id} no longer reproduces: delete the scenario's knownFinding, so it must pass\n${text}`,
       );
     }
+    if (finding && differences.length > 0) {
+      console.log(
+        `  FINGERPRINT differs from known finding ${finding.id}: ${differences.join("; ")}`,
+      );
+    }
     // On failure vitest prints the whole report as the received value.
     expect(status === "fail" ? `a property broke:\n${text}` : "ok").toBe("ok");
-    if (finding) console.log(`  KNOWN FINDING ${finding.id}: still present`);
+    if (finding) console.log(`  KNOWN FINDING ${finding.id}: still present, fingerprint matches`);
   });
 });

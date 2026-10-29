@@ -26,7 +26,7 @@ trap revert EXIT INT TERM
 
 for patch in "$SKILL"/mutants/*.patch; do
   for file in $(git apply --numstat "$patch" | cut -f3); do
-    if ! git diff --quiet -- "$file"; then
+    if ! git diff --quiet HEAD -- "$file"; then
       echo "mutants.sh: $file has local changes; commit or stash them first" >&2
       exit 2
     fi
@@ -64,7 +64,7 @@ for patch in "$SKILL"/mutants/*.patch; do
   fi
 done
 
-git diff --quiet -- packages/agent/src || {
+git diff --quiet HEAD -- packages/agent/src || {
   echo "mutants.sh: packages/agent/src is not clean after the run" >&2
   exit 3
 }

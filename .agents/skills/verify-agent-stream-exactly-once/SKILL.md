@@ -7,7 +7,7 @@ description: Bounded exhaustive check that @coder/ai-sdk-agent delivers a turn's
 
 ## The promise
 
-- **Property.** Every character of text and reasoning that chatd commits for a turn reaches the AI SDK exactly once, each step's content arrives in step order, the `finish` usage counts each committed message once, and the turn ends with `finish` without an interrupt, for every order of connection drops, redials, and replays within the bounds below.
+- **Property.** Every character of text and reasoning that chatd commits for a turn reaches the AI SDK exactly once, text and reasoning together arrive in the order of the committed content, every `finish` usage counter counts each committed message once, and the turn ends with `finish` without an interrupt, for every order of connection drops, redials, and replays within the bounds below.
 - **Harm.** When it breaks, a user of `agent.generate()` or `agent.stream()` sees repeated or missing text after a network blip, and the reported tokens and cost are wrong.
 
 Unit tests pin a few hand-picked orders. This check tries every order within the bounds against the real code.
@@ -67,11 +67,11 @@ Any output means that the covered code changed since the last sync. Run the chec
 At the sync commit the result is 3 passing scenarios and 2 scenarios that show the known finding:
 
 ```text
-RESULT scenario="one step, two text parts, new chat" status=pass runs=2205 violated=none
-RESULT scenario="two steps, reasoning then text, follow-up turn" status=pass runs=41222 violated=none
-RESULT scenario="step 1 revised (text appended, usage changed) before step 2 starts" status=pass runs=19941 violated=none
-RESULT scenario="attempt fails after a partial stream and chatd retries it" status=known-finding runs=590 violated=TextExactlyOnce
-RESULT scenario="step 1 revised while step 2 streams, so chatd restarts step 2" status=known-finding runs=2947 violated=TextExactlyOnce
+RESULT scenario="one step, two text parts, new chat" status=pass runs=2205 violating=0 violated=none
+RESULT scenario="two steps, reasoning then text, follow-up turn" status=pass runs=41222 violating=0 violated=none
+RESULT scenario="step 1 revised (text appended, usage changed) before step 2 starts" status=pass runs=19941 violating=0 violated=none
+RESULT scenario="attempt fails after a partial stream and chatd retries it" status=known-finding runs=590 violating=148 violated=TextExactlyOnce,ContentInOrder
+RESULT scenario="step 1 revised while step 2 streams, so chatd restarts step 2" status=known-finding runs=2947 violating=997 violated=TextExactlyOnce,ContentInOrder
 ```
 
 The script exits 0 when every scenario is `pass` or `known-finding`. It exits non-zero on `fail`, and also when a known finding no longer reproduces.
@@ -80,7 +80,7 @@ The script exits 0 when every scenario is `pass` or `known-finding`. It exits no
 
 - `status=pass`: no run in the scenario broke a property.
 - `status=fail`: a run broke a property that the scenario must keep. The report prints the shortest counterexample for each property.
-- `status=known-finding`: the scenario still shows the finding recorded below, and nothing else.
+- `status=known-finding`: the scenario still shows the finding recorded below, and nothing else. Each known finding is pinned by a fingerprint in the scenario's `knownFinding` field: the violated properties, the number of violating runs, and the shortest counterexample's `=>` line per property. Exploration is deterministic, so another defect in the same scenario changes the fingerprint. The report then prints `FINGERPRINT differs` and the status is `fail`.
 
 A counterexample is a numbered list of steps:
 
@@ -96,7 +96,7 @@ Every part in a scenario is one distinct letter, so a repeated letter is a dupli
 
 Decide in this order:
 
-1. `harness: ...` or `Chooser: replay diverged` in the log is a harness problem, not a product bug. A divergence means that the client behaved differently on the same decisions, which makes the enumeration incomplete. Find the nondeterminism, such as a real timer or `Math.random`, before you trust any result.
+1. `harness: ...`, `Chooser: replay diverged`, or `exploreAll: replay ended after` in the log is a harness problem, not a product bug. A divergence means that the client behaved differently on the same decisions, which makes the enumeration incomplete. Find the nondeterminism, such as a real timer or `Math.random`, before you trust any result.
 2. Check each `chatd ...` step of the counterexample against chatd at the pinned commit. Fetch a file with `gh api "repos/coder/coder/contents/coderd/x/chatd/<file>?ref=3697bb38ce6fa29bf73a82f3494cca3ecf708de6" -H "Accept: application/vnd.github.raw"`. Each step maps to chatd code:
 
    | Step in the counterexample                        | chatd source (`coderd/x/chatd/`)                                                                        |
@@ -123,7 +123,7 @@ Decide in this order:
 - **Harm.** After a provider retry, `result.text` repeats the start of the answer and can miss its end.
 - **Status.** Open: [#407](https://github.com/coder/ai-sdk/issues/407). Verified against chatd source at the pinned commit. Not reproduced live: that needs a provider error in the middle of a stream.
 
-When a fix lands, the two scenarios fail with "known finding ... no longer reproduces". Then delete their `knownFinding` fields, so that they must pass, and delete this section.
+When a fix lands, the two scenarios fail with "known finding ... no longer reproduces". Then delete their `knownFinding` fields, so that they must pass, and delete this section. A change that alters the finding without removing it prints `FINGERPRINT differs`. Read the new counterexample. When it is the same defect, copy the new run count and `=>` lines into `knownFinding` and say so in the commit.
 
 ## When the change is intended
 
@@ -149,8 +149,9 @@ The mutants, and what each one breaks:
 | `04-reasoning-deltas-not-pending`    | Streamed reasoning is not recorded as pending        | ReasoningExactlyOnce |
 | `05-usage-counted-per-snapshot`      | Usage is summed per snapshot, not per message id     | UsageOnce            |
 | `06-drop-is-terminal`                | A drop ends the stream; the model then interrupts    | Completes            |
+| `07-snapshot-text-before-reasoning`  | A snapshot emits text parts before reasoning parts   | ContentInOrder       |
 
-`06` also breaks NoInterrupt.
+`06` also breaks NoInterrupt. `07` breaks only ContentInOrder: the text and reasoning checks each see the right letters, in the wrong order between them.
 
 ## What a pass covers
 
@@ -181,7 +182,7 @@ The check does not cover:
 
 ## Coverage record
 
-- **Sync commit:** `0957835a414f71fbcbb1075d5959c363e15b1b5f` (branch `skills-re5e` on top of `main` 7246e31, 2026-10-29). At this commit the check gives the results above, and all 6 mutants are `CAUGHT`. A squash merge removes this commit from history. Then the sync point is the commit that last changed this file, because the coverage record and the covered code merged together.
+- **Sync commit:** `0957835a414f71fbcbb1075d5959c363e15b1b5f` (branch `skills-re5e` on top of `main` 7246e31, 2026-10-29). At this commit the check gives the results above, and all 7 mutants are `CAUGHT`. A squash merge removes this commit from history. Then the sync point is the commit that last changed this file, because the coverage record and the covered code merged together.
 - **chatd model source:** coder/coder `3697bb38ce6fa29bf73a82f3494cca3ecf708de6`.
 
 | File                                         | Functions the check exercises                                                                                                                                |

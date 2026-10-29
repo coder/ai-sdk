@@ -24,7 +24,7 @@ if [ ! -d packages/agent/node_modules ]; then
 fi
 
 OUT="${FORMAL_OUT:-${TMPDIR:-/tmp}/agent-stream-exactly-once.log}"
-echo "node $(node --version), pnpm $(pnpm --version), commit $(git rev-parse --short HEAD)$(git diff --quiet -- packages/agent/src || echo ' + local changes in packages/agent/src')"
+echo "node $(node --version), pnpm $(pnpm --version), commit $(git rev-parse --short HEAD)$(git diff --quiet HEAD -- packages/agent/src || echo ' + local changes in packages/agent/src')"
 
 args=(exec vitest run --config test/formal/vitest.config.ts --no-color)
 if [ $# -gt 0 ]; then args+=(-t "$1"); fi

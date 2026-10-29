@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.51](https://github.com/coder/ai-sdk/compare/provider-v0.4.50...provider-v0.4.51) (2026-10-29)
+
+Adds EGM contract documentation for each source folder in the provider package.
+
+### Highlights
+
+- Each source folder now includes EGM contract documentation. ([#418](https://github.com/coder/ai-sdk/pull/418))
+
+### Documentation
+
+* add EGM contracts for each source folder ([84bb9cd](https://github.com/coder/ai-sdk/commit/84bb9cde294ddd6cf10fab65cd81ebea70316b52))
+
 ## [0.4.50](https://github.com/coder/ai-sdk/compare/provider-v0.4.49...provider-v0.4.50) (2026-10-29)
 
 Maintenance release with internal updates and no documented user-facing changes.

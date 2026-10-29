@@ -1,0 +1,16 @@
+Expect: TextExactlyOnce
+A redial's re-sent snapshot of a blank step claims the next step's open deltas, so that step's text repeats (translate.ts, `#ingestMessage`).
+
+diff --git a/packages/agent/src/model/translate.ts b/packages/agent/src/model/translate.ts
+index 66efd2b..a6f1b9a 100644
+--- a/packages/agent/src/model/translate.ts
++++ b/packages/agent/src/model/translate.ts
+@@ -1094,7 +1094,7 @@ export class TurnTranslator {
+         // step streams, #currentAssistantId still names the last committed
+         // one and its pending deltas must join the reconciliation below.
+         this.#reconcileRevision(out, known, content);
+-      } else if (known && this.#deltasSinceSnapshot && (known.substantive || !substantive)) {
++      } else if (known && this.#deltasSinceSnapshot && known.substantive) { // MUTANT: a blank snapshot claims the open deltas
+         // A same-id snapshot racing the NEXT step's open deltas. A message
+         // whose earlier snapshot already carried content — text, reasoning,
+         // or only tools/sources — never streams more deltas (content changes

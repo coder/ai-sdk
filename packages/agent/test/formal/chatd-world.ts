@@ -24,7 +24,13 @@ import type {
 
 export const CHAT_ID = "chat-1";
 
-/** One streamed part of an assistant step: one delta, and one content part of its snapshot. */
+/**
+ * One streamed part of an assistant step: one delta, and one content part of
+ * its snapshot. A part with empty text streams no delta, but the snapshot
+ * keeps it: a text or reasoning block without deltas commits as
+ * `TextContent{Text: ""}` or `ReasoningContent{Text: ""}` (`chatloop.go`
+ * `processStepStream`).
+ */
 export interface StepPart {
   kind: "text" | "reasoning";
   text: string;
@@ -68,6 +74,12 @@ export function usageFor(k: number): ChatMessageUsage {
  * - `revise`: a committed assistant message gets a new revision. That
  *   advances `history_version`, so the runner cancels an attempt in progress
  *   and the next `part` restarts the step.
+ * - `hook`: after a committed step, a `stop` hook continues the turn
+ *   (`generation.go` `finishGenerationTurn`). chatd commits the hook's model
+ *   context as a model-only user row (`chathooks/effects.go`
+ *   `EventMessages`), which takes a message id and advances
+ *   `history_version`. The stream never sends that row
+ *   (`GetChatMessagesByRevisionForStream` reads only user-visible rows).
  * - `settle`: the turn ends (`FinishTurn`): status `waiting`.
  */
 export type WorldEvent =
@@ -75,6 +87,7 @@ export type WorldEvent =
   | { kind: "commit" }
   | { kind: "retry"; nextParts?: StepPart[] }
   | { kind: "revise"; step: number; appendText: string; usage: number }
+  | { kind: "hook" }
   | { kind: "settle" };
 
 /** How the turn was submitted, which decides the stream's `after_id`. */
@@ -199,7 +212,7 @@ export class ChatdWorld {
           this.#retryPending = false;
           out.push(control({ type: "preview_reset", chat_id: CHAT_ID }));
         }
-        const part = step.parts[this.#attemptParts];
+        const part = streamed(step)[this.#attemptParts];
         if (!part)
           throw new Error(`ChatdWorld: step ${this.#step} has no part ${this.#attemptParts}`);
         this.#attemptParts += 1;
@@ -208,9 +221,9 @@ export class ChatdWorld {
       }
       case "commit": {
         const step = this.#currentStep();
-        if (this.#attemptParts !== step.parts.length) {
+        if (this.#attemptParts !== streamed(step).length) {
           throw new Error(
-            `ChatdWorld: commit of step ${this.#step} after ${this.#attemptParts}/${step.parts.length} parts`,
+            `ChatdWorld: commit of step ${this.#step} after ${this.#attemptParts}/${streamed(step).length} parts`,
           );
         }
         const message: CommittedMessage = {
@@ -238,7 +251,7 @@ export class ChatdWorld {
             step: this.#step,
             historyVersion: this.#historyVersion,
             generationAttempt: this.#generationAttempt,
-            parts: step.parts,
+            parts: streamed(step),
           });
           step.parts = [...ev.nextParts];
         }
@@ -258,6 +271,17 @@ export class ChatdWorld {
         // "Event processing", case 2); the step restarts from its start.
         this.#historyChanged();
         out.push(control(messageEvent(target)));
+        out.push(control({ type: "preview_reset", chat_id: CHAT_ID }));
+        break;
+      }
+      case "hook": {
+        if (this.#attemptParts !== 0 || this.#step === 0 || this.#step === this.#steps.length) {
+          throw new Error(`ChatdWorld: stop hook during step ${this.#step}/${this.#steps.length}`);
+        }
+        // No message event for the model-only row, but the history change
+        // resets the preview (`applyDBSnapshot`).
+        this.#nextId += 1;
+        this.#historyChanged();
         out.push(control({ type: "preview_reset", chat_id: CHAT_ID }));
         break;
       }
@@ -291,7 +315,7 @@ export class ChatdWorld {
     if (this.#generationAttempt > 0 && !this.#attemptRetired) {
       const step = this.#currentStep();
       for (let seq = 1; seq <= this.#attemptParts; seq++) {
-        const part = step.parts[seq - 1];
+        const part = streamed(step)[seq - 1];
         if (!part) throw new Error(`ChatdWorld: replay past step ${this.#step} parts`);
         frames.push(this.#previewFrame(seq, part));
       }
@@ -327,6 +351,11 @@ export class ChatdWorld {
     };
     return { events: [event], preview: true };
   }
+}
+
+/** The parts that a step streams, in seq order: see {@link StepPart}. */
+function streamed(step: StepSpec): StepPart[] {
+  return step.parts.filter((p) => p.text !== "");
 }
 
 /** The JSON text of one WebSocket frame. */

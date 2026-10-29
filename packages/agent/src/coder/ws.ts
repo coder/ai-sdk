@@ -135,10 +135,11 @@ const TRANSIENT_UPGRADE_STATUSES: ReadonlySet<number> = new Set([408, 425, 429])
  * are suppressed here rather than double-yielded. That episode filter runs at
  * frame arrival (not at consumption), so each frame's `ws:event` can carry
  * the reader's own verdict as `forwarded` (issue #111) while `timestamp`
- * keeps meaning arrival time. The iteration ends on: `signal` aborting (clean
- * return), a `resolveApiPrefix` probe that throws before the first dial
- * (rethrown), a `webSocketFactory` that throws (rethrown), a non-transient
- * 4xx upgrade rejection (terminal {@link CoderApiError} — bad/expired token or a deleted
+ * keeps meaning arrival time. The iteration ends on: `signal` aborting or the
+ * consumer ending iteration (`break`, `iterator.return()`) (clean return), a
+ * `resolveApiPrefix` probe that throws before the first dial (rethrown), a
+ * `webSocketFactory` that throws (rethrown), a non-transient 4xx upgrade
+ * rejection (terminal {@link CoderApiError} — bad/expired token or a deleted
  * chat cannot succeed on retry, while 408/425/429 consume the redial budget),
  * an unparseable frame (terminal {@link CoderAgentError} — a redial would
  * replay the same frame forever), a drop while deltas WITHOUT episode

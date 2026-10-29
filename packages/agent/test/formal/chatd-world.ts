@@ -62,7 +62,9 @@ export function usageFor(k: number): ChatMessageUsage {
  * - `commit`: the step commits its assistant message (`CommitStep` or
  *   `FinishTurn`). That advances `history_version` and resets the attempt.
  * - `retry`: the attempt fails with a retryable error (`RecordRetryState`).
- *   chatd retires the attempt and the next `part` restarts the step.
+ *   chatd retires the attempt and the next `part` restarts the step. With
+ *   `nextParts`, the new attempt streams these parts instead of the step's:
+ *   a provider does not have to produce the same text twice.
  * - `revise`: a committed assistant message gets a new revision. That
  *   advances `history_version`, so the runner cancels an attempt in progress
  *   and the next `part` restarts the step.
@@ -71,7 +73,7 @@ export function usageFor(k: number): ChatMessageUsage {
 export type WorldEvent =
   | { kind: "part" }
   | { kind: "commit" }
-  | { kind: "retry" }
+  | { kind: "retry"; nextParts?: StepPart[] }
   | { kind: "revise"; step: number; appendText: string; usage: number }
   | { kind: "settle" };
 
@@ -92,6 +94,19 @@ export interface CommittedMessage {
   appendedText: string;
 }
 
+/**
+ * An attempt that a `retry` with `nextParts` abandoned: the step then commits
+ * different content, so the AI SDK can have text that chatd never commits.
+ */
+export interface DivergedAttempt {
+  /** The 0-based index of the step, which is also its message's index in {@link ChatdWorld.turnMessages}. */
+  step: number;
+  historyVersion: number;
+  generationAttempt: number;
+  /** The parts that the attempt streams, in seq order (seq 1 first). */
+  parts: StepPart[];
+}
+
 /** One WebSocket frame that the server has emitted on one connection: a JSON array of events. */
 export interface Frame {
   events: ChatStreamEvent[];
@@ -100,8 +115,9 @@ export interface Frame {
 }
 
 export class ChatdWorld {
-  readonly #steps: readonly StepSpec[];
+  readonly #steps: StepSpec[];
   readonly #messages: CommittedMessage[] = [];
+  readonly #diverged: DivergedAttempt[] = [];
   #historyVersion = 1;
   #generationAttempt = 0;
   #attemptParts = 0;
@@ -115,7 +131,8 @@ export class ChatdWorld {
 
   constructor(start: TurnStart, steps: readonly StepSpec[]) {
     if (steps.length === 0) throw new Error("ChatdWorld: a turn needs at least one step");
-    this.#steps = steps;
+    // A copy: a retry with `nextParts` replaces a step's parts.
+    this.#steps = steps.map((step) => ({ ...step, parts: [...step.parts] }));
     if (start === "follow-up") {
       this.#messages.push({
         id: 1,
@@ -150,6 +167,11 @@ export class ChatdWorld {
   /** Whether `ev` ends the current attempt, so chatd stops forwarding its unsent preview parts. */
   endsAttempt(ev: WorldEvent): boolean {
     return ev.kind === "commit" || ev.kind === "retry" || ev.kind === "revise";
+  }
+
+  /** The attempts that a retry with `nextParts` abandoned, in order. */
+  divergedAttempts(): readonly DivergedAttempt[] {
+    return this.#diverged;
   }
 
   /** The assistant messages of this turn, as committed now (latest revision). */
@@ -210,6 +232,16 @@ export class ChatdWorld {
         if (this.#attemptParts === 0) throw new Error("ChatdWorld: retry without an attempt");
         // RecordRetryState: the attempt failed. Its later parts are never
         // forwarded, and the next attempt streams the step from its start.
+        if (ev.nextParts) {
+          const step = this.#currentStep();
+          this.#diverged.push({
+            step: this.#step,
+            historyVersion: this.#historyVersion,
+            generationAttempt: this.#generationAttempt,
+            parts: step.parts,
+          });
+          step.parts = [...ev.nextParts];
+        }
         this.#attemptRetired = true;
         this.#retryPending = true;
         this.#attemptParts = 0;

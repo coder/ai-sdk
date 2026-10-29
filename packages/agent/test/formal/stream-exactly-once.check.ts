@@ -21,6 +21,8 @@
  *   `error`, after chatd settled the turn.
  * - TextExactlyOnce / ReasoningExactlyOnce: the concatenated deltas equal
  *   the committed assistant text (or reasoning) of the turn, in message order.
+ *   One narrow exception, for a retry whose new attempt streams different
+ *   parts (`nextParts`): see `withDiverged`.
  * - ContentInOrder: text and reasoning deltas together follow the wire order
  *   of the committed content parts.
  * - UsageOnce: every `finish` usage counter equals the sum over the turn's
@@ -138,14 +140,22 @@ const SCENARIOS: Scenario[] = [
     timeline: [part, retry, part, part, commit, settle],
     maxDrops: 1,
     maxRuns: 20_000,
-    knownFinding: {
-      id: "restart-keeps-abandoned-deltas",
-      violatingRuns: 148,
-      shortest: {
-        TextExactlyOnce: 'the AI SDK got text "aa", chatd committed "ab"',
-        ContentInOrder: 'the AI SDK got text and reasoning in the order "aa", chatd committed "ab"',
-      },
-    },
+  },
+  {
+    name: "attempt fails after a partial stream and chatd retries it with different text",
+    start: "new-chat",
+    steps: [{ parts: [text("a"), text("b")], usage: 1 }],
+    timeline: [
+      part,
+      part,
+      { kind: "retry", nextParts: [text("a"), text("c")] },
+      part,
+      part,
+      commit,
+      settle,
+    ],
+    maxDrops: 1,
+    maxRuns: 20_000,
   },
   {
     name: "step 1 revised while step 2 streams, so chatd restarts step 2",
@@ -167,15 +177,6 @@ const SCENARIOS: Scenario[] = [
     ],
     maxDrops: 1,
     maxRuns: 40_000,
-    knownFinding: {
-      id: "restart-keeps-abandoned-deltas",
-      violatingRuns: 997,
-      shortest: {
-        TextExactlyOnce: 'the AI SDK got text "abcce", chatd committed "ab[+e]cd"',
-        ContentInOrder:
-          'the AI SDK got text and reasoning in the order "abcc", chatd committed "abcd"',
-      },
-    },
   },
 ];
 
@@ -264,6 +265,8 @@ interface RunOutcome {
   fetchCalls: string[];
   world: ChatdWorld;
   trace: string[];
+  /** The highest preview seq delivered to the client, per episode `history_version:generation_attempt`. */
+  delivered: Map<string, number>;
 }
 
 function describeEvent(ev: ChatStreamEvent): string {
@@ -294,8 +297,11 @@ function describeWorld(ev: WorldEvent): string {
       return "chatd streams the next part of the current step";
     case "commit":
       return "chatd commits the current step as an assistant message";
-    case "retry":
-      return "the provider call fails with a retryable error; chatd retires the attempt";
+    case "retry": {
+      const base = "the provider call fails with a retryable error; chatd retires the attempt";
+      if (!ev.nextParts) return base;
+      return `${base}, and the next attempt streams "${ev.nextParts.map((p) => p.text).join("")}"`;
+    }
     case "revise":
       return `chatd revises step ${ev.step + 1}'s message (appends "${ev.appendText}", usage unit ${ev.usage})`;
     case "settle":
@@ -336,6 +342,7 @@ async function runOnce(scn: Scenario, chooser: Chooser): Promise<RunOutcome> {
     fetchCalls,
     world,
     trace,
+    delivered: new Map(),
   };
 
   const { stream } = await model.doStream({
@@ -434,6 +441,12 @@ async function runOnce(scn: Scenario, chooser: Chooser): Promise<RunOutcome> {
         const frame = queue.shift();
         if (!frame) throw new Error("harness: deliver with an empty queue");
         trace.push(`connection ${connection()} delivers: ${describeFrame(frame)}`);
+        for (const ev of frame.events) {
+          const mp = ev.message_part;
+          if (ev.type !== "message_part" || !mp || mp.seq === undefined) continue;
+          const key = `${mp.history_version}:${mp.generation_attempt}`;
+          outcome.delivered.set(key, Math.max(outcome.delivered.get(key) ?? 0, mp.seq));
+        }
         socket.emit("message", { data: frameData(frame) });
         break;
       }
@@ -488,16 +501,55 @@ interface Violation {
 }
 
 /**
+ * The text of step `step`'s diverged attempt (see `DivergedAttempt` in
+ * chatd-world.ts) that reached the client, of one kind or of both. chatd
+ * forwards an attempt's parts in seq order and a redial replays them from
+ * seq 1, so the delivered parts are always the attempt's first parts.
+ */
+function divergedPrefix(
+  outcome: RunOutcome,
+  step: number,
+  kind: "text" | "reasoning" | "all",
+): string {
+  let got = "";
+  for (const a of outcome.world.divergedAttempts()) {
+    if (a.step !== step) continue;
+    const delivered = outcome.delivered.get(`${a.historyVersion}:${a.generationAttempt}`) ?? 0;
+    for (const p of a.parts.slice(0, delivered))
+      if (kind === "all" || p.kind === kind) got += p.text;
+  }
+  return got;
+}
+
+/**
+ * The one exception to exactly-once, scoped to a step whose attempt a retry
+ * with `nextParts` abandoned (issue #407). The AI SDK stream cannot take back
+ * text, so the abandoned attempt's text that already reached the AI SDK stays.
+ * The translator holds back the new attempt's text while it repeats that text.
+ * So when the committed text starts with the abandoned text, the AI SDK must
+ * get the committed text exactly once. Otherwise it must get the abandoned
+ * text, then the complete committed text. Steps without such a retry have an
+ * empty `abandoned`, so this is the exact committed text.
+ */
+function withDiverged(committed: string, abandoned: string): { want: string; shown: string } {
+  if (committed.startsWith(abandoned)) return { want: committed, shown: committed };
+  return { want: abandoned + committed, shown: `{${abandoned}}${committed}` };
+}
+
+/**
  * What a run must deliver for one kind of delta, per committed message: the
- * content its step streamed, and the text that later revisions appended.
+ * content its step streamed (see `withDiverged`), and the text that later
+ * revisions appended. `shown` is the same for the report: `{ab}` marks
+ * abandoned text that the AI SDK must keep.
  */
 function expectedDeltas(
-  world: ChatdWorld,
+  outcome: RunOutcome,
   kind: "text" | "reasoning",
-): { own: string[]; suffix: string[] } {
+): { own: string[]; shown: string[]; suffix: string[] } {
   const own: string[] = [];
+  const shown: string[] = [];
   const suffix: string[] = [];
-  for (const m of world.turnMessages()) {
+  for (const [i, m] of outcome.world.turnMessages().entries()) {
     const full = m.content
       .filter((p) => p.type === kind)
       .map((p) => p.text ?? "")
@@ -505,10 +557,15 @@ function expectedDeltas(
     const appended = kind === "text" ? m.appendedText : "";
     if (!full.endsWith(appended))
       throw new Error("harness: a revision suffix must end its message");
-    own.push(full.slice(0, full.length - appended.length));
+    const expected = withDiverged(
+      full.slice(0, full.length - appended.length),
+      divergedPrefix(outcome, i, kind),
+    );
+    own.push(expected.want);
+    shown.push(expected.shown);
     suffix.push(appended);
   }
-  return { own, suffix };
+  return { own, shown, suffix };
 }
 
 /**
@@ -522,11 +579,11 @@ function expectedDeltas(
  */
 function compareDeltas(
   got: string,
-  world: ChatdWorld,
+  outcome: RunOutcome,
   kind: "text" | "reasoning",
 ): string | undefined {
-  const { own, suffix } = expectedDeltas(world, kind);
-  const committed = own.map((o, i) => (suffix[i] ? `${o}[+${suffix[i]}]` : o)).join("");
+  const { own, shown, suffix } = expectedDeltas(outcome, kind);
+  const committed = shown.map((o, i) => (suffix[i] ? `${o}[+${suffix[i]}]` : o)).join("");
   const mismatch = `the AI SDK got ${kind} "${got}", chatd committed "${committed}"`;
   const suffixLetters = new Set(suffix.join(""));
   const gotOwn = [...got].filter((ch) => !suffixLetters.has(ch)).join("");
@@ -551,8 +608,9 @@ function compareDeltas(
  */
 function compareContentOrder(
   parts: LanguageModelV4StreamPart[],
-  world: ChatdWorld,
+  outcome: RunOutcome,
 ): string | undefined {
+  const world = outcome.world;
   const suffixLetters = new Set(world.turnMessages().flatMap((m) => [...m.appendedText]));
   const own = (letters: string) => [...letters].filter((ch) => !suffixLetters.has(ch)).join("");
   const got = own(
@@ -562,14 +620,17 @@ function compareContentOrder(
       )
       .join(""),
   );
-  const want = own(
-    world
-      .turnMessages()
-      .map((m) => m.content.map((p) => p.text ?? "").join(""))
-      .join(""),
-  );
+  const expected = world
+    .turnMessages()
+    .map((m, i) =>
+      withDiverged(
+        own(m.content.map((p) => p.text ?? "").join("")),
+        divergedPrefix(outcome, i, "all"),
+      ),
+    );
+  const want = expected.map((e) => e.want).join("");
   if (got === want) return undefined;
-  return `the AI SDK got text and reasoning in the order "${got}", chatd committed "${want}"`;
+  return `the AI SDK got text and reasoning in the order "${got}", chatd committed "${expected.map((e) => e.shown).join("")}"`;
 }
 
 /**
@@ -609,14 +670,35 @@ function compareUsage(
   return `finish reports usage ${JSON.stringify(got)}, chatd committed ${JSON.stringify(want)} (usage unit ${k})`;
 }
 
-/** Every part and suffix is one letter, and no letter repeats: see `compareDeltas`. */
+/**
+ * Every part and suffix is one letter, and no letter repeats: see
+ * `compareDeltas`. One exception: a retry's `nextParts` can start with the
+ * step's own first letters (the new attempt repeats the abandoned one, then
+ * diverges). A scenario has at most one such retry, on a text-only step, so
+ * that `withDiverged` describes the whole expected output.
+ */
 function validate(scn: Scenario): void {
+  const fail = (why: string) => new Error(`scenario "${scn.name}": ${why}`);
   const letters = [
     ...scn.steps.flatMap((step) => step.parts.map((p) => p.text)),
     ...scn.timeline.flatMap((ev) => (ev.kind === "revise" ? [ev.appendText] : [])),
   ];
+  let step = 0;
+  let diverging = 0;
+  for (const ev of scn.timeline) {
+    if (ev.kind === "commit") step += 1;
+    if (ev.kind !== "retry" || !ev.nextParts) continue;
+    diverging += 1;
+    const parts = scn.steps[step]?.parts ?? [];
+    if ([...parts, ...ev.nextParts].some((p) => p.kind !== "text"))
+      throw fail("a retry with nextParts needs a text-only step");
+    let shared = 0;
+    while (shared < parts.length && ev.nextParts[shared]?.text === parts[shared]?.text) shared++;
+    letters.push(...ev.nextParts.slice(shared).map((p) => p.text));
+  }
+  if (diverging > 1) throw fail("at most one retry can have nextParts");
   if (letters.some((l) => l.length !== 1) || new Set(letters).size !== letters.length) {
-    throw new Error(`scenario "${scn.name}": parts and suffixes must be distinct single letters`);
+    throw fail("parts and suffixes must be distinct single letters");
   }
 }
 
@@ -646,12 +728,12 @@ function check(outcome: RunOutcome): Violation[] {
       .filter((p) => p.type === type)
       .map((p) => ("delta" in p ? p.delta : ""))
       .join("");
-  const textProblem = compareDeltas(delta("text-delta"), world, "text");
+  const textProblem = compareDeltas(delta("text-delta"), outcome, "text");
   if (textProblem) violations.push({ property: "TextExactlyOnce", detail: textProblem });
-  const reasoningProblem = compareDeltas(delta("reasoning-delta"), world, "reasoning");
+  const reasoningProblem = compareDeltas(delta("reasoning-delta"), outcome, "reasoning");
   if (reasoningProblem)
     violations.push({ property: "ReasoningExactlyOnce", detail: reasoningProblem });
-  const orderProblem = compareContentOrder(parts, world);
+  const orderProblem = compareContentOrder(parts, outcome);
   if (orderProblem) violations.push({ property: "ContentInOrder", detail: orderProblem });
   if (finish) {
     const usageProblem = compareUsage(finish, world);

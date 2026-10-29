@@ -7,7 +7,8 @@ description: Bounded exhaustive check that @coder/ai-sdk-agent delivers a turn's
 
 ## The promise
 
-- **Property.** Every character of text and reasoning that chatd commits for a turn reaches the AI SDK exactly once, text and reasoning together arrive in the order of the committed content, every `finish` usage counter counts each committed message once, and the turn ends with `finish` without an interrupt, for every order of connection drops, redials, and replays within the bounds below.
+- **Property.** Every character of text and reasoning that chatd commits for a turn reaches the AI SDK exactly once, text and reasoning together arrive in the order of the committed content, every `finish` usage counter counts each committed message once, and the turn ends with `finish` without an interrupt, for every order of connection drops, redials, retries, and replays within the bounds below.
+- **One exception.** When chatd retries a step and the new attempt streams different text (`retry` with `nextParts` in a scenario), the AI SDK keeps the abandoned attempt's text that it already got: a stream cannot take text back. If the committed text starts with that abandoned text, the AI SDK must still get the committed text exactly once. If not, it must get the abandoned text, then the complete committed text (`withDiverged` in the check file, issue #407). The exception applies only to the step of such a retry.
 - **Harm.** When it breaks, a user of `agent.generate()` or `agent.stream()` sees repeated or missing text after a network blip, and the reported tokens and cost are wrong.
 
 Unit tests pin a few hand-picked orders. This check tries every order within the bounds against the real code.
@@ -64,14 +65,15 @@ Any output means that the covered code changed since the last sync. Run the chec
 
 3. The script puts Node and pnpm from `mise.toml` first on `PATH` itself and uses the lockfile's vitest. It prints the versions and the commit first. It writes the full log to `$FORMAL_OUT`, default `$TMPDIR/agent-stream-exactly-once.log`, or `/tmp/agent-stream-exactly-once.log` when `TMPDIR` is unset.
 
-At the sync commit the result is 3 passing scenarios and 2 scenarios that show the known finding:
+At the sync commit every scenario passes:
 
 ```text
 RESULT scenario="one step, two text parts, new chat" status=pass runs=2205 violating=0 violated=none
 RESULT scenario="two steps, reasoning then text, follow-up turn" status=pass runs=41222 violating=0 violated=none
 RESULT scenario="step 1 revised (text appended, usage changed) before step 2 starts" status=pass runs=19941 violating=0 violated=none
-RESULT scenario="attempt fails after a partial stream and chatd retries it" status=known-finding runs=590 violating=148 violated=TextExactlyOnce,ContentInOrder
-RESULT scenario="step 1 revised while step 2 streams, so chatd restarts step 2" status=known-finding runs=2947 violating=997 violated=TextExactlyOnce,ContentInOrder
+RESULT scenario="attempt fails after a partial stream and chatd retries it" status=pass runs=590 violating=0 violated=none
+RESULT scenario="attempt fails after a partial stream and chatd retries it with different text" status=pass runs=980 violating=0 violated=none
+RESULT scenario="step 1 revised while step 2 streams, so chatd restarts step 2" status=pass runs=2947 violating=0 violated=none
 ```
 
 The script exits 0 when every scenario is `pass` or `known-finding`. It exits non-zero on `fail`, and also when a known finding no longer reproduces.
@@ -88,7 +90,7 @@ A counterexample is a numbered list of steps:
 - `connection N ...` is a network event: the connection opens with its `after_id`, delivers one frame, drops (close 1006), or fails its handshake (502).
 - `connection N opens (after_id=...); chatd queues the initial sync and K replayed preview part(s)` means that the new connection gets one frame with the initial sync (committed messages past `after_id`, status, `preview_reset`), then the K parts that the current attempt has streamed so far, from seq 1. The `delivers:` lines that follow show which of those frames arrived.
 - `(N unforwarded preview part(s) dropped)` means that chatd ended the attempt before it forwarded those parts, as `stream_loop.go` `part` does.
-- `=>` compares what the AI SDK got with what chatd committed. `ab[+e]` means that message text `ab` got the suffix `e` from a later revision.
+- `=>` compares what the AI SDK got with what chatd committed. `ab[+e]` means that message text `ab` got the suffix `e` from a later revision. `{ab}ac` means that the AI SDK must keep `ab` from an abandoned attempt that diverged, then get the committed `ac` (see "One exception" above).
 
 Every part in a scenario is one distinct letter, so a repeated letter is a duplicate and a missing letter is a loss. To print any one run, set `FORMAL_SHOW_RUN=<n>` (0-based, per scenario), for example `FORMAL_SHOW_RUN=7 check.sh "one step"`, and read the full log.
 
@@ -116,14 +118,9 @@ Decide in this order:
 
 ## Known findings
 
-### restart-keeps-abandoned-deltas
+None are open. The check records a finding with a `knownFinding` field on its scenario, as described in "Read a result". When a fix lands, the scenario fails with "known finding ... no longer reproduces": then delete its `knownFinding` field, so that it must pass, and its section here. A change that alters a finding without removing it prints `FINGERPRINT differs`. Read the new counterexample. When it is the same defect, copy the new run count and `=>` lines into `knownFinding` and say so in the commit.
 
-- **What happens.** chatd starts a step's generation again when an attempt fails with a retryable provider error (`retry` event, then `preview_reset`), or when the history changes while the step streams (`preview_reset`). chatd expects clients to drop the abandoned attempt's preview: `stream_loop.go` says "Clients drop their preview on the retry event". TurnTranslator ignores `retry` and `preview_reset` (`translate.ts`, the `default:` case of `ingest`). The deltas of the abandoned attempt stay in the AI SDK output, the new attempt's deltas follow them, and the committed snapshot then cannot reconcile.
-- **Shortest counterexample** (scenario "attempt fails after a partial stream and chatd retries it", no drop needed): chatd streams `a`, the AI SDK gets `a`, the provider call fails and chatd retries, chatd streams `a` again and the AI SDK gets it, chatd commits `ab`. The AI SDK got `aa`, and chatd committed `ab`.
-- **Harm.** After a provider retry, `result.text` repeats the start of the answer and can miss its end.
-- **Status.** Open: [#407](https://github.com/coder/ai-sdk/issues/407). Verified against chatd source at the pinned commit. Not reproduced live: that needs a provider error in the middle of a stream.
-
-When a fix lands, the two scenarios fail with "known finding ... no longer reproduces". Then delete their `knownFinding` fields, so that they must pass, and delete this section. A change that alters the finding without removing it prints `FINGERPRINT differs`. Read the new counterexample. When it is the same defect, copy the new run count and `=>` lines into `knownFinding` and say so in the commit.
+Fixed: `restart-keeps-abandoned-deltas` ([#407](https://github.com/coder/ai-sdk/issues/407)). A chatd attempt restart left the abandoned attempt's deltas in the output ("aa" for a committed "ab").
 
 ## When the change is intended
 
@@ -141,15 +138,17 @@ When a fix lands, the two scenarios fail with "known finding ... no longer repro
 
 The mutants, and what each one breaks:
 
-| Patch                                | Break                                                | Property             |
-| ------------------------------------ | ---------------------------------------------------- | -------------------- |
-| `01-reader-forwards-replayed-deltas` | The reader forwards deltas that a redial replays     | TextExactlyOnce      |
-| `02-ledger-forgets-emitted-text`     | The translator ledger does not record emitted text   | TextExactlyOnce      |
-| `03-redial-advances-cursor`          | A redial uses the highest committed id as `after_id` | TextExactlyOnce      |
-| `04-reasoning-deltas-not-pending`    | Streamed reasoning is not recorded as pending        | ReasoningExactlyOnce |
-| `05-usage-counted-per-snapshot`      | Usage is summed per snapshot, not per message id     | UsageOnce            |
-| `06-drop-is-terminal`                | A drop ends the stream; the model then interrupts    | Completes            |
-| `07-snapshot-text-before-reasoning`  | A snapshot emits text parts before reasoning parts   | ContentInOrder       |
+| Patch                                | Break                                                      | Property             |
+| ------------------------------------ | ---------------------------------------------------------- | -------------------- |
+| `01-reader-forwards-replayed-deltas` | The reader forwards deltas that a redial replays           | TextExactlyOnce      |
+| `02-ledger-forgets-emitted-text`     | The translator ledger does not record emitted text         | TextExactlyOnce      |
+| `03-redial-advances-cursor`          | A redial uses the highest committed id as `after_id`       | TextExactlyOnce      |
+| `04-reasoning-deltas-not-pending`    | Streamed reasoning is not recorded as pending              | ReasoningExactlyOnce |
+| `05-usage-counted-per-snapshot`      | Usage is summed per snapshot, not per message id           | UsageOnce            |
+| `06-drop-is-terminal`                | A drop ends the stream; the model then interrupts          | Completes            |
+| `07-snapshot-text-before-reasoning`  | A snapshot emits text parts before reasoning parts         | ContentInOrder       |
+| `08-restart-keeps-pending`           | A new attempt keeps the abandoned attempt's pending text   | TextExactlyOnce      |
+| `09-diverged-commit-suppressed`      | A commit that diverges from the emitted text emits nothing | TextExactlyOnce      |
 
 `06` also breaks NoInterrupt. `07` breaks only ContentInOrder: the text and reasoning checks each see the right letters, in the wrong order between them.
 
@@ -159,7 +158,7 @@ A pass covers the real client code against the chatd model within these bounds. 
 
 - **Turn shapes:** a new chat (`createChat`, no `after_id`) and a follow-up turn (`createChatMessage`, `after_id` = the prompt id).
 - **Steps:** up to 2 assistant steps of up to 3 text or reasoning parts.
-- **Server events:** streamed parts, commits, one retry, one revision that appends text and changes usage, and the settle.
+- **Server events:** streamed parts, commits, one retry (its new attempt streams the same parts, or different `nextParts`), one revision that appends text and changes usage, and the settle.
 - **Network:** up to 2 connection failures per run (drops or failed handshakes). That is fewer than the reader's budget of 5, so every run must complete. Each connection can open before or after any server event.
 - **Relay lag:** at each commit, retry, or revision, chatd can drop any preview parts that it has not forwarded yet.
 

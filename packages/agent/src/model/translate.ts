@@ -240,6 +240,15 @@ export interface TurnTranslatorOptions {
  * cannot be expressed as deltas) is safely suppressed instead of
  * double-emitted.
  *
+ * When chatd restarts a step's generation (a retried provider call, or a
+ * history change while the step streams), the new attempt streams the step
+ * from its start (issue #407). The translator holds back the new attempt's
+ * deltas while they repeat what the abandoned attempt already emitted, so a
+ * restart that reproduces the text stays exactly-once. When the new attempt
+ * diverges from the emitted text, that text cannot be taken back: the output
+ * is the abandoned text followed by the complete new attempt in a new block
+ * (see #streamDelta and the commit reconciliation in #ingestMessage).
+ *
  * Client (custom) tool calls are emitted from the reliable `action_required`
  * event and left for the AI SDK to execute. chatd's own server-side tools are
  * surfaced best-effort as `providerExecuted` tool calls/results.
@@ -265,12 +274,23 @@ export class TurnTranslator {
   readonly #submittedToolCallIds: ReadonlySet<string>;
 
   #seq = 0;
-  // `pending` accumulates delta content that has been emitted but not yet
-  // attributed to a message id (deltas carry none); the next assistant
-  // snapshot claims it. It survives block closes — a closed block loses its
-  // stream id, never the record of what was emitted.
-  #text = { id: undefined as string | undefined, pending: "" };
-  #reasoning = { id: undefined as string | undefined, pending: "" };
+  // Per kind, for the step that is still streaming (deltas carry no message
+  // id, so the next assistant snapshot claims both):
+  // - `pending` is the CURRENT generation attempt's delta content, not yet
+  //   attributed to a message id. A new attempt starts it again (see
+  //   #trackEpisode).
+  // - `shown` is the delta content already emitted to the AI SDK for the
+  //   step. It equals `pending` until chatd restarts the step's generation;
+  //   then it still holds the abandoned attempt's text, which cannot be taken
+  //   back, and #streamDelta holds back the new attempt's deltas that repeat
+  //   it (issue #407).
+  // Both survive block closes — a closed block loses its stream id, never
+  // the record of what was emitted.
+  #text = { id: undefined as string | undefined, pending: "", shown: "" };
+  #reasoning = { id: undefined as string | undefined, pending: "", shown: "" };
+  // The episode (`history_version`:`generation_attempt`) of the last delta
+  // that carried one: see #trackEpisode.
+  #deltaEpisode: string | undefined;
   #currentAssistantId: number | undefined;
   // Whether text/reasoning deltas arrived since the last assistant `message`
   // snapshot — i.e. the next assistant snapshot is the trailing snapshot of the
@@ -452,6 +472,60 @@ export class TurnTranslator {
   #emitReasoningDelta(out: LanguageModelV4StreamPart[], delta: string): void {
     this.#openReasoning(out);
     out.push({ type: "reasoning-delta", id: this.#reasoning.id as string, delta });
+  }
+
+  /**
+   * Starts the pending content again when a delta belongs to a new generation
+   * episode (issue #407). chatd starts a step's generation again after a
+   * retryable provider error (`retry`, then a new `generation_attempt`) or
+   * when the history changes while the step streams (a new
+   * `history_version`), and the new attempt streams the step from its start.
+   * The abandoned attempt's deltas can never be committed: chatd forwards
+   * only the current episode's parts (`stream_loop.go` `part`), and a
+   * committed step's snapshot always arrives before the next episode's
+   * parts. So a delta from another episode means the pending content was
+   * abandoned. A commit has already cleared `pending` in the normal case,
+   * which makes the reset a no-op there.
+   *
+   * Keyed on the delta's coordinates, not on `preview_reset`: chatd also sends
+   * `preview_reset` at the start of every connection and after every commit,
+   * and a redial continues the SAME attempt (the reader drops the replayed
+   * parts). Deltas without coordinates (older chatd) are never reset.
+   */
+  #trackEpisode(mp: NonNullable<ChatStreamEvent["message_part"]>): void {
+    if (mp.history_version === undefined || mp.generation_attempt === undefined) return;
+    const episode = `${mp.history_version}:${mp.generation_attempt}`;
+    if (this.#deltaEpisode !== undefined && episode !== this.#deltaEpisode) {
+      this.#text.pending = "";
+      this.#reasoning.pending = "";
+    }
+    this.#deltaEpisode = episode;
+  }
+
+  /**
+   * Emits one delta of the streaming step. Without a restart, `shown` equals
+   * `pending` and the delta is emitted as is. After a restart (see
+   * #trackEpisode), the new attempt's content is held back while it repeats
+   * what the abandoned attempt already emitted, and only the part beyond it
+   * is emitted. When the new attempt DIVERGES from the emitted text, that text
+   * cannot be taken back: the new attempt's content is emitted in full, from
+   * its start, in a new block. The output is then the abandoned text followed
+   * by the complete new attempt.
+   */
+  #streamDelta(out: LanguageModelV4StreamPart[], kind: "text" | "reasoning", delta: string): void {
+    const state = kind === "text" ? this.#text : this.#reasoning;
+    const content = state.pending + delta;
+    state.pending = content;
+    if (state.shown.startsWith(content)) return;
+    let emit = content.slice(state.shown.length);
+    if (!content.startsWith(state.shown)) {
+      if (kind === "text") this.#closeText(out);
+      else this.#closeReasoning(out);
+      emit = content;
+    }
+    if (kind === "text") this.#emitTextDelta(out, emit);
+    else this.#emitReasoningDelta(out, emit);
+    state.shown = content;
   }
 
   /**
@@ -659,7 +733,9 @@ export class TurnTranslator {
         }
         break;
       default:
-        break; // retry / queue_update / preview_reset / history_reset
+        // retry / queue_update / preview_reset / history_reset. An attempt
+        // restart is detected from the deltas' episode instead (#trackEpisode).
+        break;
     }
     return out;
   }
@@ -819,23 +895,18 @@ export class TurnTranslator {
   #ingestMessagePart(out: LanguageModelV4StreamPart[], ev: ChatStreamEvent): void {
     const mp = ev.message_part;
     if (!mp || (mp.role !== "assistant" && mp.role !== "tool")) return;
+    this.#trackEpisode(mp);
     const part = mp.part;
     switch (part.type) {
       case "text":
         this.#deltasSinceSnapshot = true;
-        this.#openText(out);
-        if (part.text) {
-          out.push({ type: "text-delta", id: this.#text.id as string, delta: part.text });
-          this.#text.pending += part.text;
-        }
+        if (part.text) this.#streamDelta(out, "text", part.text);
+        else this.#openText(out);
         break;
       case "reasoning":
         this.#deltasSinceSnapshot = true;
-        this.#openReasoning(out);
-        if (part.text) {
-          out.push({ type: "reasoning-delta", id: this.#reasoning.id as string, delta: part.text });
-          this.#reasoning.pending += part.text;
-        }
+        if (part.text) this.#streamDelta(out, "reasoning", part.text);
+        else this.#openReasoning(out);
         break;
       case "tool-call":
         this.#closeText(out);
@@ -966,24 +1037,34 @@ export class TurnTranslator {
         this.#currentAssistantId = message.id;
 
         // What this snapshot's content must extend: everything already
-        // attributed to this message id, plus the pending deltas it is about
-        // to claim. The suffix beyond that is exactly the content this client
-        // never received — nothing for a byte-identical trailing snapshot,
-        // everything for a snapshot-only message, and the missing tail when
-        // the message committed while a dropped stream was redialing (even if
-        // the block already closed: the ledger, unlike a block cursor,
-        // survives closes). A snapshot that does NOT extend it — a replay
-        // racing the next step's open deltas, or a rewrite — attributes
-        // nothing and emits nothing: the pending deltas may belong to the
-        // next, still-uncommitted message, and a later snapshot naming them
-        // settles the attribution instead.
+        // attributed to this message id, plus the deltas already emitted for
+        // the step it is about to claim (`shown`). The suffix beyond that is
+        // exactly the content this client never received — nothing for a
+        // byte-identical trailing snapshot, everything for a snapshot-only
+        // message, and the missing tail when the message committed while a
+        // dropped stream was redialing (even if the block already closed: the
+        // ledger, unlike a block cursor, survives closes).
+        //
+        // A snapshot that extends the attributed content but not the emitted
+        // deltas DIVERGES from text the AI SDK already got: the deltas of an
+        // attempt that chatd abandoned (issue #407, see #trackEpisode), or a
+        // rewrite on commit. Emitted text cannot be taken back, so that kind's
+        // content beyond the attributed part is emitted in full, in a new
+        // block — the output is the emitted text followed by the complete
+        // committed text, and nothing committed is lost. A snapshot that does
+        // not even extend the attributed content (a rewrite of this message's
+        // earlier snapshot) emits nothing for that kind.
         const rec = known ?? { text: "", reasoning: "", substantive: false };
-        // Per-kind gates: a kind reconciles only when the snapshot's full
-        // content extends what was already attributed + pending for it.
-        const textAttributed = rec.text + this.#text.pending;
-        const reasoningAttributed = rec.reasoning + this.#reasoning.pending;
-        const textOk = fullText.startsWith(textAttributed);
-        const reasoningOk = fullReasoning.startsWith(reasoningAttributed);
+        const textAttributed = rec.text + this.#text.shown;
+        const reasoningAttributed = rec.reasoning + this.#reasoning.shown;
+        const textOk = fullText.startsWith(rec.text);
+        const reasoningOk = fullReasoning.startsWith(rec.reasoning);
+        const textDiverged = textOk && !fullText.startsWith(textAttributed);
+        const reasoningDiverged = reasoningOk && !fullReasoning.startsWith(reasoningAttributed);
+        const textFrom = textDiverged ? rec.text.length : textAttributed.length;
+        const reasoningFrom = reasoningDiverged ? rec.reasoning.length : reasoningAttributed.length;
+        if (textDiverged) this.#closeText(out);
+        if (reasoningDiverged) this.#closeReasoning(out);
         // Emit each part's missing sub-span walking the snapshot in WIRE
         // order, so recovered blocks interleave the way the model produced
         // them (text→reasoning→text stays that way even when the drop left
@@ -994,12 +1075,12 @@ export class TurnTranslator {
         for (const p of content) {
           if (p.type === "text") {
             const end = seenText + (p.text ?? "").length;
-            const from = Math.max(seenText, textAttributed.length);
+            const from = Math.max(seenText, textFrom);
             if (textOk && end > from) this.#emitTextDelta(out, fullText.slice(from, end));
             seenText = end;
           } else if (p.type === "reasoning") {
             const end = seenReasoning + (p.text ?? "").length;
-            const from = Math.max(seenReasoning, reasoningAttributed.length);
+            const from = Math.max(seenReasoning, reasoningFrom);
             if (reasoningOk && end > from)
               this.#emitReasoningDelta(out, fullReasoning.slice(from, end));
             seenReasoning = end;
@@ -1007,13 +1088,14 @@ export class TurnTranslator {
         }
         if (textOk) rec.text = fullText;
         if (reasoningOk) rec.reasoning = fullReasoning;
-        // Reaching this path means THIS snapshot owns the pending deltas (the
+        // Reaching this path means THIS snapshot owns the step's deltas (the
         // race guard above intercepts the one ambiguous ordering), so they
-        // are settled even when reconciliation failed: a rewrite-on-commit
-        // stays suppressed, but its stale pending must not poison every later
-        // message's reconciliation.
+        // are settled even when reconciliation failed: stale pending or shown
+        // content must not poison every later message's reconciliation.
         this.#text.pending = "";
+        this.#text.shown = "";
         this.#reasoning.pending = "";
+        this.#reasoning.shown = "";
         rec.substantive ||= content.some((p) =>
           p.type === "text" || p.type === "reasoning" ? (p.text ?? "").length > 0 : true,
         );

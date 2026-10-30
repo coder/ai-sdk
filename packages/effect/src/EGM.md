@@ -210,7 +210,10 @@ Errors:
   maps a non-`Error` value to `UnknownError` [./errors.ts:toAiError].
 - `toAiError` maps an `Error` by type. `CoderApiError` and an `APICallError` with a
   `statusCode` go through `classifyStatus` and `reasonFor`. An `APICallError` without a
-  `statusCode` becomes `NetworkError` (`reason: "TransportError"`). `CoderStreamError`
+  `statusCode` becomes `NetworkError` (`reason: "TransportError"`). Request details go
+  in both `effect/ai` shapes: `request` (effect 4.0) and `method` plus `url` (effect 4.1).
+  Each version's reason constructor keeps its own fields and drops the others
+  [./errors.ts:requestFields]. `CoderStreamError`
   becomes `UnknownError` with `classification: "transport"` and `retryable:
   error.isRetryable`. `JSONParseError`, `TypeValidationError` and
   `EmptyResponseBodyError` become `InvalidOutputError`. `InvalidArgumentError` becomes

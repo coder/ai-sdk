@@ -19,19 +19,20 @@ AI Gateway), `@coder/ai-sdk-agent` (Coder Agents), and `@coder/ai-sdk-sandbox`
 ## Install
 
 ```bash
-pnpm add @coder/ai-sdk-effect effect@~4.0.0 ai@^7
+pnpm add @coder/ai-sdk-effect effect@~4.1.0 ai@^7
 ```
 
-Requires Node ≥ 22, `effect` 4.0.x, and `ai` v7. The package depends on
-`@coder/ai-sdk-provider`, `@coder/ai-sdk-agent`, and `@coder/ai-sdk-sandbox`,
-so you do not install them separately.
+Requires Node ≥ 22, `effect` 4.0.x or 4.1.x, and `ai` v7. The package
+depends on `@coder/ai-sdk-provider`, `@coder/ai-sdk-agent`, and
+`@coder/ai-sdk-sandbox`, so you do not install them separately.
 
 > [!IMPORTANT]
 > **Stability.** Effect 4 marks its AI modules (`effect/ai/*`) as unstable,
 > and unstable Effect APIs can break in a minor release. The `effect` peer
-> range is therefore patch-only (`~4.0.0`). Support for a new `effect` minor
-> comes in a new release of this package. This package is pre-1.0, and its own
-> API can also change between minor versions.
+> range admits only the minors this package is tested against
+> (`~4.0.0 || ~4.1.0`). Support for a new `effect` minor comes in a new
+> release of this package. This package is pre-1.0, and its own API can also
+> change between minor versions.
 
 ## `LanguageModel` over Coder AI Gateway
 
@@ -199,8 +200,10 @@ const resilient = LanguageModel.generateText({ prompt: "hello" }).pipe(
 set of tagged classes, so the bridge maps every failure onto those reasons
 instead of adding its own error classes:
 
-- HTTP failures keep the request method and URL, the response status and
-  headers, and the body in the reason's `http` field.
+- HTTP failures keep the response status and headers, and the body, in the
+  reason's `http` field. On `effect` 4.0.x, `http.request` also keeps the
+  request method and URL. `effect` 4.1 removed request details from `http`,
+  and only `NetworkError` keeps them, as its `method` and `url` fields.
 - A `RateLimitError` from an AI Gateway response sets `retryAfter` from a
   valid `Retry-After` header (delay-seconds, or an HTTP-date). Read it as
   `error.retryAfter`, for example to pick a retry delay.
@@ -352,8 +355,8 @@ workspace is rolled back best-effort per the teardown policy.
 
 | Dependency               | Range                                        | Surface used                                                                                                            |
 | ------------------------ | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `effect` (peer)          | `~4.0.0`                                     | `Effect`, `Layer`, `Stream`, `Schema`, `JsonSchema`, `Result`, `Context`, `Data`, `Option`, `Function.dual`             |
-| `effect` (`effect/ai/*`) | `~4.0.0`                                     | `LanguageModel.make` (`ProviderOptions` → encoded response parts), `AiError`, `Prompt`, `Response`, `Tool`              |
+| `effect` (peer)          | `~4.0.0 \|\| ~4.1.0`                         | `Effect`, `Layer`, `Stream`, `Schema`, `JsonSchema`, `Result`, `Context`, `Data`, `Option`, `Function.dual`             |
+| `effect` (`effect/ai/*`) | `~4.0.0 \|\| ~4.1.0`                         | `LanguageModel.make` (`ProviderOptions` → encoded response parts), `AiError`, `Prompt`, `Response`, `Tool`              |
 | `ai` (peer)              | `^7.0.0`                                     | `jsonSchema` (for `toAiSdkSchema`)                                                                                      |
 | `@ai-sdk/provider`       | exact (same pin as `@coder/ai-sdk-provider`) | `LanguageModelV4` spec types                                                                                            |
 | `@coder/ai-sdk-provider` | `^` its current release                      | `createCoder`, `CoderProviderSettings`                                                                                  |

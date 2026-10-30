@@ -199,8 +199,8 @@ export const isTransient = (error: ClassifiableError): boolean => {
 };
 
 type HttpContext = typeof AiError.HttpContext.Type;
-type HttpMethod = HttpContext["request"]["method"];
-const HTTP_METHODS: ReadonlyArray<HttpMethod> = [
+// The methods effect 4.0's `HttpRequestDetails` accepts.
+const HTTP_METHODS = [
   "GET",
   "POST",
   "PATCH",
@@ -210,7 +210,27 @@ const HTTP_METHODS: ReadonlyArray<HttpMethod> = [
   "OPTIONS",
   "TRACE",
   "QUERY",
-];
+] as const;
+
+/**
+ * The request in both `effect/ai` shapes. effect 4.0 keeps it in
+ * `HttpContext.request` and `NetworkError.request` (`HttpRequestDetails`, with
+ * a literal method). effect 4.1 removed `HttpRequestDetails`: `HttpContext`
+ * has no request, and `NetworkError` takes `method` and `url`. Reason
+ * constructors validate their own fields and drop unknown ones in both
+ * versions, so the bridge passes both shapes and each version keeps its own.
+ * Pass the result through a variable, never inline in an object literal:
+ * TypeScript's excess-property check would reject the other version's keys.
+ */
+const requestFields = (url: string, method: string = "POST") => {
+  const upper = method.toUpperCase();
+  const literal = HTTP_METHODS.find((m) => m === upper) ?? "POST";
+  return {
+    request: { method: literal, url, urlParams: [], headers: {} },
+    method: literal,
+    url,
+  };
+};
 
 const httpContext = (options: {
   readonly url: string;
@@ -219,19 +239,13 @@ const httpContext = (options: {
   readonly headers?: Record<string, string>;
   readonly body?: string;
 }): HttpContext => {
-  const upper = (options.method ?? "POST").toUpperCase();
   const { status } = options;
-  return {
-    // `HttpRequestDetails` requires a literal method; default to POST.
-    request: {
-      method: HTTP_METHODS.find((m) => m === upper) ?? "POST",
-      url: options.url,
-      urlParams: [],
-      headers: {},
-    },
+  const http = {
+    request: requestFields(options.url, options.method).request,
     response: status === undefined ? undefined : { status, headers: options.headers ?? {} },
     body: options.body,
   };
+  return http;
 };
 
 const DELAY_SECONDS = /^\d+$/;
@@ -341,11 +355,12 @@ const toReason = (error: Error): AiError.AiErrorReason => {
   }
   if (APICallError.isInstance(error)) {
     if (error.statusCode === undefined) {
-      return new AiError.NetworkError({
-        reason: "TransportError",
-        request: httpContext({ url: error.url }).request,
+      const props = {
+        ...requestFields(error.url),
+        reason: "TransportError" as const,
         description: error.message,
-      });
+      };
+      return new AiError.NetworkError(props);
     }
     const http = httpContext({
       url: error.url,

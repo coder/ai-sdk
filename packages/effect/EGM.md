@@ -40,7 +40,8 @@ workspace `Layer`s. It depends on `@coder/ai-sdk-agent` (`packages/agent`),
   [./tsup.config.ts:default] [./package.json:scripts].
 - tsup keeps `ai`, `effect`, `effect/*`, `@effect/*`, `@ai-sdk/*` and `@coder/*` out of the
   bundle [./tsup.config.ts:default].
-- Peer dependency ranges: `ai` `^7.0.0` and `effect` `~4.0.0` [./package.json:peerDependencies].
+- Peer dependency ranges: `ai` `^7.0.0` and `effect` `~4.0.0 || ~4.1.0`
+  [./package.json:peerDependencies].
 - Runtime dependencies: an exact `@ai-sdk/provider` pin, and the three Coder packages
   as `workspace:^` [./package.json:dependencies].
 - pnpm publishes each `workspace:^` dependency as `^<sibling version in the released

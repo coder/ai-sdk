@@ -68,7 +68,7 @@
     "@types/node": "^26.6.6",
     "@vitest/coverage-v8": "^5.0.5",
     "ai": "^7.0.156",
-    "effect": "4.0.7",
+    "effect": "4.1.0",
     "publint": "^0.3.25",
     "tsup": "^9.0.0",
     "tsx": "^4.23.15",
@@ -79,7 +79,7 @@
   },
   "peerDependencies": {
     "ai": "^7.0.0",
-    "effect": "~4.0.0"
+    "effect": "~4.0.0 || ~4.1.0"
   },
   "engines": {
     "node": ">=22"

@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.12.31](https://github.com/coder/ai-sdk/compare/agent-v0.12.30...agent-v0.12.31) (2026-10-30)
+
+Fixes a streaming bug where a re-sent blank step could incorrectly claim deltas belonging to the following step, and corrects code comments that were inconsistent with the actual implementation.
+
+### Highlights
+
+- Re-sent blank steps no longer claim the next step's deltas, preventing incorrect delta attribution during streaming. ([#424](https://github.com/coder/ai-sdk/pull/424))
+
+### Bug Fixes
+
+* **agent:** keep a re-sent blank step from claiming the next step's deltas ([#424](https://github.com/coder/ai-sdk/issues/424)) ([233ef7d](https://github.com/coder/ai-sdk/commit/233ef7df8e12185cb1ff0414b47234c28c7abf9b))
+
+
+### Documentation
+
+* fix code comments that disagree with the code ([#422](https://github.com/coder/ai-sdk/issues/422)) ([f2cc763](https://github.com/coder/ai-sdk/commit/f2cc763f95d8379eeca35f6c83a6568765ac773c))
+
 ## [0.12.30](https://github.com/coder/ai-sdk/compare/agent-v0.12.29...agent-v0.12.30) (2026-10-29)
 
 Fixes a bug where a restarted chatd attempt could duplicate or drop its text output, ensuring the text is retained exactly once.

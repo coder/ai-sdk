@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.12.32](https://github.com/coder/ai-sdk/compare/agent-v0.12.31...agent-v0.12.32) (2026-10-30)
+
+A minor maintenance release with no user-facing changes.
+
 ## [0.12.31](https://github.com/coder/ai-sdk/compare/agent-v0.12.30...agent-v0.12.31) (2026-10-30)
 
 Fixes a streaming bug where a re-sent blank step could incorrectly claim deltas belonging to the following step, and corrects code comments that were inconsistent with the actual implementation.

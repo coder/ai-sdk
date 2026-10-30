@@ -5,10 +5,24 @@ import * as Duration from "effect/Duration";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { classifyError, classifyStatus, isTransient, toAiError } from "../src/errors.js";
 
+// effect 4.0 keeps the request in `http.request` and `NetworkError.request`.
+// effect 4.1 removed both: `NetworkError` takes `method` and `url` instead.
+// These tests run on either version.
+const hasRequestDetails = "request" in AiError.HttpContext.fields;
+const expectHttpRequest = (
+  http: typeof AiError.HttpContext.Type | undefined,
+  request: { readonly method?: string; readonly url: unknown },
+) => {
+  if (hasRequestDetails) expect(http).toMatchObject({ request });
+  else expect(http).not.toHaveProperty("request");
+};
+
+const GATEWAY_URL = "https://coder.example.com/api/v2/aibridge/openai/v1/chat/completions";
+
 const apiCallError = (statusCode?: number): APICallError =>
   new APICallError({
     message: `gateway failure${statusCode === undefined ? "" : ` (${statusCode})`}`,
-    url: "https://coder.example.com/api/v2/aibridge/openai/v1/chat/completions",
+    url: GATEWAY_URL,
     requestBodyValues: {},
     statusCode,
     responseHeaders: { "x-request-id": "req_123" },
@@ -41,7 +55,7 @@ describe("toAiError", () => {
     expect(error.method).toBe("call");
     const reason = error.reason as AiError.RateLimitError;
     expect(reason._tag).toBe("RateLimitError");
-    expect(reason.http?.request.url).toContain("/chat/completions");
+    expectHttpRequest(reason.http, { url: GATEWAY_URL });
     expect(reason.http?.response).toEqual({ status: 429, headers: { "x-request-id": "req_123" } });
     expect(reason.http?.body).toBe(`{"error":"failure"}`);
     expect(reason.metadata).toEqual({
@@ -116,10 +130,13 @@ describe("toAiError", () => {
     });
   });
 
-  it("maps a network failure (no status) to NetworkError", () => {
+  it("maps a network failure (no status) to NetworkError with its request", () => {
     const reason = map(apiCallError(undefined)).reason as AiError.NetworkError;
     expect(reason._tag).toBe("NetworkError");
     expect(reason.reason).toBe("TransportError");
+    const request = { method: "POST", url: GATEWAY_URL };
+    expect(reason).toMatchObject(hasRequestDetails ? { request } : request);
+    expect(reason.message).toContain(`(POST ${GATEWAY_URL})`);
   });
 
   it("maps parse/validation failures to InvalidOutputError", () => {
@@ -212,15 +229,23 @@ describe("classifyError / isTransient", () => {
   });
 
   it("classifies an invalid provider response as terminal despite a 5xx status", () => {
+    // A variable, not an inline literal: TypeScript rejects `request` in an
+    // effect 4.1 `HttpContext` literal, while effect 4.0 requires it.
+    const http = {
+      request: {
+        method: "POST" as const,
+        url: "https://example.test/v1",
+        urlParams: [],
+        headers: {},
+      },
+      response: { status: 502, headers: {} },
+    };
     const invalid = AiError.make({
       module: "T",
       method: "m",
       reason: new AiError.InvalidResponseError({
         description: "bad SSE frame",
-        http: {
-          request: { method: "POST", url: "https://example.test/v1", urlParams: [], headers: {} },
-          response: { status: 502, headers: {} },
-        },
+        http,
       }),
     });
     expect(classifyError(invalid)).toBe("malformed-response");
@@ -252,8 +277,7 @@ describe("Coder Agents errors", () => {
     const reason = error.reason as AiError.AuthenticationError;
     expect(reason._tag).toBe("AuthenticationError");
     expect(reason.http?.response?.status).toBe(401);
-    expect(reason.http?.request.method).toBe("POST");
-    expect(reason.http?.request.url).toBe("/api/experimental/chats");
+    expectHttpRequest(reason.http, { method: "POST", url: "/api/experimental/chats" });
     expect(reason.http?.body).toBe("token expired");
     expect(classifyError(error)).toBe("auth");
     expect(isTransient(error)).toBe(false);

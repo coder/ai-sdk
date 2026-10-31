@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -140,6 +140,67 @@ describe("file I/O round-trips (via fake coder)", () => {
     await fileIo.writeTextFile(ctx(), { path: p, content: "a\nb\nc\nd" });
     const read = await fileIo.readTextFile(ctx(), { path: p, startLine: 2, endLine: 3 });
     expect(read).toBe("b\nc");
+  });
+});
+
+describe("stat, listDirectory and deleteFile (via fake coder)", () => {
+  let dir: string;
+
+  beforeAll(async () => {
+    dir = path.join(workDir, "tree");
+    await mkdir(path.join(dir, "sub"), { recursive: true });
+    await writeFile(path.join(dir, "five.txt"), "12345");
+    await writeFile(path.join(dir, ".hidden"), "");
+    await writeFile(path.join(dir, "odd\nname *"), "x");
+    await symlink("sub", path.join(dir, "link-to-sub"));
+    await symlink("missing", path.join(dir, "dangling"));
+  });
+
+  it("stat reports type and size, follows symlinks, and returns null for a missing path", async () => {
+    expect(await fileIo.stat(ctx(), { path: "tree/five.txt" })).toEqual({ type: "file", size: 5 });
+    expect(await fileIo.stat(ctx(), { path: path.join(dir, "sub") })).toEqual({
+      type: "directory",
+      size: 0,
+    });
+    expect(await fileIo.stat(ctx(), { path: "tree/link-to-sub" })).toEqual({
+      type: "directory",
+      size: 0,
+    });
+    expect(await fileIo.stat(ctx(), { path: "tree/dangling" })).toBeNull();
+    expect(await fileIo.stat(ctx(), { path: "tree/nope" })).toBeNull();
+  });
+
+  it("listDirectory lists one level, keeps dotfiles and odd names, and reports symlinks", async () => {
+    const entries = await fileIo.listDirectory(ctx(), { path: "tree" });
+    expect(entries).not.toBeNull();
+    expect([...entries!].sort((a, b) => a.name.localeCompare(b.name))).toEqual(
+      [
+        { name: ".hidden", type: "file" },
+        { name: "dangling", type: "symlink" },
+        { name: "five.txt", type: "file" },
+        { name: "link-to-sub", type: "symlink" },
+        { name: "odd\nname *", type: "file" },
+        { name: "sub", type: "directory" },
+      ].sort((a, b) => a.name.localeCompare(b.name)),
+    );
+    expect(await fileIo.listDirectory(ctx(), { path: "tree/sub" })).toEqual([]);
+  });
+
+  it("listDirectory returns null for a missing path and rejects for a file", async () => {
+    expect(await fileIo.listDirectory(ctx(), { path: "tree/nope" })).toBeNull();
+    await expect(fileIo.listDirectory(ctx(), { path: "tree/five.txt" })).rejects.toThrow(
+      /not a directory/,
+    );
+  });
+
+  it("deleteFile deletes files and symlinks, returns false when missing, and rejects for a directory", async () => {
+    expect(await fileIo.deleteFile(ctx(), { path: "tree/link-to-sub" })).toBe(true);
+    expect(await fileIo.stat(ctx(), { path: "tree/sub" })).toEqual({ type: "directory", size: 0 });
+    expect(await fileIo.deleteFile(ctx(), { path: "tree/dangling" })).toBe(true);
+    expect(await fileIo.deleteFile(ctx(), { path: "tree/five.txt" })).toBe(true);
+    expect(await fileIo.stat(ctx(), { path: "tree/five.txt" })).toBeNull();
+    expect(await fileIo.deleteFile(ctx(), { path: "tree/five.txt" })).toBe(false);
+    await expect(fileIo.deleteFile(ctx(), { path: "tree/sub" })).rejects.toThrow(/is a directory/);
   });
 });
 

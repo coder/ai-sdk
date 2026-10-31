@@ -140,6 +140,144 @@ export async function writeTextFile(
   });
 }
 
+export interface FileStat {
+  type: "file" | "directory" | "other";
+  size: number;
+}
+
+export interface DirectoryEntry {
+  name: string;
+  type: "file" | "directory" | "symlink" | "other";
+}
+
+/** Exit code the remote uses to signal "is a directory" (delete) or "not a directory" (list). */
+const WRONG_TYPE_EXIT = 67;
+
+/**
+ * Stat a path, following symbolic links. Resolves to `null` when the path does
+ * not exist (a dangling symlink counts as missing). Only regular files report
+ * a byte size; directories and other types report 0.
+ */
+export async function stat(ctx: FileIoContext, options: ReadFileOptions): Promise<FileStat | null> {
+  const abs = resolveRemotePath(ctx, options.path);
+  const quoted = shellQuote(abs);
+  const command =
+    `if [ -f ${quoted} ]; then printf 'file '; wc -c < ${quoted}; ` +
+    `elif [ -d ${quoted} ]; then echo 'directory 0'; ` +
+    `elif [ -e ${quoted} ]; then echo 'other 0'; ` +
+    `else exit ${MISSING_FILE_EXIT}; fi`;
+  const result = await ctx.transport.exec({
+    workspace: ctx.workspace,
+    command,
+    abortSignal: options.abortSignal,
+  });
+  if (result.exitCode === MISSING_FILE_EXIT) return null;
+  if (result.exitCode !== 0) {
+    throw new Error(`failed to stat ${abs} (exit ${result.exitCode}): ${result.stderr.trim()}`);
+  }
+  const match = /^(file|directory|other) +(\d+)\s*$/.exec(result.stdout.trim());
+  if (match === null) {
+    throw new Error(`failed to stat ${abs}: unexpected output ${JSON.stringify(result.stdout)}`);
+  }
+  const type = parseEntryType(match[1]);
+  if (type === undefined || type === "symlink") {
+    throw new Error(`failed to stat ${abs}: unexpected type ${JSON.stringify(match[1])}`);
+  }
+  return { type, size: Number(match[2]) };
+}
+
+function parseEntryType(value: string | undefined): DirectoryEntry["type"] | undefined {
+  switch (value) {
+    case "file":
+    case "directory":
+    case "symlink":
+    case "other":
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * List one directory without descending. Resolves to `null` when the path
+ * does not exist and rejects when it is not a directory. Entry names cross the
+ * transport as NUL-separated base64, so newlines and spaces in names survive.
+ */
+export async function listDirectory(
+  ctx: FileIoContext,
+  options: ReadFileOptions,
+): Promise<DirectoryEntry[] | null> {
+  const abs = resolveRemotePath(ctx, options.path);
+  const quoted = shellQuote(abs);
+  // `-L` comes first so symlinks are reported as such and not followed.
+  const listing =
+    `for e in * .*; do ` +
+    `[ "$e" = . ] || [ "$e" = .. ] && continue; ` +
+    `if [ -L "$e" ]; then t=symlink; elif [ -d "$e" ]; then t=directory; ` +
+    `elif [ -f "$e" ]; then t=file; elif [ -e "$e" ]; then t=other; else continue; fi; ` +
+    `printf '%s\\0%s\\0' "$t" "$e"; done`;
+  const command =
+    `if [ -d ${quoted} ]; then cd ${quoted} && { ${listing}; } | base64; ` +
+    `elif [ -e ${quoted} ]; then exit ${WRONG_TYPE_EXIT}; ` +
+    `else exit ${MISSING_FILE_EXIT}; fi`;
+  const result = await ctx.transport.exec({
+    workspace: ctx.workspace,
+    command,
+    abortSignal: options.abortSignal,
+  });
+  if (result.exitCode === MISSING_FILE_EXIT) return null;
+  if (result.exitCode === WRONG_TYPE_EXIT) {
+    throw new Error(`failed to list ${abs}: not a directory`);
+  }
+  if (result.exitCode !== 0) {
+    throw new Error(`failed to list ${abs} (exit ${result.exitCode}): ${result.stderr.trim()}`);
+  }
+  const fields = Buffer.from(result.stdout.replace(/\s+/g, ""), "base64")
+    .toString("utf8")
+    .split("\0");
+  // The listing ends with a NUL, so a well-formed split has an odd length.
+  if (fields.pop() !== "" || fields.length % 2 !== 0) {
+    throw new Error(`failed to list ${abs}: malformed listing`);
+  }
+  const entries: DirectoryEntry[] = [];
+  for (let i = 0; i < fields.length; i += 2) {
+    const type = parseEntryType(fields[i]);
+    const name = fields[i + 1];
+    if (type === undefined || name === undefined || name === "") {
+      throw new Error(`failed to list ${abs}: malformed listing`);
+    }
+    entries.push({ name, type });
+  }
+  return entries;
+}
+
+/**
+ * Delete one file. A symbolic link is deleted itself, not its target. Resolves
+ * to `false` when nothing exists at the path and rejects for a directory.
+ */
+export async function deleteFile(ctx: FileIoContext, options: ReadFileOptions): Promise<boolean> {
+  const abs = resolveRemotePath(ctx, options.path);
+  const quoted = shellQuote(abs);
+  const command =
+    `if [ -L ${quoted} ]; then rm -f -- ${quoted}; ` +
+    `elif [ -d ${quoted} ]; then exit ${WRONG_TYPE_EXIT}; ` +
+    `elif [ -e ${quoted} ]; then rm -f -- ${quoted}; ` +
+    `else exit ${MISSING_FILE_EXIT}; fi`;
+  const result = await ctx.transport.exec({
+    workspace: ctx.workspace,
+    command,
+    abortSignal: options.abortSignal,
+  });
+  if (result.exitCode === MISSING_FILE_EXIT) return false;
+  if (result.exitCode === WRONG_TYPE_EXIT) {
+    throw new Error(`failed to delete ${abs}: is a directory`);
+  }
+  if (result.exitCode !== 0) {
+    throw new Error(`failed to delete ${abs} (exit ${result.exitCode}): ${result.stderr.trim()}`);
+  }
+  return true;
+}
+
 /** Slice text to a 1-based inclusive line range; tolerant of out-of-range bounds. */
 export function sliceLines(text: string, startLine?: number, endLine?: number): string {
   const lines = text.split("\n");

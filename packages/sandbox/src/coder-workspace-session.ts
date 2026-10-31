@@ -74,7 +74,12 @@ export class CoderWorkspaceSession implements HarnessV1NetworkSandboxSession {
     return {
       workspace: this.#workspace,
       command: options.command,
-      workingDirectory: options.workingDirectory ?? this.defaultWorkingDirectory,
+      // The upstream contract resolves a relative working directory against the
+      // same base directory as relative file paths.
+      workingDirectory: fileIo.resolveRemotePath(
+        this.#fileIoContext(),
+        options.workingDirectory ?? this.defaultWorkingDirectory,
+      ),
       env: options.env,
       abortSignal: options.abortSignal,
     };
@@ -125,6 +130,14 @@ export class CoderWorkspaceSession implements HarnessV1NetworkSandboxSession {
 
   readonly writeTextFile = (options: fileIo.WriteTextFileOptions) =>
     fileIo.writeTextFile(this.#fileIoContext(), options);
+
+  readonly stat = (options: fileIo.ReadFileOptions) => fileIo.stat(this.#fileIoContext(), options);
+
+  readonly listDirectory = (options: fileIo.ReadFileOptions) =>
+    fileIo.listDirectory(this.#fileIoContext(), options);
+
+  readonly deleteFile = (options: fileIo.ReadFileOptions) =>
+    fileIo.deleteFile(this.#fileIoContext(), options);
 
   // --- network surface ------------------------------------------------------
 
@@ -210,6 +223,9 @@ export class CoderWorkspaceSession implements HarnessV1NetworkSandboxSession {
     writeFile: this.writeFile,
     writeBinaryFile: this.writeBinaryFile,
     writeTextFile: this.writeTextFile,
+    stat: this.stat,
+    listDirectory: this.listDirectory,
+    deleteFile: this.deleteFile,
     spawn: this.spawn,
     run: this.run,
   });

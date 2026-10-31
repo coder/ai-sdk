@@ -40,7 +40,7 @@ Public (re-exported by `index.ts`):
 - `CoderWorkspaceSession` implements `HarnessV1NetworkSandboxSession`: `id`,
   `defaultWorkingDirectory`, `description`, `ports`, `run`, `spawn`, `readFile`,
   `readBinaryFile`, `readTextFile`, `writeFile`, `writeBinaryFile`, `writeTextFile`,
-  `getPortEndpoint`, `getPortUrl` (deprecated), `setPorts`, `stop`, `destroy`,
+  `stat`, `listDirectory`, `deleteFile`, `getPortEndpoint`, `getPortUrl` (deprecated), `setPorts`, `stop`, `destroy`,
   `restricted`. [coder-workspace-session.ts:CoderWorkspaceSession]
 - `CoderWorkspaceSessionConfig`: `transport`, `workspace`, `id`, `defaultWorkingDirectory`,
   `ports`, `ownsLifecycle`. [coder-workspace-session.ts:CoderWorkspaceSessionConfig]
@@ -77,8 +77,8 @@ Package-internal:
   `parseWorkspaceRef`, `parseWorkspaceStatus`, `parsePresetsOutput`, `parsePresetList`.
   [cli-transport.ts:buildSshArgs]
 - `file-io.ts` helpers used by the session: `resolveRemotePath`, `readBinaryFile`,
-  `readFile`, `readTextFile`, `writeBinaryFile`, `writeFile`, `writeTextFile`,
-  `sliceLines`, `normalizeEncoding`. [file-io.ts:readBinaryFile]
+  `readFile`, `readTextFile`, `writeBinaryFile`, `writeFile`, `writeTextFile`, `stat`,
+  `listDirectory`, `deleteFile`, `sliceLines`, `normalizeEncoding`. [file-io.ts:readBinaryFile]
 - `CoderApiClient`, a REST client. `parseNativeWorkspaceRef`, `parseDurationMillis`.
   [native-api.ts:CoderApiClient]
 - `NativeRelay`, `NativeSpawnedProcess`, `openNativePortForward`, `NATIVE_RELAY_SOURCE`,
@@ -140,6 +140,14 @@ File I/O and shell:
   through. [file-io.ts:resolveRemotePath]
 - A read returns `null` when `[ -f path ]` fails (exit `66`). Any other non-zero exit
   throws. [file-io.ts:MISSING_FILE_EXIT] [file-io.ts:readBinaryFile]
+- `run` and `spawn` resolve a relative `workingDirectory` the same way.
+  [coder-workspace-session.ts:CoderWorkspaceSession]
+- `stat` follows symlinks and returns `null` for a missing path. Only regular files
+  report a size; directories and other types report `0`. `listDirectory` returns
+  `null` for a missing path, throws for a non-directory (exit `67`), reports
+  symlinks as `symlink`, and moves names as NUL-separated base64. `deleteFile`
+  removes a symlink itself, returns `false` for a missing path, and throws for a
+  directory (exit `67`). [file-io.ts:WRONG_TYPE_EXIT] [file-io.ts:listDirectory]
 - `sliceLines` uses 1-based, inclusive line numbers and clamps out-of-range bounds.
   [file-io.ts:sliceLines]
 - `normalizeEncoding` maps known labels and returns `utf8` for unknown or missing labels.

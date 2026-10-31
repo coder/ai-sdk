@@ -139,6 +139,14 @@ describe("CoderWorkspaceSession", () => {
     expect(transport.execCalls[0]!.env).toEqual({ A: "1" });
   });
 
+  it("run and spawn resolve a relative working directory against the default one", async () => {
+    const { session, transport } = makeSession();
+    await session.run({ command: "x", workingDirectory: "sub/dir" });
+    await session.spawn({ command: "x", workingDirectory: "sub" });
+    expect(transport.execCalls[0]!.workingDirectory).toBe("/home/coder/sub/dir");
+    expect(transport.spawnCalls[0]!.workingDirectory).toBe("/home/coder/sub");
+  });
+
   it("spawn delegates to transport.spawn, also through restricted()", async () => {
     const { session, transport } = makeSession();
     const proc = await session.restricted().spawn({ command: "sleep 1" });

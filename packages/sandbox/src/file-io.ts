@@ -156,13 +156,15 @@ const WRONG_TYPE_EXIT = 67;
 /**
  * Stat a path, following symbolic links. Resolves to `null` when the path does
  * not exist (a dangling symlink counts as missing). Only regular files report
- * a byte size; directories and other types report 0.
+ * a byte size, read from metadata (GNU `stat -c`, else BSD `stat -f`) so an
+ * unreadable file still stats; directories and other types report 0.
  */
 export async function stat(ctx: FileIoContext, options: ReadFileOptions): Promise<FileStat | null> {
   const abs = resolveRemotePath(ctx, options.path);
   const quoted = shellQuote(abs);
   const command =
-    `if [ -f ${quoted} ]; then printf 'file '; wc -c < ${quoted}; ` +
+    `if [ -f ${quoted} ]; then printf 'file '; ` +
+    `stat -L -c %s -- ${quoted} 2>/dev/null || stat -L -f %z -- ${quoted}; ` +
     `elif [ -d ${quoted} ]; then echo 'directory 0'; ` +
     `elif [ -e ${quoted} ]; then echo 'other 0'; ` +
     `else exit ${MISSING_FILE_EXIT}; fi`;
@@ -209,10 +211,13 @@ export async function listDirectory(
 ): Promise<DirectoryEntry[] | null> {
   const abs = resolveRemotePath(ctx, options.path);
   const quoted = shellQuote(abs);
-  // `-L` comes first so symlinks are reported as such and not followed.
+  // Pin the glob options a login profile can change: with dotglob, `*`
+  // matches dotfiles but never `.` or `..`, and nullglob makes an empty
+  // directory loop zero times. `-L` comes first so symlinks are reported as
+  // such and not followed.
   const listing =
-    `for e in * .*; do ` +
-    `[ "$e" = . ] || [ "$e" = .. ] && continue; ` +
+    `unset GLOBIGNORE; shopt -s dotglob nullglob; shopt -u failglob nocaseglob; ` +
+    `for e in *; do ` +
     `if [ -L "$e" ]; then t=symlink; elif [ -d "$e" ]; then t=directory; ` +
     `elif [ -f "$e" ]; then t=file; elif [ -e "$e" ]; then t=other; else continue; fi; ` +
     `printf '%s\\0%s\\0' "$t" "$e"; done`;

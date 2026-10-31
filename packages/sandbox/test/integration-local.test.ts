@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -184,6 +184,33 @@ describe("stat, listDirectory and deleteFile (via fake coder)", () => {
       ].sort((a, b) => a.name.localeCompare(b.name)),
     );
     expect(await fileIo.listDirectory(ctx(), { path: "tree/sub" })).toEqual([]);
+  });
+
+  it("listDirectory ignores glob options a shell profile sets", async () => {
+    // Non-interactive bash sources $BASH_ENV, like a login profile would.
+    const envFile = path.join(workDir, "glob-profile.sh");
+    await writeFile(envFile, "shopt -s dotglob failglob\n");
+    const previous = process.env.BASH_ENV;
+    process.env.BASH_ENV = envFile;
+    try {
+      const names = (await fileIo.listDirectory(ctx(), { path: "tree" }))!.map((e) => e.name);
+      expect(names.filter((n) => n === ".hidden")).toHaveLength(1);
+      expect(await fileIo.listDirectory(ctx(), { path: "tree/sub" })).toEqual([]);
+    } finally {
+      if (previous === undefined) delete process.env.BASH_ENV;
+      else process.env.BASH_ENV = previous;
+    }
+  });
+
+  it("stat reports the size of a file it cannot read", async () => {
+    const p = path.join(dir, "locked.bin");
+    await writeFile(p, "123");
+    await chmod(p, 0o000);
+    try {
+      expect(await fileIo.stat(ctx(), { path: p })).toEqual({ type: "file", size: 3 });
+    } finally {
+      await rm(p);
+    }
   });
 
   it("listDirectory returns null for a missing path and rejects for a file", async () => {

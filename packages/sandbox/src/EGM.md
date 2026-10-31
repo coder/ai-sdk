@@ -143,9 +143,12 @@ File I/O and shell:
 - `run` and `spawn` resolve a relative `workingDirectory` the same way.
   [coder-workspace-session.ts:CoderWorkspaceSession]
 - `stat` follows symlinks and returns `null` for a missing path. Only regular files
-  report a size; directories and other types report `0`. `listDirectory` returns
-  `null` for a missing path, throws for a non-directory (exit `67`), reports
-  symlinks as `symlink`, and moves names as NUL-separated base64. `deleteFile`
+  report a size, read with `stat -L -c %s` (BSD fallback `stat -L -f %z`), so an
+  unreadable file still stats; directories and other types report `0`.
+  `listDirectory` returns `null` for a missing path, throws for a non-directory
+  (exit `67`), reports symlinks as `symlink`, pins the bash glob options
+  (`dotglob`, `nullglob`, no `failglob`, no `GLOBIGNORE`) against the login
+  profile, and moves names as NUL-separated base64. `deleteFile`
   removes a symlink itself, returns `false` for a missing path, and throws for a
   directory (exit `67`). [file-io.ts:WRONG_TYPE_EXIT] [file-io.ts:listDirectory]
 - `sliceLines` uses 1-based, inclusive line numbers and clamps out-of-range bounds.

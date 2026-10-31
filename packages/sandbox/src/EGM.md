@@ -142,15 +142,17 @@ File I/O and shell:
   throws. [file-io.ts:MISSING_FILE_EXIT] [file-io.ts:readBinaryFile]
 - `run` and `spawn` resolve a relative `workingDirectory` the same way.
   [coder-workspace-session.ts:CoderWorkspaceSession]
-- `stat` follows symlinks and returns `null` for a missing path. Only regular files
-  report a size, read with `stat -L -c %s` (BSD fallback `stat -L -f %z`), so an
-  unreadable file still stats; directories and other types report `0`.
-  `listDirectory` returns `null` for a missing path, throws for a non-directory
-  (exit `67`), reports symlinks as `symlink`, pins the bash glob options
-  (`dotglob`, `nullglob`, no `failglob`, no `GLOBIGNORE`) against the login
-  profile, and moves names as NUL-separated base64. `deleteFile`
-  removes a symlink itself, returns `false` for a missing path, and throws for a
-  directory (exit `67`). [file-io.ts:WRONG_TYPE_EXIT] [file-io.ts:listDirectory]
+- `stat` runs `stat -L` (`-c '%F|%s'`, BSD fallback `-f '%HT|%z'`) in the C locale,
+  so it follows symlinks and needs no read permission. `stat`, `listDirectory` and
+  `deleteFile` report a missing path (`null`, `null`, `false`) only for the ENOENT
+  message (exit `66`). Other failures, such as a symlink loop or a permission
+  error, throw. [file-io.ts:ENOENT_OR_FAIL] [file-io.ts:statScript]
+- `listDirectory` throws for a non-directory (exit `67`). It enumerates with
+  `find -mindepth 1 -maxdepth 1 -print0` under `pipefail`, so login-profile glob
+  options do not apply and an unreadable directory throws. It reports symlinks as
+  `symlink` and moves names as NUL-separated base64. [file-io.ts:listDirectory]
+- `deleteFile` throws for a directory (exit `67`), runs `rm` with stdin from
+  `/dev/null`, and removes a symlink itself. [file-io.ts:deleteFile]
 - `sliceLines` uses 1-based, inclusive line numbers and clamps out-of-range bounds.
   [file-io.ts:sliceLines]
 - `normalizeEncoding` maps known labels and returns `utf8` for unknown or missing labels.

@@ -160,11 +160,11 @@ describe("stat, listDirectory and deleteFile (via fake coder)", () => {
     expect(await fileIo.stat(ctx(), { path: "tree/five.txt" })).toEqual({ type: "file", size: 5 });
     expect(await fileIo.stat(ctx(), { path: path.join(dir, "sub") })).toEqual({
       type: "directory",
-      size: 0,
+      size: expect.any(Number),
     });
     expect(await fileIo.stat(ctx(), { path: "tree/link-to-sub" })).toEqual({
       type: "directory",
-      size: 0,
+      size: expect.any(Number),
     });
     expect(await fileIo.stat(ctx(), { path: "tree/dangling" })).toBeNull();
     expect(await fileIo.stat(ctx(), { path: "tree/nope" })).toBeNull();
@@ -213,6 +213,47 @@ describe("stat, listDirectory and deleteFile (via fake coder)", () => {
     }
   });
 
+  // Root bypasses permission checks, so these cases only hold for other users.
+  const isRoot = process.getuid?.() === 0;
+
+  it("stat rejects (not null) for a symlink loop and an unsearchable parent", async () => {
+    await symlink("loop", path.join(dir, "loop"));
+    const locked = path.join(dir, "no-search");
+    await mkdir(locked);
+    await writeFile(path.join(locked, "inside"), "x");
+    await chmod(locked, 0o600);
+    try {
+      await expect(fileIo.stat(ctx(), { path: "tree/loop" })).rejects.toThrow(/symbolic links/);
+      if (!isRoot) {
+        await expect(fileIo.stat(ctx(), { path: "tree/no-search/inside" })).rejects.toThrow(
+          /Permission denied/,
+        );
+        await expect(fileIo.deleteFile(ctx(), { path: "tree/no-search/inside" })).rejects.toThrow(
+          /Permission denied/,
+        );
+      }
+    } finally {
+      await chmod(locked, 0o700);
+      await rm(locked, { recursive: true });
+      await rm(path.join(dir, "loop"));
+    }
+  });
+
+  it.skipIf(isRoot)("listDirectory rejects a directory it can search but not read", async () => {
+    const locked = path.join(dir, "no-read");
+    await mkdir(locked);
+    await writeFile(path.join(locked, "inside"), "x");
+    await chmod(locked, 0o311);
+    try {
+      await expect(fileIo.listDirectory(ctx(), { path: "tree/no-read" })).rejects.toThrow(
+        /Permission denied/,
+      );
+    } finally {
+      await chmod(locked, 0o700);
+      await rm(locked, { recursive: true });
+    }
+  });
+
   it("listDirectory returns null for a missing path and rejects for a file", async () => {
     expect(await fileIo.listDirectory(ctx(), { path: "tree/nope" })).toBeNull();
     await expect(fileIo.listDirectory(ctx(), { path: "tree/five.txt" })).rejects.toThrow(
@@ -222,7 +263,7 @@ describe("stat, listDirectory and deleteFile (via fake coder)", () => {
 
   it("deleteFile deletes files and symlinks, returns false when missing, and rejects for a directory", async () => {
     expect(await fileIo.deleteFile(ctx(), { path: "tree/link-to-sub" })).toBe(true);
-    expect(await fileIo.stat(ctx(), { path: "tree/sub" })).toEqual({ type: "directory", size: 0 });
+    expect(await fileIo.stat(ctx(), { path: "tree/sub" })).toMatchObject({ type: "directory" });
     expect(await fileIo.deleteFile(ctx(), { path: "tree/dangling" })).toBe(true);
     expect(await fileIo.deleteFile(ctx(), { path: "tree/five.txt" })).toBe(true);
     expect(await fileIo.stat(ctx(), { path: "tree/five.txt" })).toBeNull();

@@ -40,7 +40,7 @@ Public (re-exported by `index.ts`):
 - `CoderWorkspaceSession` implements `HarnessV1NetworkSandboxSession`: `id`,
   `defaultWorkingDirectory`, `description`, `ports`, `run`, `spawn`, `readFile`,
   `readBinaryFile`, `readTextFile`, `writeFile`, `writeBinaryFile`, `writeTextFile`,
-  `getPortEndpoint`, `getPortUrl` (deprecated), `setPorts`, `stop`, `destroy`,
+  `stat`, `listDirectory`, `deleteFile`, `getPortEndpoint`, `getPortUrl` (deprecated), `setPorts`, `stop`, `destroy`,
   `restricted`. [coder-workspace-session.ts:CoderWorkspaceSession]
 - `CoderWorkspaceSessionConfig`: `transport`, `workspace`, `id`, `defaultWorkingDirectory`,
   `ports`, `ownsLifecycle`. [coder-workspace-session.ts:CoderWorkspaceSessionConfig]
@@ -77,8 +77,8 @@ Package-internal:
   `parseWorkspaceRef`, `parseWorkspaceStatus`, `parsePresetsOutput`, `parsePresetList`.
   [cli-transport.ts:buildSshArgs]
 - `file-io.ts` helpers used by the session: `resolveRemotePath`, `readBinaryFile`,
-  `readFile`, `readTextFile`, `writeBinaryFile`, `writeFile`, `writeTextFile`,
-  `sliceLines`, `normalizeEncoding`. [file-io.ts:readBinaryFile]
+  `readFile`, `readTextFile`, `writeBinaryFile`, `writeFile`, `writeTextFile`, `stat`,
+  `listDirectory`, `deleteFile`, `sliceLines`, `normalizeEncoding`. [file-io.ts:readBinaryFile]
 - `CoderApiClient`, a REST client. `parseNativeWorkspaceRef`, `parseDurationMillis`.
   [native-api.ts:CoderApiClient]
 - `NativeRelay`, `NativeSpawnedProcess`, `openNativePortForward`, `NATIVE_RELAY_SOURCE`,
@@ -140,6 +140,21 @@ File I/O and shell:
   through. [file-io.ts:resolveRemotePath]
 - A read returns `null` when `[ -f path ]` fails (exit `66`). Any other non-zero exit
   throws. [file-io.ts:MISSING_FILE_EXIT] [file-io.ts:readBinaryFile]
+- `run` and `spawn` resolve a relative `workingDirectory` the same way.
+  [coder-workspace-session.ts:CoderWorkspaceSession]
+- `stat` runs `stat -L` (`-c '%F|%s'`, BSD fallback `-f '%HT|%z'`) in the C locale,
+  so it follows symlinks and needs no read permission. `stat`, `listDirectory` and
+  `deleteFile` report a missing path (`null`, `null`, `false`) only when the
+  diagnostic ends with the ENOENT text (exit `66`), or when BSD `stat -L` falls
+  back to the link itself. Other failures, such as a symlink loop or a
+  permission error, throw. Each command starts with `set +e` against an
+  errexit-enabling profile. [file-io.ts:ENOENT_OR_FAIL] [file-io.ts:statScript]
+- `listDirectory` throws for a non-directory (exit `67`). It enumerates with
+  `find -mindepth 1 -maxdepth 1 -print0` under `pipefail`, so login-profile glob
+  options do not apply and an unreadable directory throws. It reports symlinks as
+  `symlink` and moves names as NUL-separated base64. [file-io.ts:listDirectory]
+- `deleteFile` throws for a directory (exit `67`), runs `rm` with stdin from
+  `/dev/null`, and removes a symlink itself. [file-io.ts:deleteFile]
 - `sliceLines` uses 1-based, inclusive line numbers and clamps out-of-range bounds.
   [file-io.ts:sliceLines]
 - `normalizeEncoding` maps known labels and returns `utf8` for unknown or missing labels.

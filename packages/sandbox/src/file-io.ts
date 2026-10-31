@@ -140,6 +140,178 @@ export async function writeTextFile(
   });
 }
 
+export interface FileStat {
+  type: "file" | "directory" | "other";
+  size: number;
+}
+
+export interface DirectoryEntry {
+  name: string;
+  type: "file" | "directory" | "symlink" | "other";
+}
+
+/** Exit code the remote uses to signal "is a directory" (delete) or "not a directory" (list). */
+const WRONG_TYPE_EXIT = 67;
+
+/**
+ * Shell that treats a failed `$out=...` operation as "missing" (exit 66) only
+ * when the C-locale error is ENOENT. Every stat/rm diagnostic ends with the
+ * errno text, so the match is anchored to the end and a path that contains the
+ * same words cannot trigger it. Any other failure (EACCES, ELOOP, ...) exits
+ * non-zero with the tool's message on stderr, so callers never act on a false
+ * absence.
+ */
+const ENOENT_OR_FAIL =
+  `rc=$?; if [ $rc -ne 0 ]; then case "$out" in *': No such file or directory') ` +
+  `exit ${MISSING_FILE_EXIT};; esac; printf '%s\\n' "$out" >&2; exit $rc; fi; `;
+
+/**
+ * A login profile or `BASH_ENV` can enable errexit, which would end the shell
+ * at the expected-to-fail probes before they are classified.
+ */
+const NO_ERREXIT = "set +e; ";
+
+/**
+ * Shell that sets `$out` to `<type description>|<size>` for a path, following
+ * symlinks. GNU and busybox `stat` take `-c`; BSD `stat` takes `-f`. BSD
+ * `stat -L` falls back to `lstat` for a link it cannot resolve instead of
+ * failing, so its "Symbolic Link" result also means missing.
+ */
+function statScript(quoted: string): string {
+  return (
+    NO_ERREXIT +
+    `if stat -c %s / >/dev/null 2>&1; then out=$(LC_ALL=C stat -L -c '%F|%s' -- ${quoted} 2>&1); ` +
+    `else out=$(LC_ALL=C stat -L -f '%HT|%z' -- ${quoted} 2>&1); fi; ` +
+    ENOENT_OR_FAIL +
+    `case "$out" in 'Symbolic Link|'*) exit ${MISSING_FILE_EXIT};; esac; `
+  );
+}
+
+/**
+ * Stat a path, following symbolic links, from metadata only (an unreadable
+ * file still stats). Resolves to `null` only when the path does not exist (a
+ * dangling symlink counts as missing). Directory sizes are what `stat` reports.
+ */
+export async function stat(ctx: FileIoContext, options: ReadFileOptions): Promise<FileStat | null> {
+  const abs = resolveRemotePath(ctx, options.path);
+  const command = `${statScript(shellQuote(abs))}printf '%s\\n' "$out"`;
+  const result = await ctx.transport.exec({
+    workspace: ctx.workspace,
+    command,
+    abortSignal: options.abortSignal,
+  });
+  if (result.exitCode === MISSING_FILE_EXIT) return null;
+  if (result.exitCode !== 0) {
+    throw new Error(`failed to stat ${abs} (exit ${result.exitCode}): ${result.stderr.trim()}`);
+  }
+  const match = /^(.+)\|(\d+)$/.exec(result.stdout.trim());
+  if (match === null || match[1] === undefined) {
+    throw new Error(`failed to stat ${abs}: unexpected output ${JSON.stringify(result.stdout)}`);
+  }
+  // GNU: "regular file", "regular empty file", "directory". BSD: "Regular File", "Directory".
+  const kind = match[1].toLowerCase();
+  const type = kind.startsWith("regular") ? "file" : kind === "directory" ? "directory" : "other";
+  return { type, size: Number(match[2]) };
+}
+
+function parseEntryType(value: string | undefined): DirectoryEntry["type"] | undefined {
+  switch (value) {
+    case "file":
+    case "directory":
+    case "symlink":
+    case "other":
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * List one directory without descending. Resolves to `null` when the path
+ * does not exist and rejects when it is not a directory or cannot be read.
+ * Entry names cross the transport as NUL-separated base64, so newlines and
+ * spaces in names survive.
+ */
+export async function listDirectory(
+  ctx: FileIoContext,
+  options: ReadFileOptions,
+): Promise<DirectoryEntry[] | null> {
+  const abs = resolveRemotePath(ctx, options.path);
+  const quoted = shellQuote(abs);
+  // `find` (not a glob) enumerates, so login-profile glob options cannot
+  // change the result, and with pipefail a directory it cannot read fails the
+  // command instead of listing as empty. `-L` comes first so symlinks are
+  // reported as such and not followed.
+  const listing =
+    `while IFS= read -r -d '' e; do e=\${e#./}; ` +
+    `if [ -L "$e" ]; then t=symlink; elif [ -d "$e" ]; then t=directory; ` +
+    `elif [ -f "$e" ]; then t=file; elif [ -e "$e" ]; then t=other; else continue; fi; ` +
+    `printf '%s\\0%s\\0' "$t" "$e"; done`;
+  const command =
+    statScript(quoted) +
+    `case "$out" in [Dd]irectory'|'*) ;; *) exit ${WRONG_TYPE_EXIT};; esac; ` +
+    `set -o pipefail; cd -- ${quoted} && ` +
+    `LC_ALL=C find . -mindepth 1 -maxdepth 1 -print0 | { ${listing}; } | base64`;
+  const result = await ctx.transport.exec({
+    workspace: ctx.workspace,
+    command,
+    abortSignal: options.abortSignal,
+  });
+  if (result.exitCode === MISSING_FILE_EXIT) return null;
+  if (result.exitCode === WRONG_TYPE_EXIT) {
+    throw new Error(`failed to list ${abs}: not a directory`);
+  }
+  if (result.exitCode !== 0) {
+    throw new Error(`failed to list ${abs} (exit ${result.exitCode}): ${result.stderr.trim()}`);
+  }
+  const fields = Buffer.from(result.stdout.replace(/\s+/g, ""), "base64")
+    .toString("utf8")
+    .split("\0");
+  // The listing ends with a NUL, so a well-formed split has an odd length.
+  if (fields.pop() !== "" || fields.length % 2 !== 0) {
+    throw new Error(`failed to list ${abs}: malformed listing`);
+  }
+  const entries: DirectoryEntry[] = [];
+  for (let i = 0; i < fields.length; i += 2) {
+    const type = parseEntryType(fields[i]);
+    const name = fields[i + 1];
+    if (type === undefined || name === undefined || name === "") {
+      throw new Error(`failed to list ${abs}: malformed listing`);
+    }
+    entries.push({ name, type });
+  }
+  return entries;
+}
+
+/**
+ * Delete one file. A symbolic link is deleted itself, not its target. Resolves
+ * to `false` only when `rm` reports that the path does not exist, and rejects
+ * for a directory or any other failure.
+ */
+export async function deleteFile(ctx: FileIoContext, options: ReadFileOptions): Promise<boolean> {
+  const abs = resolveRemotePath(ctx, options.path);
+  const quoted = shellQuote(abs);
+  // stdin is /dev/null so `rm` never prompts for a write-protected file.
+  const command =
+    NO_ERREXIT +
+    `if [ -d ${quoted} ] && ! [ -L ${quoted} ]; then exit ${WRONG_TYPE_EXIT}; fi; ` +
+    `out=$(LC_ALL=C rm -- ${quoted} 2>&1 < /dev/null); ` +
+    ENOENT_OR_FAIL;
+  const result = await ctx.transport.exec({
+    workspace: ctx.workspace,
+    command,
+    abortSignal: options.abortSignal,
+  });
+  if (result.exitCode === MISSING_FILE_EXIT) return false;
+  if (result.exitCode === WRONG_TYPE_EXIT) {
+    throw new Error(`failed to delete ${abs}: is a directory`);
+  }
+  if (result.exitCode !== 0) {
+    throw new Error(`failed to delete ${abs} (exit ${result.exitCode}): ${result.stderr.trim()}`);
+  }
+  return true;
+}
+
 /** Slice text to a 1-based inclusive line range; tolerant of out-of-range bounds. */
 export function sliceLines(text: string, startLine?: number, endLine?: number): string {
   const lines = text.split("\n");

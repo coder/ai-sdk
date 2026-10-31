@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -140,6 +140,184 @@ describe("file I/O round-trips (via fake coder)", () => {
     await fileIo.writeTextFile(ctx(), { path: p, content: "a\nb\nc\nd" });
     const read = await fileIo.readTextFile(ctx(), { path: p, startLine: 2, endLine: 3 });
     expect(read).toBe("b\nc");
+  });
+});
+
+describe("stat, listDirectory and deleteFile (via fake coder)", () => {
+  let dir: string;
+
+  beforeAll(async () => {
+    dir = path.join(workDir, "tree");
+    await mkdir(path.join(dir, "sub"), { recursive: true });
+    await writeFile(path.join(dir, "five.txt"), "12345");
+    await writeFile(path.join(dir, ".hidden"), "");
+    await writeFile(path.join(dir, "odd\nname *"), "x");
+    await symlink("sub", path.join(dir, "link-to-sub"));
+    await symlink("missing", path.join(dir, "dangling"));
+  });
+
+  it("stat reports type and size, follows symlinks, and returns null for a missing path", async () => {
+    expect(await fileIo.stat(ctx(), { path: "tree/five.txt" })).toEqual({ type: "file", size: 5 });
+    expect(await fileIo.stat(ctx(), { path: path.join(dir, "sub") })).toEqual({
+      type: "directory",
+      size: expect.any(Number),
+    });
+    expect(await fileIo.stat(ctx(), { path: "tree/link-to-sub" })).toEqual({
+      type: "directory",
+      size: expect.any(Number),
+    });
+    expect(await fileIo.stat(ctx(), { path: "tree/dangling" })).toBeNull();
+    expect(await fileIo.stat(ctx(), { path: "tree/nope" })).toBeNull();
+  });
+
+  it("listDirectory lists one level, keeps dotfiles and odd names, and reports symlinks", async () => {
+    const entries = await fileIo.listDirectory(ctx(), { path: "tree" });
+    expect(entries).not.toBeNull();
+    expect([...entries!].sort((a, b) => a.name.localeCompare(b.name))).toEqual(
+      [
+        { name: ".hidden", type: "file" },
+        { name: "dangling", type: "symlink" },
+        { name: "five.txt", type: "file" },
+        { name: "link-to-sub", type: "symlink" },
+        { name: "odd\nname *", type: "file" },
+        { name: "sub", type: "directory" },
+      ].sort((a, b) => a.name.localeCompare(b.name)),
+    );
+    expect(await fileIo.listDirectory(ctx(), { path: "tree/sub" })).toEqual([]);
+  });
+
+  it("listDirectory ignores glob options a shell profile sets", async () => {
+    // Non-interactive bash sources $BASH_ENV, like a login profile would.
+    const envFile = path.join(workDir, "glob-profile.sh");
+    await writeFile(envFile, "shopt -s dotglob failglob\n");
+    const previous = process.env.BASH_ENV;
+    process.env.BASH_ENV = envFile;
+    try {
+      const names = (await fileIo.listDirectory(ctx(), { path: "tree" }))!.map((e) => e.name);
+      expect(names.filter((n) => n === ".hidden")).toHaveLength(1);
+      expect(await fileIo.listDirectory(ctx(), { path: "tree/sub" })).toEqual([]);
+    } finally {
+      if (previous === undefined) delete process.env.BASH_ENV;
+      else process.env.BASH_ENV = previous;
+    }
+  });
+
+  it("stat reports the size of a file it cannot read", async () => {
+    const p = path.join(dir, "locked.bin");
+    await writeFile(p, "123");
+    await chmod(p, 0o000);
+    try {
+      expect(await fileIo.stat(ctx(), { path: p })).toEqual({ type: "file", size: 3 });
+    } finally {
+      await rm(p);
+    }
+  });
+
+  // Root bypasses permission checks, so these cases only hold for other users.
+  const isRoot = process.getuid?.() === 0;
+
+  it("stat rejects (not null) for a symlink loop and an unsearchable parent", async () => {
+    await symlink("loop", path.join(dir, "loop"));
+    const locked = path.join(dir, "no-search");
+    await mkdir(locked);
+    await writeFile(path.join(locked, "inside"), "x");
+    await chmod(locked, 0o600);
+    try {
+      await expect(fileIo.stat(ctx(), { path: "tree/loop" })).rejects.toThrow(/symbolic links/);
+      if (!isRoot) {
+        await expect(fileIo.stat(ctx(), { path: "tree/no-search/inside" })).rejects.toThrow(
+          /Permission denied/,
+        );
+        await expect(fileIo.deleteFile(ctx(), { path: "tree/no-search/inside" })).rejects.toThrow(
+          /Permission denied/,
+        );
+      }
+    } finally {
+      await chmod(locked, 0o700);
+      await rm(locked, { recursive: true });
+      await rm(path.join(dir, "loop"));
+    }
+  });
+
+  it.skipIf(isRoot)("a path that contains the ENOENT text still reports EACCES", async () => {
+    const locked = path.join(dir, "No such file or directory");
+    await mkdir(locked);
+    await chmod(locked, 0o600);
+    const inside = "tree/No such file or directory/inside";
+    try {
+      await expect(fileIo.stat(ctx(), { path: inside })).rejects.toThrow(/Permission denied/);
+      await expect(fileIo.listDirectory(ctx(), { path: inside })).rejects.toThrow(
+        /Permission denied/,
+      );
+      await expect(fileIo.deleteFile(ctx(), { path: inside })).rejects.toThrow(/Permission denied/);
+    } finally {
+      await chmod(locked, 0o700);
+      await rm(locked, { recursive: true });
+    }
+  });
+
+  it("missing paths stay missing when a shell profile enables errexit", async () => {
+    const envFile = path.join(workDir, "errexit-profile.sh");
+    await writeFile(envFile, "set -e\n");
+    const previous = process.env.BASH_ENV;
+    process.env.BASH_ENV = envFile;
+    try {
+      expect(await fileIo.stat(ctx(), { path: "tree/nope" })).toBeNull();
+      expect(await fileIo.listDirectory(ctx(), { path: "tree/nope" })).toBeNull();
+      expect(await fileIo.deleteFile(ctx(), { path: "tree/nope" })).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.BASH_ENV;
+      else process.env.BASH_ENV = previous;
+    }
+  });
+
+  it("stat treats BSD stat's lstat fallback for a dangling link as missing", async () => {
+    // A stand-in for BSD stat(1): it rejects GNU `-c` and, like `stat -L -f`
+    // on a link it cannot resolve, reports the link itself.
+    const bin = path.join(workDir, "bsd-bin");
+    await mkdir(bin, { recursive: true });
+    const fake = path.join(bin, "stat");
+    await writeFile(fake, "#!/bin/sh\n[ \"$1\" = -c ] && exit 1\necho 'Symbolic Link|7'\n");
+    await chmod(fake, 0o755);
+    const previous = process.env.PATH;
+    process.env.PATH = `${bin}${path.delimiter}${previous ?? ""}`;
+    try {
+      expect(await fileIo.stat(ctx(), { path: "tree/anything" })).toBeNull();
+    } finally {
+      process.env.PATH = previous;
+    }
+  });
+
+  it.skipIf(isRoot)("listDirectory rejects a directory it can search but not read", async () => {
+    const locked = path.join(dir, "no-read");
+    await mkdir(locked);
+    await writeFile(path.join(locked, "inside"), "x");
+    await chmod(locked, 0o311);
+    try {
+      await expect(fileIo.listDirectory(ctx(), { path: "tree/no-read" })).rejects.toThrow(
+        /Permission denied/,
+      );
+    } finally {
+      await chmod(locked, 0o700);
+      await rm(locked, { recursive: true });
+    }
+  });
+
+  it("listDirectory returns null for a missing path and rejects for a file", async () => {
+    expect(await fileIo.listDirectory(ctx(), { path: "tree/nope" })).toBeNull();
+    await expect(fileIo.listDirectory(ctx(), { path: "tree/five.txt" })).rejects.toThrow(
+      /not a directory/,
+    );
+  });
+
+  it("deleteFile deletes files and symlinks, returns false when missing, and rejects for a directory", async () => {
+    expect(await fileIo.deleteFile(ctx(), { path: "tree/link-to-sub" })).toBe(true);
+    expect(await fileIo.stat(ctx(), { path: "tree/sub" })).toMatchObject({ type: "directory" });
+    expect(await fileIo.deleteFile(ctx(), { path: "tree/dangling" })).toBe(true);
+    expect(await fileIo.deleteFile(ctx(), { path: "tree/five.txt" })).toBe(true);
+    expect(await fileIo.stat(ctx(), { path: "tree/five.txt" })).toBeNull();
+    expect(await fileIo.deleteFile(ctx(), { path: "tree/five.txt" })).toBe(false);
+    await expect(fileIo.deleteFile(ctx(), { path: "tree/sub" })).rejects.toThrow(/is a directory/);
   });
 });
 

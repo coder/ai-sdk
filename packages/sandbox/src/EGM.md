@@ -144,9 +144,11 @@ File I/O and shell:
   [coder-workspace-session.ts:CoderWorkspaceSession]
 - `stat` runs `stat -L` (`-c '%F|%s'`, BSD fallback `-f '%HT|%z'`) in the C locale,
   so it follows symlinks and needs no read permission. `stat`, `listDirectory` and
-  `deleteFile` report a missing path (`null`, `null`, `false`) only for the ENOENT
-  message (exit `66`). Other failures, such as a symlink loop or a permission
-  error, throw. [file-io.ts:ENOENT_OR_FAIL] [file-io.ts:statScript]
+  `deleteFile` report a missing path (`null`, `null`, `false`) only when the
+  diagnostic ends with the ENOENT text (exit `66`), or when BSD `stat -L` falls
+  back to the link itself. Other failures, such as a symlink loop or a
+  permission error, throw. Each command starts with `set +e` against an
+  errexit-enabling profile. [file-io.ts:ENOENT_OR_FAIL] [file-io.ts:statScript]
 - `listDirectory` throws for a non-directory (exit `67`). It enumerates with
   `find -mindepth 1 -maxdepth 1 -print0` under `pipefail`, so login-profile glob
   options do not apply and an unreadable directory throws. It reports symlinks as

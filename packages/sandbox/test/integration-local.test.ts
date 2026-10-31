@@ -239,6 +239,55 @@ describe("stat, listDirectory and deleteFile (via fake coder)", () => {
     }
   });
 
+  it.skipIf(isRoot)("a path that contains the ENOENT text still reports EACCES", async () => {
+    const locked = path.join(dir, "No such file or directory");
+    await mkdir(locked);
+    await chmod(locked, 0o600);
+    const inside = "tree/No such file or directory/inside";
+    try {
+      await expect(fileIo.stat(ctx(), { path: inside })).rejects.toThrow(/Permission denied/);
+      await expect(fileIo.listDirectory(ctx(), { path: inside })).rejects.toThrow(
+        /Permission denied/,
+      );
+      await expect(fileIo.deleteFile(ctx(), { path: inside })).rejects.toThrow(/Permission denied/);
+    } finally {
+      await chmod(locked, 0o700);
+      await rm(locked, { recursive: true });
+    }
+  });
+
+  it("missing paths stay missing when a shell profile enables errexit", async () => {
+    const envFile = path.join(workDir, "errexit-profile.sh");
+    await writeFile(envFile, "set -e\n");
+    const previous = process.env.BASH_ENV;
+    process.env.BASH_ENV = envFile;
+    try {
+      expect(await fileIo.stat(ctx(), { path: "tree/nope" })).toBeNull();
+      expect(await fileIo.listDirectory(ctx(), { path: "tree/nope" })).toBeNull();
+      expect(await fileIo.deleteFile(ctx(), { path: "tree/nope" })).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.BASH_ENV;
+      else process.env.BASH_ENV = previous;
+    }
+  });
+
+  it("stat treats BSD stat's lstat fallback for a dangling link as missing", async () => {
+    // A stand-in for BSD stat(1): it rejects GNU `-c` and, like `stat -L -f`
+    // on a link it cannot resolve, reports the link itself.
+    const bin = path.join(workDir, "bsd-bin");
+    await mkdir(bin, { recursive: true });
+    const fake = path.join(bin, "stat");
+    await writeFile(fake, "#!/bin/sh\n[ \"$1\" = -c ] && exit 1\necho 'Symbolic Link|7'\n");
+    await chmod(fake, 0o755);
+    const previous = process.env.PATH;
+    process.env.PATH = `${bin}${path.delimiter}${previous ?? ""}`;
+    try {
+      expect(await fileIo.stat(ctx(), { path: "tree/anything" })).toBeNull();
+    } finally {
+      process.env.PATH = previous;
+    }
+  });
+
   it.skipIf(isRoot)("listDirectory rejects a directory it can search but not read", async () => {
     const locked = path.join(dir, "no-read");
     await mkdir(locked);

@@ -155,23 +155,35 @@ const WRONG_TYPE_EXIT = 67;
 
 /**
  * Shell that treats a failed `$out=...` operation as "missing" (exit 66) only
- * when the C-locale error is ENOENT. Any other failure (EACCES, ELOOP, ...)
- * exits non-zero with the tool's message on stderr, so callers never act on a
- * false absence.
+ * when the C-locale error is ENOENT. Every stat/rm diagnostic ends with the
+ * errno text, so the match is anchored to the end and a path that contains the
+ * same words cannot trigger it. Any other failure (EACCES, ELOOP, ...) exits
+ * non-zero with the tool's message on stderr, so callers never act on a false
+ * absence.
  */
 const ENOENT_OR_FAIL =
-  `rc=$?; if [ $rc -ne 0 ]; then case "$out" in *'No such file or directory'*) ` +
+  `rc=$?; if [ $rc -ne 0 ]; then case "$out" in *': No such file or directory') ` +
   `exit ${MISSING_FILE_EXIT};; esac; printf '%s\\n' "$out" >&2; exit $rc; fi; `;
 
 /**
+ * A login profile or `BASH_ENV` can enable errexit, which would end the shell
+ * at the expected-to-fail probes before they are classified.
+ */
+const NO_ERREXIT = "set +e; ";
+
+/**
  * Shell that sets `$out` to `<type description>|<size>` for a path, following
- * symlinks. GNU and busybox `stat` take `-c`; BSD `stat` takes `-f`.
+ * symlinks. GNU and busybox `stat` take `-c`; BSD `stat` takes `-f`. BSD
+ * `stat -L` falls back to `lstat` for a link it cannot resolve instead of
+ * failing, so its "Symbolic Link" result also means missing.
  */
 function statScript(quoted: string): string {
   return (
+    NO_ERREXIT +
     `if stat -c %s / >/dev/null 2>&1; then out=$(LC_ALL=C stat -L -c '%F|%s' -- ${quoted} 2>&1); ` +
     `else out=$(LC_ALL=C stat -L -f '%HT|%z' -- ${quoted} 2>&1); fi; ` +
-    ENOENT_OR_FAIL
+    ENOENT_OR_FAIL +
+    `case "$out" in 'Symbolic Link|'*) exit ${MISSING_FILE_EXIT};; esac; `
   );
 }
 
@@ -281,6 +293,7 @@ export async function deleteFile(ctx: FileIoContext, options: ReadFileOptions): 
   const quoted = shellQuote(abs);
   // stdin is /dev/null so `rm` never prompts for a write-protected file.
   const command =
+    NO_ERREXIT +
     `if [ -d ${quoted} ] && ! [ -L ${quoted} ]; then exit ${WRONG_TYPE_EXIT}; fi; ` +
     `out=$(LC_ALL=C rm -- ${quoted} 2>&1 < /dev/null); ` +
     ENOENT_OR_FAIL;

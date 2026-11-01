@@ -1,6 +1,6 @@
 {
   "packages/sandbox": "0.4.57",
   "packages/agent": "0.12.33",
-  "packages/provider": "0.4.53",
+  "packages/provider": "0.4.54",
   "packages/effect": "0.0.0"
 }

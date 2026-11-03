@@ -1,6 +1,6 @@
 {
   "name": "@coder/ai-sdk-effect",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Effect bridge for Coder's Vercel AI SDK packages: effect/ai LanguageModel services over Coder AI Gateway and Coder Agents, typed AiError classification, Effect Schema to AI SDK schemas, and scoped Coder workspace Layers.",
   "keywords": [
     "ai",
